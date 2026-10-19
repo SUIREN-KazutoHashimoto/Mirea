@@ -210,9 +210,11 @@ function renderShell() {
 }
 
 function showSettings() {
+  const actor=getSession(),server=getEndpoint();
+  const current=()=>getSession()===actor && getEndpoint()===server;
   openSettings({ dialog, api, esc, theme, apkUrl: config.androidApkUrl || defaultApkUrl, version: config.version || '0.2.0-beta', manageShelf: id => openMembers(id),
-    onUpdated: async result => { closeDownloads(); setSession(result); await stopAnalytics().catch(() => {}); await startAnalytics(); renderShell(); await refresh(); toast('アカウント情報を更新しました。他の端末では再ログインが必要です。'); },
-    onDeleted: async () => { const results=await Promise.allSettled([clearAccountDownloads(),clearAccountAnalytics(),clearAccountProgress()]);const cacheError=results.some(r=>r.status==='rejected');clearThumbnails();setSession(null);loadGeneration++;shelves=[];items=[];activeShelf=null;renderAuth();toast(cacheError?'アカウントを削除しました。端末内データを消去できませんでした。ブラウザーのサイトデータを削除してください。':'アカウントと個人の記録、この端末のダウンロードを削除しました。'); }
+    onUpdated: async result => { if(!current())return;closeDownloads();setSession(result);await stopAnalytics().catch(()=>{});if(getSession()!==result || getEndpoint()!==server)return;await startAnalytics();if(getSession()!==result || getEndpoint()!==server)return;renderShell();await refresh();toast('アカウント情報を更新しました。他の端末では再ログインが必要です。'); },
+    onDeleted: async () => { if(!current())return;const results=await Promise.allSettled([clearAccountDownloads(),clearAccountAnalytics(),clearAccountProgress()]);if(!current())return;const cacheError=results.some(r=>r.status==='rejected');clearThumbnails();setSession(null);loadGeneration++;shelves=[];items=[];activeShelf=null;renderAuth();toast(cacheError?'アカウントを削除しました。端末内データを消去できませんでした。ブラウザーのサイトデータを削除してください。':'アカウントと個人の記録、この端末のダウンロードを削除しました。'); }
   });
 }
 
