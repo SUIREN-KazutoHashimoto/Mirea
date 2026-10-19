@@ -18,7 +18,7 @@ export async function packageServer({projectRoot=root,outputDirectory=join(root,
   try{
     await mkdir(destination);
     // Fixed allowlist: never include data, credentials, local deployment files or node_modules.
-    for(const path of ['server','dist','docs','package.json','pnpm-lock.yaml','pnpm-workspace.yaml','.npmrc','.env.example','LICENSE','README.md','RELEASE.md']){
+    for(const path of ['server','dist','docs','scripts','package.json','pnpm-lock.yaml','pnpm-workspace.yaml','.npmrc','.env.example','LICENSE','README.md','RELEASE.md']){
       await cp(join(projectRoot,path),join(destination,path),{recursive:true,errorOnExist:true,force:false});
     }
     await writeFile(join(destination,'release-manifest.json'),JSON.stringify({name:'Mirea',release:label,version:pkg.version,commit},null,2)+'\n');

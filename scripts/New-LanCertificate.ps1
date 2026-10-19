@@ -6,6 +6,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 or later is required.' }
+if ($IsWindows -and -not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run PowerShell as administrator to create or reuse the protected root CA.' }
+if ($DnsName -notmatch '^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$') { throw 'Invalid DNS name.' }
 $certificateFolder = [IO.Path]::GetFullPath($OutputDirectory)
 if (Test-Path -LiteralPath $certificateFolder) {
   if ((Get-ChildItem -LiteralPath $certificateFolder -Force | Measure-Object).Count -gt 0) { throw 'Certificate folder must be empty; existing certificates are never overwritten.' }
