@@ -9,7 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import sharp from 'sharp';
 import { createApp } from '../server/app.js';
 import { createMediaProcessor } from '../server/media.js';
-import { makePdf, makeMp4 } from './fixtures.js';
+import { makePdf, makeMp4, withOutOfRangeEditList } from './fixtures.js';
 
 const pdf = makePdf();
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -184,6 +184,19 @@ test('chunked video has a thumbnail and supports suffix ranges and scoped-ticket
   assert.equal(preflight.statusCode, 204);
   assert.ok(preflight.headers['access-control-allow-methods'].includes('PUT'));
   assert.ok(preflight.headers['access-control-allow-headers'].toLowerCase().includes('x-chunk-sha256'));
+});
+
+test('chunked short MP4 with an invalid edit list publishes a real thumbnail without altering the original', async t => {
+  const ctx = await setup(t);
+  const video = withOutOfRangeEditList(await makeMp4(join(ctx.dataDir, 'short.mp4'), { duration: 0.04 }));
+  const upload = await ctx.start([{ filename: 'short.mp4', mime: 'video/mp4', size: video.length }]);
+  await ctx.send(upload, [video]);
+  assert.equal((await ctx.request('POST', `/uploads/${upload.id}/complete`, ctx.owner)).statusCode, 202);
+  const { item } = await ctx.wait(upload.id);
+  const thumbnail = await ctx.request('GET', `/items/${item.id}/thumbnail`, ctx.owner);
+  assert.equal(thumbnail.statusCode, 200, thumbnail.body);
+  assert.equal((await sharp(thumbnail.rawPayload).metadata()).format, 'jpeg');
+  assert.deepEqual((await ctx.request('GET', `/items/${item.id}/content`, ctx.owner)).rawPayload, video);
 });
 
 test('cancellation, logout and role revocation during thumbnail processing prevent publication', async t => {

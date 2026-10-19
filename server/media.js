@@ -16,6 +16,50 @@ export const MAX_PREVIEW_BYTES = 2 * 1024 * 1024;
 const runFile = promisify(execFile);
 export const ffmpegPath = () => process.env.FFMPEG_PATH || bundledFfmpeg;
 
+const VIDEO_TIMEOUT_MS = 30_000;
+const removeOutput = destination => unlink(destination).catch(error => { if (error.code !== 'ENOENT') throw error; });
+const emptyVideoOutput = () => Object.assign(new Error('No video frames were generated'), { code: 'EMPTY_VIDEO_OUTPUT' });
+const isEmptyVideoOutput = error => error.code === 'EMPTY_VIDEO_OUTPUT' ||
+  (!error.killed && /Output file is empty, nothing was encoded/.test(error.stderr ?? ''));
+
+async function convertVideo(source, destination, mime, outputArgs, label, maxBytes = Infinity) {
+  const deadline = Date.now() + VIDEO_TIMEOUT_MS;
+  let failure;
+  // Preserve authored edits first. Only an empty MP4 result permits the
+  // compatibility retry; never ignore edit lists on every uploaded video.
+  for (const ignoreEdits of mime === 'video/mp4' ? [false, true] : [false]) {
+    try {
+      await removeOutput(destination);
+      const executable = ffmpegPath();
+      try {
+        if (!executable) throw Object.assign(new Error('FFmpeg is unavailable'), { code: 'ENOENT' });
+        await runFile(executable, [
+          '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-abort_on', 'empty_output',
+          '-protocol_whitelist', 'file,pipe', ...(ignoreEdits ? ['-ignore_editlist', '1'] : []),
+          '-i', source, ...outputArgs, destination
+        ], { timeout: Math.max(1, deadline - Date.now()), maxBuffer: 1024 * 1024, windowsHide: true, killSignal: 'SIGKILL' });
+      } catch (error) {
+        // ENOENT from launching the executable is not the same as a missing
+        // generated image. Keep that distinction in both the UI and logs.
+        if (error.code === 'ENOENT') {
+          throw Object.assign(httpError(503, `動画${label}用のFFmpegが見つかりません。サーバー設定を確認してください。`), { cause: error });
+        }
+        throw error;
+      }
+      const output = await stat(destination).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+      if (!output?.size) throw emptyVideoOutput();
+      if (output.size > maxBytes) throw new Error('Generated video exceeds the size limit');
+      return;
+    } catch (error) {
+      failure = error;
+      if (ignoreEdits || !isEmptyVideoOutput(error) || Date.now() >= deadline) break;
+    }
+  }
+  await removeOutput(destination);
+  if (failure.statusCode === 503) throw failure;
+  throw Object.assign(httpError(422, `動画の${label}を生成できません。映像フレーム・再生区間・対応形式を確認してください。`), { cause: failure });
+}
+
 function workerOperation(data) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL('./media-worker.js', import.meta.url), {
@@ -49,40 +93,28 @@ export function createMediaProcessor() {
     validateImage(source) {
       return enqueue(() => workerOperation({ source, mode: 'validate-image' }));
     },
-    preview(source, destination) {
+    preview(source, destination, mime) {
       return enqueue(async () => {
-        try {
-          await runFile(ffmpegPath(), [
-            '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-protocol_whitelist', 'file,pipe',
-            '-i', source, '-t', String(PREVIEW_SECONDS), '-map', '0:v:0', '-an', '-sn', '-dn', '-map_metadata', '-1', '-map_chapters', '-1',
-            '-vf', 'fps=12,scale=480:480:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1',
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '30', '-maxrate', '600k', '-bufsize', '1200k',
-            '-pix_fmt', 'yuv420p', '-threads', '1', '-movflags', '+faststart', '-f', 'mp4', destination
-          ], { timeout: 30_000, maxBuffer: 1024 * 1024, windowsHide: true, killSignal: 'SIGKILL' });
-          const { size } = await stat(destination);
-          if (!size || size > MAX_PREVIEW_BYTES) throw new Error('Preview size out of bounds');
-        } catch (error) {
-          if (error.code === 'ENOENT') throw httpError(503, '動画プレビュー用のFFmpegが見つかりません。');
-          throw httpError(422, '動画プレビューを生成できません。');
-        }
+        await convertVideo(source, destination, mime, [
+          '-t', String(PREVIEW_SECONDS), '-map', '0:v:0', '-an', '-sn', '-dn', '-map_metadata', '-1', '-map_chapters', '-1',
+          '-vf', 'setpts=PTS-STARTPTS,fps=12:eof_action=pass,scale=480:480:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1',
+          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '30', '-maxrate', '600k', '-bufsize', '1200k',
+          '-pix_fmt', 'yuv420p', '-threads', '1', '-movflags', '+faststart', '-f', 'mp4'
+        ], 'プレビュー', MAX_PREVIEW_BYTES);
       });
     },
     thumbnail(source, mime, destination) {
       return enqueue(async () => {
         if (mime.startsWith('video/')) {
-          try {
-            await runFile(ffmpegPath(), [
-              '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-protocol_whitelist', 'file,pipe',
-              '-i', source, '-map', '0:v:0', '-frames:v', '1', '-an', '-threads', '1',
-              '-vf', 'thumbnail=30,scale=480:720:force_original_aspect_ratio=decrease',
-              '-c:v', 'mjpeg', '-f', 'image2', destination
-            ], { timeout: 30_000, maxBuffer: 1024 * 1024, windowsHide: true, killSignal: 'SIGKILL' });
-            if (!(await stat(destination)).size) throw new Error('No frame');
-            return { pageCount: 1 };
-          } catch (error) {
-            if (error.code === 'ENOENT') throw httpError(503, '動画サムネイル用のFFmpegが見つかりません。サーバー設定を確認してください。');
-            throw httpError(422, '動画のサムネイルを生成できません。対応する動画形式か確認してください。');
-          }
+          // Sample at most 30 frames from the opening 2.5 seconds. At EOF,
+          // thumbnail uses the available batch, even for a single-frame clip;
+          // eof_action=pass prevents sub-frame-duration clips being discarded.
+          await convertVideo(source, destination, mime, [
+            '-map', '0:v:0', '-frames:v', '1', '-an', '-threads', '1',
+            '-vf', 'setpts=PTS-STARTPTS,fps=12:eof_action=pass,thumbnail=30,scale=480:720:force_original_aspect_ratio=decrease',
+            '-c:v', 'mjpeg', '-f', 'image2'
+          ], 'サムネイル');
+          return { pageCount: 1 };
         }
         return workerOperation({ source, destination, mode: mime === 'application/pdf' ? 'pdf-thumbnail' : 'image-thumbnail' });
       });

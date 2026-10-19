@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createApp } from '../server/app.js';
 import { createMediaProcessor, ffmpegPath, MAX_PREVIEW_BYTES } from '../server/media.js';
-import { makePdf, makeMp4 } from './fixtures.js';
+import { makePdf, makeMp4, withOutOfRangeEditList } from './fixtures.js';
 
 async function setup(t, customize) {
   const dataDir = await mkdtemp(join(tmpdir(), 'mirea-preview-'));
@@ -115,6 +115,25 @@ test('preview failure leaves the image/original available and does not retry on 
   assert.equal((await ctx.request('POST', `/items/${pdf.id}/preview`, ctx.owner)).statusCode, 400);
   await ctx.app.close();
   assert.deepEqual(await readdir(join(ctx.dataDir, 'previews')), []);
+});
+
+test('short MP4 with out-of-range edits gets a decodable preview through the authenticated API', async t => {
+  const ctx = await setup(t);
+  const original = withOutOfRangeEditList(await makeMp4(join(ctx.dataDir, 'short.mp4'), { duration: 0.04 }));
+  const item = await ctx.upload(original);
+  assert.equal((await ctx.request('POST', `/items/${item.id}/preview`, ctx.owner)).statusCode, 202);
+  await ctx.wait(item.id);
+  const response = await ctx.request('GET', `/items/${item.id}/preview/content`, ctx.owner);
+  assert.equal(response.statusCode, 200);
+  const path = join(ctx.dataDir, 'preview-check.mp4');
+  await writeFile(path, response.rawPayload);
+  const { stderr } = await promisify(execFile)(ffmpegPath(), [
+    '-hide_banner', '-abort_on', 'empty_output', '-i', path, '-map', '0:v:0', '-f', 'null', '-'
+  ], { windowsHide: true, timeout: 15000, maxBuffer: 1024 * 1024 });
+  assert.match(stderr, /Video: h264/);
+  assert.doesNotMatch(stderr, /Audio:/);
+  assert.match(stderr, /Duration: 00:00:00\./);
+  assert.deepEqual((await ctx.request('GET', `/items/${item.id}/content`, ctx.owner)).rawPayload, original);
 });
 
 test('deleting an item during encoding cannot leave an accessible or orphaned preview', async t => {
