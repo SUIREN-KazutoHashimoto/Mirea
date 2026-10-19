@@ -33,6 +33,13 @@ export async function stopAnalytics() {
   const old = transport; transport = null;
   if (old) { clearInterval(old.timer); old.controller.abort(); await old.outbox.dispose(); }
 }
+export async function clearAccountAnalytics() {
+  const user=getSession()?.user.id,endpoint=getEndpoint();
+  await stopAnalytics();
+  if(!user)return;
+  const store=await browserStore(`${endpoint || location.origin}|${user}`);
+  try{await store.remove((await store.list()).map(row=>row.key));}finally{store.close?.();}
+}
 
 export function trackAsset(assetId, context = 'viewer') {
   if (!collectionEnabled || !getSession()) return null;
@@ -53,7 +60,7 @@ export function trackAsset(assetId, context = 'viewer') {
     if (video) {
       state.toMs = Math.max(0,video.currentTime*1000 || 0);
       if (Number.isFinite(video.duration)) state.durationMs = Math.max(0,video.duration*1000);
-      Object.assign(state, { playing: !video.paused && !video.ended, seeking: video.seeking, buffering, rate:Math.min(16,Math.max(0.1,video.playbackRate || 1)), muted:video.muted,volume:video.volume,fullscreen:document.fullscreenElement === video });
+      Object.assign(state, { playing: !video.paused && !video.ended, seeking: video.seeking, buffering, rate:Math.min(16,Math.max(0.1,video.playbackRate || 1)), muted:video.muted,volume:video.volume,fullscreen:Boolean(document.fullscreenElement?.contains(video)) });
       const dropped = video.getVideoPlaybackQuality?.().droppedVideoFrames;
       if (Number.isInteger(dropped)) state.droppedFrames = dropped;
     } else if (page && rendered) Object.assign(state,{page,zoom});

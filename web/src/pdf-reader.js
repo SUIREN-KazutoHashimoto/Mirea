@@ -3,28 +3,25 @@ import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { absoluteUrl, authHeaders } from './api.js';
 import { bookPosition,restoreBookPosition } from './progress-core.js';
 import { advanceBook } from './series-continuation.js';
+import { createBookChrome, bookScale } from './book-viewer.js';
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
 export async function openPdf(container, item, onError, tracker, progress, downloaded, seriesNavigation) {
-  container.innerHTML = `<div class="pdf-toolbar"><button class="icon-button previous" aria-label="前のページ">←</button>
-    <label><input class="page-input" type="number" min="1" value="1" aria-label="ページ番号"> <span class="page-total">/ …</span></label>
-    <button class="icon-button next" aria-label="次のページ">→</button><span class="toolbar-divider"></span>
-    <label class="sr-only" for="pdf-zoom">表示倍率</label><select id="pdf-zoom"><option value="fit">幅に合わせる</option><option value="1">100%</option><option value="1.5">150%</option><option value="2">200%</option></select></div>
-    <div class="pdf-stage" tabindex="0" aria-label="PDFの本"><p class="pdf-loading" role="status">PDFを読み込んでいます…</p><canvas aria-label="PDFのページ"></canvas></div>`;
+  const chrome = createBookChrome(container, { kind: 'pdf', total: item.pageCount, onError });
   const stage = container.querySelector('.pdf-stage');
   const canvas = container.querySelector('canvas');
   const input = container.querySelector('.page-input');
   const previous = container.querySelector('.previous');
   const next = container.querySelector('.next');
-  const zoom = container.querySelector('select');
+  const zoom = container.querySelector('.book-zoom');
   let pdf, task, current = Math.max(1,Math.min(item.pageCount,progress?.initial?.page??1)), displayedPage=current, ready=false, disposed = false, generation = 0;
   const updateNext=()=>{
     const continues=ready && current===pdf?.numPages && seriesNavigation?.canContinue;
     next.disabled=!ready || (current===pdf?.numPages && !continues);
     next.textContent=continues?'次の作品 →':'→';next.setAttribute('aria-label',continues?'次のアセットへ読み進む':'次のページ');
   };
-  const publishPage=()=>{seriesNavigation?.bookState({ready,page:current,total:pdf?.numPages??item.pageCount});updateNext();};
+  const publishPage=()=>{chrome.update({ready,page:current,total:pdf?.numPages??item.pageCount});seriesNavigation?.bookState({ready,page:current,total:pdf?.numPages??item.pageCount});updateNext();};
   const unsubscribeSeries=seriesNavigation?.subscribe(updateNext);
   let anchor=progress?.initial??{scrollX:0,scrollY:0};
   if(progress?.initial?.zoom)zoom.value=progress.initial.zoom;
@@ -45,6 +42,7 @@ export async function openPdf(container, item, onError, tracker, progress, downl
     progress?.capture();
     anchor=anchor??bookPosition(stage,displayedPage,zoom.value);
     ready=false;
+    canvas.hidden=true;
     publishPage();
     tracker?.loading();
     const revision = ++generation;
@@ -52,9 +50,10 @@ export async function openPdf(container, item, onError, tracker, progress, downl
     const page = await pdf.getPage(current);
     if (disposed || revision !== generation) return;
     const base = page.getViewport({ scale: 1 });
-    const scale = zoom.value === 'fit' ? Math.min((stage.clientWidth - 48) / base.width, 2) : Number(zoom.value);
-    const viewport = page.getViewport({ scale: Math.max(0.2, scale) });
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const scale = Math.min(bookScale(base.width,base.height,stage.clientWidth,stage.clientHeight,zoom.value),Math.sqrt(16_000_000/(base.width*base.height*dpr*dpr)));
+    stage.style.touchAction=zoom.value==='fit'?'pan-y pinch-zoom':'pan-x pan-y pinch-zoom';
+    const viewport = page.getViewport({ scale });
     canvas.width = Math.floor(viewport.width * dpr);
     canvas.height = Math.floor(viewport.height * dpr);
     canvas.style.width = `${viewport.width}px`;
@@ -66,8 +65,8 @@ export async function openPdf(container, item, onError, tracker, progress, downl
     try {
       await task.promise;
       if (!disposed && revision === generation) {
-        restoreBookPosition(stage,anchor);anchor=null;displayedPage=current;ready=true;
-        tracker?.ready(current,canvas,stage,Math.max(0.2,scale));progress?.capture();publishPage();
+        canvas.hidden=false;restoreBookPosition(stage,anchor);anchor=null;displayedPage=current;ready=true;
+        tracker?.ready(current,canvas,stage,scale);progress?.capture();publishPage();
       }
     } catch (error) { if (error.name !== 'RenderingCancelledException' && !disposed) onError(error); }
   }
@@ -81,12 +80,12 @@ export async function openPdf(container, item, onError, tracker, progress, downl
   let scrollTimer;
   const scroll = () => { if(ready)progress?.capture();clearTimeout(scrollTimer); scrollTimer=setTimeout(()=>tracker?.viewport(),150); };
   stage.addEventListener('scroll',scroll,{passive:true});
-  const onKey = e => {
-    if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return;
-    if (['ArrowLeft','PageUp'].includes(e.key)) { e.preventDefault(); go(current - 1); }
-    if (['ArrowRight','PageDown'].includes(e.key)) { e.preventDefault(); advance(); }
-  };
-  container.addEventListener('keydown', onKey);
+  chrome.bind({go,next:advance,previous:()=>go(current-1),outline:async()=>{
+    if(!pdf)return;
+    const entries=[];
+    const collect=(nodes,depth=0)=>{for(const entry of nodes??[]){if(entries.length>=200 || depth>8)break;if(entry.dest)entries.push({title:entry.title,go:async()=>{const dest=typeof entry.dest==='string'?await pdf.getDestination(entry.dest):entry.dest;if(!dest?.length)return;const index=typeof dest[0]==='number'?dest[0]:await pdf.getPageIndex(dest[0]);go(index+1);}});collect(entry.items,depth+1);}};
+    collect(await pdf.getOutline());if(!disposed)chrome.outline(entries);
+  }});
   let resizeTimer;
   const observer = new ResizeObserver(() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(redraw, 100); });
   observer.observe(stage);
@@ -96,8 +95,8 @@ export async function openPdf(container, item, onError, tracker, progress, downl
     container.querySelector('.pdf-loading').remove();
     input.max = pdf.numPages;
     container.querySelector('.page-total').textContent = `/ ${pdf.numPages}`;
-    redraw();
+    redraw();stage.focus();
   }).catch(error => { if (!disposed) onError(error); });
-  const cleanup=() => { disposed = true; unsubscribeSeries?.();generation++; task?.cancel(); observer.disconnect(); clearTimeout(resizeTimer); clearTimeout(scrollTimer); stage.removeEventListener('scroll',scroll); container.removeEventListener('keydown',onKey); load.destroy(); };
+  const cleanup=() => { disposed = true; unsubscribeSeries?.();generation++; task?.cancel(); observer.disconnect(); clearTimeout(resizeTimer); clearTimeout(scrollTimer); stage.removeEventListener('scroll',scroll); chrome.dispose();load.destroy(); };
   cleanup.restart=()=>{zoom.value='fit';go(1);};return cleanup;
 }

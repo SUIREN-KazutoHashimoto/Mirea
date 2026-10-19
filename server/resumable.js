@@ -230,4 +230,10 @@ export async function registerResumableUploads(app, context) {
     });
     return reply.code(204).send();
   });
+  return { async cleanupUploads(ids) {
+    for (const id of ids) {
+      try { await discard(id); }
+      catch (error) { app.log.error({ err: error, uploadId: id }, 'Deleted account upload cleanup requires attention'); }
+    }
+  } };
 }

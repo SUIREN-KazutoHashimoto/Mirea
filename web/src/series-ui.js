@@ -100,6 +100,7 @@ export function mountSeriesNavigation({node,body,item,api,esc,open,isCurrent,isA
       if(key!==signature){
         signature=key;
         bar.innerHTML=`<strong>${esc(series.title)}</strong><span>${currentIndex+1} / ${items.length} · ${esc(items[currentIndex].series.label)}</span><div><button class="button secondary series-prev">← 前のアセット</button><select aria-label="シリーズ内のアセット">${items.map((asset,index)=>`<option value="${esc(asset.id)}" ${index===currentIndex?'selected':''}>${index+1}. ${esc(asset.series.label)} ${esc(asset.title)}</option>`).join('')}</select><button class="button secondary series-next">次のアセット →</button></div><div class="series-continuation"><label><input type="checkbox" class="series-continuous">連続再生・閲覧</label><span class="series-continuation-status" role="status"></span><button type="button" class="text-button series-cancel" hidden>自動移動を停止</button><button type="button" class="text-button series-now" hidden>今すぐ次へ</button></div>`;
+        const details=document.createElement('details'),summary=document.createElement('summary');summary.append(bar.querySelector('strong'),bar.querySelector('span'));details.append(summary,...bar.querySelectorAll(':scope > div'));bar.append(details);
         bar.querySelector('.series-prev').onclick=()=>core.navigate({direction:-1});
         bar.querySelector('.series-next').onclick=()=>core.navigate();
         bar.querySelector('select').onchange=e=>core.navigate({targetId:e.target.value});
@@ -107,6 +108,7 @@ export function mountSeriesNavigation({node,body,item,api,esc,open,isCurrent,isA
         bar.querySelector('.series-cancel').onclick=()=>core.cancel('今回の自動移動を停止しました。');
         bar.querySelector('.series-now').onclick=()=>core.navigate({continuous:true,autoplay:true});
       }
+      if(countdown!==null || busy)bar.querySelector('details').open=true;
       bar.querySelector('.series-prev').disabled=busy || currentIndex===0;
       bar.querySelector('.series-next').disabled=busy || !next;
       bar.querySelector('select').disabled=busy;

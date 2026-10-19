@@ -38,7 +38,7 @@ export async function registerVideoPreviews(app, { db, media, dataDir, uploadDir
       try {
         if (!exists(id)) return;
         // Conversion shares the bounded serial media queue with thumbnails.
-        await media.preview(join(uploadDir, id), temporaryFor(id));
+        await media.preview(join(uploadDir, id), temporaryFor(id), item.mime_type);
         if (!exists(id)) return;
         await rename(temporaryFor(id), pathFor(id));
         // An item can be deleted while the asynchronous rename is pending.
