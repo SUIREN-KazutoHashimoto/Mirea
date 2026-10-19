@@ -1,0 +1,7 @@
+{
+  "appId": "com.suiren.mirea",
+  "appName": "Mirea",
+  "webDir": "dist",
+  "server": { "androidScheme": "https" },
+  "android": { "allowMixedContent": false, "backgroundColor": "#f7f8fb", "resolveServiceWorkerRequests": true }
+}

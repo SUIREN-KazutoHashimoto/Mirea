@@ -1,0 +1,76 @@
+const MAX_PENDING = 10000, MAX_AGE = 7 * 86400000;
+
+export function memoryStore() {
+  const rows = new Map();
+  return { async list() { return [...rows.values()]; }, async put(row) { rows.set(row.key, row); }, async remove(keys) { keys.forEach(key => rows.delete(key)); } };
+}
+
+export async function browserStore(partition) {
+  if (!globalThis.indexedDB) return memoryStore();
+  try {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open('mirea-analytics-v1', 1);
+      request.onupgradeneeded = () => {
+        const store=request.result.createObjectStore('events', { keyPath: 'key' });
+        store.createIndex('partition', 'partition'); store.createIndex('queuedAt','queuedAt');
+      };
+      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    });
+    const transact = (mode, run) => new Promise((resolve, reject) => {
+      const tx = db.transaction('events', mode), store = tx.objectStore('events');
+      const request = run(store);
+      tx.oncomplete = () => resolve(request?.result); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error);
+    });
+    // Expire stale pending records from all accounts whenever this origin opens
+    // an outbox, including accounts that no longer sign in on this device.
+    await transact('readwrite',store=>{
+      const cursor=store.index('queuedAt').openCursor(IDBKeyRange.upperBound(Date.now()-MAX_AGE));
+      cursor.onsuccess=()=>{ if(cursor.result){cursor.result.delete();cursor.result.continue();} };
+    });
+    return {
+      async list() { return transact('readonly', store => store.index('partition').getAll(partition)); },
+      put: row => transact('readwrite', store => store.put(row)),
+      remove: keys => transact('readwrite', store => { keys.forEach(key => store.delete(key)); }),
+      close: () => db.close()
+    };
+  } catch { return memoryStore(); }
+}
+
+export function createOutbox({ store, partition, send, now = Date.now, status = () => {} }) {
+  let writes = Promise.resolve(), running, stopped = false, retryAt = 0, failures = 0;
+  const enqueue = (view, event) => {
+    if (stopped) return;
+    writes = writes.then(async () => {
+      await store.put({ key: `${partition}|${event.id}`, partition, queuedAt: now(), view, event });
+    }).catch(() => status('storage-unavailable'));
+  };
+  async function flush() {
+    if (running) return running;
+    if (stopped || now() < retryAt) return;
+    running = (async () => {
+      await writes;
+      let rows = (await store.list()).filter(row=>row.partition===partition).sort((a,b) => a.queuedAt - b.queuedAt || a.event.seq - b.event.seq);
+      const expired = rows.filter((row,index) => row.queuedAt < now()-MAX_AGE || index < rows.length-MAX_PENDING);
+      if (expired.length) { await store.remove(expired.map(row=>row.key)); status('pending-dropped'); rows = rows.filter(row=>!expired.includes(row)); }
+      // Bound work per flush; preserve single-view batches and <64 KiB request size.
+      for (let batchNumber=0; rows.length && batchNumber<10 && !stopped; batchNumber++) {
+        const view = rows[0].view, batch = [];
+        for (const row of rows.filter(row => row.view.id === view.id)) {
+          if (batch.length === 40 || JSON.stringify({ view, events: [...batch.map(r=>r.event),row.event] }).length > 58000) break;
+          batch.push(row);
+        }
+        const response = await send({ view, events: batch.map(row=>row.event) });
+        if (response.ok || [400,403,404,409,413,422].includes(response.status)) {
+          await store.remove(batch.map(row=>row.key));
+          if (!response.ok) status('batch-rejected');
+          failures=0; retryAt=0;
+        } else {
+          failures++; retryAt=now()+Math.min(60000,1000*2**Math.min(failures,6)); status('pending'); break;
+        }
+        const keys = new Set(batch.map(row=>row.key)); rows = rows.filter(row=>!keys.has(row.key));
+      }
+    })().catch(() => { failures++; retryAt=now()+Math.min(60000,1000*2**Math.min(failures,6)); status('pending'); }).finally(() => { running=null; });
+    return running;
+  }
+  return { enqueue, flush, async dispose() { stopped=true; await writes; await running; store.close?.(); } };
+}
