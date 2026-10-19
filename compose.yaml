@@ -1,0 +1,29 @@
+services:
+  mirea:
+    build: .
+    ports:
+      - target: 3000
+        published: "${PORT:-3000}"
+        host_ip: "${HOST:-127.0.0.1}"
+        protocol: tcp
+    environment:
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-2147483648}
+      UPLOAD_CHUNK_BYTES: ${UPLOAD_CHUNK_BYTES:-8388608}
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      ANALYTICS_ENABLED: ${ANALYTICS_ENABLED:-true}
+      SERVER_ADMIN_USER_IDS: ${SERVER_ADMIN_USER_IDS:-}
+    volumes:
+      - mirea-data:/data
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  mirea-data:

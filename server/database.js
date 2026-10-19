@@ -1,0 +1,253 @@
+import { DatabaseSync } from 'node:sqlite';
+
+export function openDatabase(filename) {
+  const db = new DatabaseSync(filename);
+  db.exec(`
+    PRAGMA foreign_keys = ON;
+    PRAGMA journal_mode = WAL;
+    PRAGMA busy_timeout = 5000;
+    CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+    INSERT INTO schema_version SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema_version);
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      name TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS shelves (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS memberships (
+      shelf_id TEXT NOT NULL REFERENCES shelves(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role TEXT NOT NULL CHECK (role IN ('owner', 'editor', 'viewer')),
+      PRIMARY KEY (shelf_id, user_id)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS one_owner_per_shelf ON memberships(shelf_id) WHERE role = 'owner';
+    CREATE INDEX IF NOT EXISTS memberships_user ON memberships(user_id);
+    CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      token_hash TEXT NOT NULL UNIQUE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS items (
+      id TEXT PRIMARY KEY,
+      shelf_id TEXT NOT NULL REFERENCES shelves(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      mime_type TEXT NOT NULL CHECK (mime_type IN ('application/pdf', 'video/mp4', 'video/webm')),
+      size INTEGER NOT NULL CHECK (size > 0),
+      uploaded_by TEXT NOT NULL REFERENCES users(id),
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS items_shelf ON items(shelf_id, created_at);
+    CREATE TABLE IF NOT EXISTS playback_tickets (
+      token_hash TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+      expires_at INTEGER NOT NULL
+    );
+  `);
+  const { version } = db.prepare('SELECT version FROM schema_version').get();
+  if (version === 1) {
+    // Rebuild the MIME constraint without deleting tickets that refer to existing items.
+    db.exec('PRAGMA foreign_keys = OFF');
+    try {
+      transaction(db, () => db.exec(`
+        CREATE TABLE items_v2 (
+          id TEXT PRIMARY KEY,
+          shelf_id TEXT NOT NULL REFERENCES shelves(id) ON DELETE CASCADE,
+          title TEXT NOT NULL,
+          filename TEXT NOT NULL,
+          mime_type TEXT NOT NULL CHECK (mime_type IN ('application/pdf', 'video/mp4', 'video/webm', 'application/vnd.mirea.image-book')),
+          size INTEGER NOT NULL CHECK (size > 0),
+          uploaded_by TEXT NOT NULL REFERENCES users(id),
+          created_at INTEGER NOT NULL,
+          page_count INTEGER NOT NULL DEFAULT 1 CHECK (page_count > 0),
+          thumbnail_ready INTEGER NOT NULL DEFAULT 0 CHECK (thumbnail_ready IN (0, 1))
+        );
+        INSERT INTO items_v2 (id, shelf_id, title, filename, mime_type, size, uploaded_by, created_at)
+          SELECT id, shelf_id, title, filename, mime_type, size, uploaded_by, created_at FROM items;
+        DROP TABLE items;
+        ALTER TABLE items_v2 RENAME TO items;
+        CREATE INDEX items_shelf ON items(shelf_id, created_at);
+        UPDATE schema_version SET version = 2;
+      `));
+    } finally { db.exec('PRAGMA foreign_keys = ON'); }
+  } else if (![2, 3, 4, 5, 6, 7, 8].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS image_pages (
+      item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+      page_number INTEGER NOT NULL CHECK (page_number > 0),
+      filename TEXT NOT NULL,
+      size INTEGER NOT NULL CHECK (size > 0),
+      width INTEGER NOT NULL CHECK (width > 0),
+      height INTEGER NOT NULL CHECK (height > 0),
+      mime_type TEXT NOT NULL DEFAULT 'image/jpeg' CHECK (mime_type IN ('image/jpeg', 'image/png', 'image/webp')),
+      PRIMARY KEY (item_id, page_number)
+    );
+  `);
+  if (!db.prepare('PRAGMA table_info(image_pages)').all().some(column => column.name === 'mime_type')) {
+    db.exec("ALTER TABLE image_pages ADD COLUMN mime_type TEXT NOT NULL DEFAULT 'image/jpeg' CHECK (mime_type IN ('image/jpeg', 'image/png', 'image/webp'))");
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS upload_sessions (
+      id TEXT PRIMARY KEY,
+      shelf_id TEXT NOT NULL REFERENCES shelves(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      session_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      files_json TEXT NOT NULL,
+      chunk_size INTEGER NOT NULL CHECK (chunk_size > 0),
+      state TEXT NOT NULL CHECK (state IN ('uploading', 'processing', 'complete', 'failed', 'cancelled')),
+      error TEXT,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS uploads_user ON upload_sessions(user_id, state);
+    CREATE TABLE IF NOT EXISTS upload_parts (
+      upload_id TEXT NOT NULL REFERENCES upload_sessions(id) ON DELETE CASCADE,
+      file_index INTEGER NOT NULL,
+      part_index INTEGER NOT NULL,
+      size INTEGER NOT NULL CHECK (size > 0),
+      sha256 TEXT NOT NULL,
+      PRIMARY KEY (upload_id, file_index, part_index)
+    );
+    CREATE TABLE IF NOT EXISTS analytics_views (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      asset_id TEXT NOT NULL,
+      shelf_id TEXT NOT NULL,
+      asset_kind TEXT NOT NULL,
+      asset_title TEXT NOT NULL,
+      page_count INTEGER NOT NULL,
+      context TEXT NOT NULL CHECK (context IN ('viewer','preview')),
+      platform TEXT NOT NULL CHECK (platform IN ('web','android')),
+      client_version TEXT NOT NULL,
+      auth_session_id TEXT NOT NULL,
+      opened_at INTEGER NOT NULL,
+      first_received_at INTEGER NOT NULL,
+      last_received_at INTEGER NOT NULL,
+      counted INTEGER NOT NULL DEFAULT 0,
+      ended INTEGER NOT NULL DEFAULT 0,
+      visible_ms INTEGER NOT NULL DEFAULT 0,
+      active_ms INTEGER NOT NULL DEFAULT 0,
+      watch_ms INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS analytics_views_shelf ON analytics_views(shelf_id, context, opened_at);
+    CREATE INDEX IF NOT EXISTS analytics_views_user ON analytics_views(user_id, opened_at);
+    CREATE INDEX IF NOT EXISTS analytics_views_asset ON analytics_views(asset_id, context, opened_at);
+    CREATE INDEX IF NOT EXISTS analytics_views_time ON analytics_views(opened_at);
+    CREATE TABLE IF NOT EXISTS analytics_events (
+      row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id TEXT NOT NULL UNIQUE,
+      view_id TEXT NOT NULL REFERENCES analytics_views(id) ON DELETE CASCADE,
+      seq INTEGER NOT NULL,
+      event_type TEXT NOT NULL,
+      client_at INTEGER NOT NULL,
+      received_at INTEGER NOT NULL,
+      elapsed_ms INTEGER NOT NULL,
+      interval_ms INTEGER NOT NULL,
+      visible_ms INTEGER NOT NULL,
+      active_ms INTEGER NOT NULL,
+      watch_ms INTEGER NOT NULL,
+      from_ms REAL,
+      to_ms REAL,
+      page_number INTEGER,
+      payload_json TEXT NOT NULL,
+      payload_hash TEXT NOT NULL,
+      UNIQUE(view_id, seq)
+    );
+    CREATE INDEX IF NOT EXISTS analytics_events_view_time ON analytics_events(view_id, elapsed_ms);
+    CREATE TABLE IF NOT EXISTS analytics_video_bins (
+      view_id TEXT NOT NULL REFERENCES analytics_views(id) ON DELETE CASCADE,
+      start_ms INTEGER NOT NULL,
+      watch_ms REAL NOT NULL,
+      media_ms REAL NOT NULL,
+      PRIMARY KEY(view_id,start_ms)
+    );
+    CREATE TABLE IF NOT EXISTS analytics_pages (
+      view_id TEXT NOT NULL REFERENCES analytics_views(id) ON DELETE CASCADE,
+      page_number INTEGER NOT NULL,
+      visits INTEGER NOT NULL,
+      visible_ms INTEGER NOT NULL,
+      active_ms INTEGER NOT NULL,
+      PRIMARY KEY(view_id,page_number)
+    );
+    CREATE TABLE IF NOT EXISTS asset_progress (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      asset_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+      revision INTEGER NOT NULL CHECK(revision > 0),
+      update_id TEXT NOT NULL,
+      payload_hash TEXT NOT NULL,
+      position_ms INTEGER,
+      duration_ms INTEGER,
+      page_number INTEGER,
+      scroll_x REAL,
+      scroll_y REAL,
+      zoom TEXT,
+      completed INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY(user_id,asset_id)
+    );
+    CREATE TABLE IF NOT EXISTS encrypted_downloads (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      asset_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+      manifest_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE(user_id,asset_id)
+    );
+    CREATE TABLE IF NOT EXISTS series (
+      id TEXT PRIMARY KEY,
+      shelf_id TEXT NOT NULL REFERENCES shelves(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS series_shelf ON series(shelf_id, title);
+    CREATE TABLE IF NOT EXISTS series_items (
+      series_id TEXT NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+      asset_id TEXT NOT NULL UNIQUE REFERENCES items(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL CHECK(position > 0),
+      label TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY(series_id, position)
+    );
+    CREATE TRIGGER IF NOT EXISTS series_same_shelf_insert BEFORE INSERT ON series_items
+      WHEN (SELECT shelf_id FROM series WHERE id=NEW.series_id) != (SELECT shelf_id FROM items WHERE id=NEW.asset_id)
+      BEGIN SELECT RAISE(ABORT, 'Series and asset must share a shelf'); END;
+    CREATE TRIGGER IF NOT EXISTS series_same_shelf_update BEFORE UPDATE ON series_items
+      WHEN (SELECT shelf_id FROM series WHERE id=NEW.series_id) != (SELECT shelf_id FROM items WHERE id=NEW.asset_id)
+      BEGIN SELECT RAISE(ABORT, 'Series and asset must share a shelf'); END;
+    CREATE TRIGGER IF NOT EXISTS series_asset_shelf_update BEFORE UPDATE OF shelf_id ON items
+      WHEN EXISTS(SELECT 1 FROM series_items si JOIN series s ON s.id=si.series_id WHERE si.asset_id=NEW.id AND s.shelf_id!=NEW.shelf_id)
+      BEGIN SELECT RAISE(ABORT, 'Remove series membership before moving asset'); END;
+    CREATE TRIGGER IF NOT EXISTS series_shelf_update BEFORE UPDATE OF shelf_id ON series
+      WHEN EXISTS(SELECT 1 FROM series_items si JOIN items i ON i.id=si.asset_id WHERE si.series_id=NEW.id AND i.shelf_id!=NEW.shelf_id)
+      BEGIN SELECT RAISE(ABORT, 'Remove assets before moving series'); END;
+    CREATE TRIGGER IF NOT EXISTS series_asset_removed AFTER DELETE ON series_items
+      BEGIN UPDATE series SET revision=revision+1 WHERE id=OLD.series_id; END;
+    UPDATE schema_version SET version=8;
+  `);
+  if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Database foreign key validation failed');
+  return db;
+}
+
+export function transaction(db, work) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const value = work();
+    db.exec('COMMIT');
+    return value;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}

@@ -1,0 +1,12 @@
+.git
+node_modules
+dist
+data
+android
+tests
+docs
+.env
+*.log
+test-results
+.local
+releases
