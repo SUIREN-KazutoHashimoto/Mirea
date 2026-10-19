@@ -54,6 +54,10 @@ export function createDownloadStore(db){
         };
       };
     }),
+    removePartition:partition=>run(['packages','chunks'],'readwrite',tx=>{
+      const packages=tx.objectStore('packages'),r=packages.index('partition').openCursor(IDBKeyRange.only(partition));
+      r.onsuccess=()=>{const cursor=r.result;if(cursor){erase(tx.objectStore('chunks'),cursor.value.manifest.id);cursor.delete();cursor.continue();}};
+    }),
     remove:key=>run(['packages','chunks'],'readwrite',tx=>{
       const packages=tx.objectStore('packages'),r=packages.get(key);r.onsuccess=()=>{if(r.result)erase(tx.objectStore('chunks'),r.result.manifest.id);packages.delete(key);};
     })

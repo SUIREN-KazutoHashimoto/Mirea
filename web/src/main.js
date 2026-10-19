@@ -1,13 +1,21 @@
 import './style.css';
+import './workspace.css';
 import { api, native, getEndpoint, setEndpoint, getSession, setSession, upload, absoluteUrl, authenticatedBlob } from './api.js';
 import { openImageBook } from './image-reader.js';
 import { App } from '@capacitor/app';
 import { mountVideoPreviews } from './video-previews.js';
-import { configureAnalytics, startAnalytics, stopAnalytics, flushAnalytics, trackAsset, analyticsNativeState } from './analytics.js';
+import { configureAnalytics, startAnalytics, stopAnalytics, clearAccountAnalytics, flushAnalytics, trackAsset, analyticsNativeState } from './analytics.js';
 import { openAnalytics } from './analytics-ui.js';
-import { openProgress,bindVideoProgress,progressNativeState,flushProgress } from './progress.js';
-import { downloadToDevice,listDownloads,removeDownload,openDownloaded,closeDownloads,downloadsNativeState } from './downloads.js';
+import { openProgress,bindVideoProgress,progressNativeState,flushProgress,clearAccountProgress } from './progress.js';
+import { downloadToDevice,listDownloads,removeDownload,openDownloaded,closeDownloads,clearAccountDownloads,downloadsNativeState } from './downloads.js';
 import { openSeriesManager,mountSeriesNavigation,seriesNativeState } from './series-ui.js';
+import { createTheme } from './theme.js';
+import { openSettings } from './settings.js';
+import { createViewerScreen } from './viewer-shell.js';
+import { mountVideoPlayer } from './video-player.js';
+
+const theme = createTheme();
+const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.2.0beta/mirea-0.2.0beta-android-debug.apk';
 
 const root = document.querySelector('#app');
 const roleName = { owner: '管理者', editor: '編集者', viewer: '閲覧者' };
@@ -24,7 +32,9 @@ const icons = {
   logout: '<path d="M9 4H4v16h5m6-13 5 5-5 5M8 12h12"/>',
   arrow: '<path d="M5 12h14m-5-5 5 5-5 5"/>',
   trash: '<path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/>',
-  check: '<path d="m5 12 4 4L19 6"/>'
+  check: '<path d="m5 12 4 4L19 6"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="m9 3-1 3-3 1-2 5 2 5 3 1 1 3h6l1-3 3-1 2-5-2-5-3-1-1-3z"/>',
+  download: '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>'
 };
 function icon(name, className = '') { return `<svg class="icon ${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.library}</svg>`; }
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -113,6 +123,7 @@ function dialog(title, body, extraClass = '') {
 }
 
 function renderAuth(register = false) {
+  document.querySelectorAll('.viewer-screen').forEach(node => node.close());
   series=[];activeSeries='';seriesContinuous=true;
   closeDownloads();
   clearThumbnails();
@@ -126,7 +137,7 @@ function renderAuth(register = false) {
       <label>メールアドレス<input name="email" type="email" autocomplete="email" maxlength="254" placeholder="you@example.com" required></label>
       <label>パスワード<input name="password" type="password" autocomplete="${register ? 'new-password' : 'current-password'}" minlength="12" maxlength="128" placeholder="12文字以上" required></label>
       <p class="form-error" role="alert" hidden></p><button class="button primary auth-submit" type="submit">${register ? 'アカウントを作成する' : 'ログインする'}${icon('arrow')}</button>
-    </form><p class="auth-switch">${register ? 'すでにアカウントをお持ちですか？' : 'はじめてご利用ですか？'} <button class="text-button" id="switch-auth">${register ? 'ログイン' : 'アカウントを作成'}</button></p><div class="auth-note">${icon('shelf')} 本棚ごとに、共有する相手を選べます。</div></div></section></main>`;
+    </form><p class="auth-switch">${register ? 'すでにアカウントをお持ちですか？' : 'はじめてご利用ですか？'} <button class="text-button" id="switch-auth">${register ? 'ログイン' : 'アカウントを作成'}</button></p><a class="auth-apk" href="${esc(config.androidApkUrl || defaultApkUrl)}" target="_blank" rel="noopener noreferrer">${icon('download')} Android版APKをダウンロード</a><div class="auth-note">${icon('shelf')} 本棚ごとに、共有する相手を選べます。</div></div></section></main>`;
   const switchButton = document.querySelector('#switch-auth');
   switchButton.hidden = !register && !config.allowRegistration;
   switchButton.onclick = () => renderAuth(!register);
@@ -159,8 +170,9 @@ function renderShell() {
     <div class="workspace-label">MY WORKSPACE <span>PRIVATE</span></div><nav aria-label="ライブラリ"><button id="nav-all" class="nav-item">${icon('library')}<span>すべてのコンテンツ</span><span class="nav-count"></span></button>
     <div class="sidebar-heading"><span>本棚</span><button id="add-shelf" class="icon-button" aria-label="本棚を作成">${icon('plus')}</button></div><div id="shelf-nav"></div></nav>
     <div class="sidebar-hint">${icon('users')}<strong>好きなものを、共有しよう。</strong><p>本棚にメンバーを追加して、<br>動画や本を一緒に楽しめます。</p></div>
+    <button id="nav-settings" class="nav-item settings-nav">${icon('settings')}<span>設定</span></button><a class="nav-item apk-nav" href="${esc(config.androidApkUrl || defaultApkUrl)}" target="_blank" rel="noopener noreferrer">${icon('download')}<span>Androidアプリ</span></a>
     <div class="profile"><span class="avatar">${esc(user.name.slice(0, 1))}</span><div><strong>${esc(user.name)}</strong><small>${esc(user.email)}</small></div><button id="logout" class="icon-button" aria-label="ログアウト">${icon('logout')}</button></div></aside>
-    <main class="main-content"><header class="topbar"><div class="breadcrumb">ワークスペース <span>/</span> <strong id="breadcrumb-title">ライブラリ</strong></div><span class="topbar-label">YOUR PERSONAL COLLECTION</span><button id="mobile-logout" class="icon-button mobile-logout" aria-label="ログアウト">${icon('logout')}</button></header>
+    <main class="main-content"><header class="topbar"><div class="breadcrumb">ワークスペース <span>/</span> <strong id="breadcrumb-title">ライブラリ</strong></div><span class="topbar-label">YOUR PERSONAL COLLECTION</span><button id="mobile-settings" class="icon-button mobile-settings" aria-label="設定">${icon('settings')}</button><button id="mobile-logout" class="icon-button mobile-logout" aria-label="ログアウト">${icon('logout')}</button></header>
     <div class="content-wrap"><section class="page-heading"><div><span class="eyebrow">THE LIBRARY, REIMAGINED</span><h1 id="page-title">あなたのライブラリ<span class="title-dot">.</span></h1><p id="page-description">動画も本も、ここに。お気に入りを集めた、あなたの場所。</p></div><div class="heading-actions"><button class="button secondary" id="manage-members" hidden>${icon('users')}共有設定</button><button class="button primary" id="open-upload">${icon('plus')}コンテンツを追加</button></div></section>
     <section class="library-overview" aria-label="ライブラリの概要"><div class="overview-message"><div class="overview-icon">${icon('shelf')}</div><div><span class="eyebrow">A LITTLE SPACE FOR BIG IDEAS</span><h2>好きな時間を、好きな本棚で。</h2><p>ひとりで楽しむ。みんなで分かち合う。</p></div></div><div class="stats"><div><strong id="stat-total">—</strong><span>コンテンツ</span></div><div><strong id="stat-book">—</strong><span>本</span></div><div><strong id="stat-video">—</strong><span>動画</span></div></div></section>
     <section class="collection"><div class="collection-toolbar"><div class="tabs" role="group" aria-label="種類で絞り込み"><button data-filter="all" class="tab active">すべて <span id="count-all">0</span></button><button data-filter="book" class="tab">${icon('book')}本 <span id="count-book">0</span></button><button data-filter="video" class="tab">${icon('video')}動画 <span id="count-video">0</span></button></div><div class="collection-tools"><label class="search-field">${icon('search')}<input id="search" type="search" placeholder="タイトルで検索" aria-label="タイトルで検索"></label><label class="sr-only" for="sort">並び順</label><select id="sort"><option value="recent">追加が新しい順</option><option value="name">タイトル順</option></select></div></div><div class="collection-caption"><h2 id="collection-title">すべてのコンテンツ</h2><span id="result-count"></span></div><div id="items" class="item-grid" aria-live="polite"><p class="loading-state">ライブラリを読み込んでいます…</p></div></section>
@@ -169,6 +181,7 @@ function renderShell() {
   document.querySelector('#nav-all').onclick = () => selectShelf(null);
   document.querySelector('#open-upload').onclick = openUpload;
   document.querySelector('#manage-members').onclick = openMembers;
+  document.querySelector('#nav-settings').onclick = document.querySelector('#mobile-settings').onclick = showSettings;
   const seriesControls=document.createElement('section');seriesControls.className='series-controls';seriesControls.setAttribute('aria-label','シリーズ');
   seriesControls.innerHTML='<div class="series-controls-heading"><label>シリーズ<select id="series-filter" aria-label="シリーズで絞り込み"></select></label><button class="button secondary" id="manage-series">シリーズを管理</button></div><p id="series-description" class="muted"></p>';
   document.querySelector('.collection-caption').before(seriesControls);
@@ -186,7 +199,7 @@ function renderShell() {
   api('/analytics/access').then(access=>{if(globalButton.isConnected)globalButton.hidden=!access.canViewGlobal;}).catch(()=>{});
   if (!config.analytics?.enabled) analyticsActions.querySelector('small').textContent='閲覧記録の収集はサーバー設定で停止しています。過去の記録は確認できます。';
   const logout = async () => {
-    try { clearThumbnails(); document.querySelectorAll('dialog').forEach(node=>node.close()); await Promise.all([flushAnalytics(),flushProgress()]); await stopAnalytics(); await api('/auth/logout', { method: 'POST' }); setSession(null); loadGeneration++; shelves = []; items = []; activeShelf = null; renderAuth(); }
+    try { clearThumbnails(); document.querySelectorAll('dialog,.viewer-screen').forEach(node=>node.close()); await Promise.all([flushAnalytics(),flushProgress()]); await stopAnalytics(); await api('/auth/logout', { method: 'POST' }); setSession(null); loadGeneration++; shelves = []; items = []; activeShelf = null; renderAuth(); }
     catch (error) { report(error); }
   };
   document.querySelector('#logout').onclick = logout;
@@ -194,6 +207,13 @@ function renderShell() {
   document.querySelector('#search').oninput = e => { search = e.target.value; renderItems(); };
   document.querySelector('#sort').onchange = e => { sort = e.target.value; renderItems(); };
   document.querySelectorAll('[data-filter]').forEach(button => { button.onclick = () => { filter = button.dataset.filter; renderItems(); }; });
+}
+
+function showSettings() {
+  openSettings({ dialog, api, esc, theme, apkUrl: config.androidApkUrl || defaultApkUrl, version: config.version || '0.2.0-beta', manageShelf: id => openMembers(id),
+    onUpdated: async result => { closeDownloads(); setSession(result); await stopAnalytics().catch(() => {}); await startAnalytics(); renderShell(); await refresh(); toast('アカウント情報を更新しました。他の端末では再ログインが必要です。'); },
+    onDeleted: async () => { const results=await Promise.allSettled([clearAccountDownloads(),clearAccountAnalytics(),clearAccountProgress()]);const cacheError=results.some(r=>r.status==='rejected');clearThumbnails();setSession(null);loadGeneration++;shelves=[];items=[];activeShelf=null;renderAuth();toast(cacheError?'アカウントを削除しました。端末内データを消去できませんでした。ブラウザーのサイトデータを削除してください。':'アカウントと個人の記録、この端末のダウンロードを削除しました。'); }
+  });
 }
 
 async function refresh() {
@@ -388,8 +408,8 @@ function openUpload() {
     finally { button.disabled = false; form.querySelectorAll('input, select').forEach(el => { el.disabled = false; }); if (node.isConnected) showSelection(); activeUpload = null; }
   };
 }
-async function openMembers() {
-  const shelf = shelves.find(s => s.id === activeShelf);
+async function openMembers(requestedShelfId = activeShelf) {
+  const shelf = shelves.find(s => s.id === (typeof requestedShelfId === 'string' ? requestedShelfId : activeShelf));
   if (!shelf) return;
   const node = dialog(`${shelf.name} の共有設定`, `<div class="modal-body"><p class="muted">登録済みのアカウントをメールアドレスで追加します。</p><div class="permission-note"><strong>管理者</strong> 閲覧・追加・削除・メンバー管理<br><strong>編集者</strong> 閲覧・追加・削除　 <strong>閲覧者</strong> 閲覧のみ</div><div id="member-list" class="member-list">読み込み中…</div><form id="member-form"><label>メンバーを追加<input name="email" type="email" required placeholder="member@example.com" autocomplete="off"></label><div class="member-add-row"><select name="role" aria-label="追加するメンバーの権限"><option value="viewer">閲覧者</option><option value="editor">編集者</option></select><button class="button primary" type="submit">${icon('plus')}追加する</button></div><p class="form-error" role="alert" hidden></p></form></div>`);
   async function reload() {
@@ -402,6 +422,19 @@ async function openMembers() {
       catch (error) { report(error); }
       await reload().catch(report);
     }; });
+    for (const member of response.members.filter(member => member.role !== 'owner')) {
+      const row = node.querySelector(`[data-role="${member.id}"]`).parentElement;
+      const transfer = document.createElement('button'); transfer.type = 'button'; transfer.className = 'text-button owner-transfer'; transfer.textContent = '管理を引き継ぐ';
+      transfer.onclick = () => {
+        const confirm = dialog('本棚の管理を引き継ぐ', `<form class="modal-body"><p>「${esc(shelf.name)}」の管理者を${esc(member.name)}さんに変更します。あなたは編集者になり、共有設定を変更できなくなります。</p><label>現在のパスワード<input name="currentPassword" type="password" autocomplete="current-password" required maxlength="128"></label><p class="form-error" role="alert" hidden></p><button class="button primary" type="submit">管理者を変更する</button></form>`);
+        confirm.querySelector('form').onsubmit = async event => {
+          event.preventDefault(); const form = event.currentTarget, button = form.querySelector('button'), error = form.querySelector('.form-error'); button.disabled = true; error.hidden = true;
+          try { await api(`/shelves/${shelf.id}/owner`, { method: 'PUT', body: { userId: member.id, currentPassword: form.elements.currentPassword.value } }); form.reset(); confirm.close(); node.close(); await refresh(); toast('本棚の管理を引き継ぎました。'); }
+          catch (err) { error.textContent = err.message; error.hidden = false; button.disabled = false; }
+        };
+      };
+      row.append(transfer);
+    }
     node.querySelectorAll('[data-remove]').forEach(button => { button.onclick = async () => {
       const member = response.members.find(m => m.id === button.dataset.remove);
       if (!window.confirm(`${member.name} さんの「${shelf.name}」へのアクセスを解除しますか？`)) return;
@@ -434,8 +467,11 @@ function deleteItem(item) {
 async function openViewer(item,{startAtBeginning=false,autoplay=false}={}) {
   const progressActor=getSession()?.user.id,progressServer=getEndpoint();
   const isPdf = item.mimeType === 'application/pdf';
-  const node = dialog(item.title, '<div class="viewer-body"><p class="viewer-loading" role="status">読み込んでいます…</p></div>', 'viewer-modal');
+  document.querySelectorAll('.viewer-screen').forEach(screen=>screen.close());
+  videoPreviews?.setPaused('viewer', true);
+  const node = createViewerScreen({title:item.title,kind:item.kind,onClose:()=>videoPreviews?.setPaused('viewer',false)});
   const body = node.querySelector('.viewer-body');
+  body.innerHTML='<p class="viewer-loading" role="status">読み込んでいます…</p>';
   const tracker = trackAsset(item.id);
   let cleanup,progress,downloaded;
   const seriesNavigation=mountSeriesNavigation({node,body,item,api,esc,open:openViewer,enabled:seriesContinuous,onEnabled:value=>{seriesContinuous=value;},
@@ -488,25 +524,14 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false}={}) {
     } else {
       const ticket = downloaded?null:await api(`/items/${item.id}/playback-ticket`, { method: 'POST' });
       if (!node.isConnected) return;
-      body.innerHTML = '<video controls playsinline preload="metadata" aria-label="動画プレーヤー"></video><div class="video-note">再生できない場合は、MP4（H.264 / AAC）形式の動画をお試しください。<button class="text-button" id="renew-video" type="button">再接続</button></div>';
-      const video = body.querySelector('video');
-      cleanup=bindVideoProgress(video,progress);
+      const player=mountVideoPlayer(body,{onError,reconnect:async()=>{body.querySelector('.viewer-error')?.remove();return downloaded?await downloaded.reconnect():absoluteUrl((await api(`/items/${item.id}/playback-ticket`,{method:'POST'})).url);}});
+      const video = player.video;
+      const videoProgress=bindVideoProgress(video,progress);
+      cleanup=()=>{videoProgress();player.dispose();};cleanup.restart=()=>videoProgress.restart();
       tracker?.video(video);
       seriesNavigation.bindVideo(video,{autoplay});
       video.src = downloaded?downloaded.url(0):absoluteUrl(ticket.url);
       if(downloaded)video.setAttribute('controlsList','nodownload');
-      video.onerror = () => onError(new Error('動画を再生できません。形式や接続を確認するか、再接続してください。'));
-      body.querySelector('#renew-video').onclick = async () => {
-        try {
-          const position = video.currentTime;
-          const nextUrl = downloaded?await downloaded.reconnect():absoluteUrl((await api(`/items/${item.id}/playback-ticket`, { method: 'POST' })).url);
-          if (!node.isConnected) return;
-          body.querySelector('.viewer-error')?.remove();
-          video.src = nextUrl;
-          video.addEventListener('loadedmetadata', () => { video.currentTime = position; }, { once: true });
-          video.load();
-        } catch (error) { onError(error); }
-      };
     }
     restart.disabled=false;
     if(downloaded){const badge=document.createElement('span');badge.className='download-source';badge.textContent='端末の暗号化データを使用（今回のアクセス権確認済み）';progressBar.prepend(badge);}
@@ -555,7 +580,7 @@ async function loadConfig() {
 window.addEventListener('mirea:unauthorized', () => {
   stopAnalytics();
   loadGeneration++;
-  document.querySelectorAll('dialog').forEach(node => node.close());
+  document.querySelectorAll('dialog,.viewer-screen').forEach(node => node.close());
   items = []; shelves = []; activeShelf = null;
   renderAuth();
   toast('ログインの有効期限が切れました。もう一度ログインしてください。');

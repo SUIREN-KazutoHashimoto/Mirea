@@ -19,6 +19,7 @@ import { registerAnalytics } from './analytics.js';
 import { registerProgress, publicProgress } from './progress.js';
 import { registerDownloads } from './downloads.js';
 import { registerSeries, shelfSeries, shelfSeriesMembership } from './series.js';
+import { registerAccounts } from './accounts.js';
 import packageInfo from '../package.json' with {type:'json'};
 
 const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -120,7 +121,8 @@ export async function createApp(options = {}) {
   const authLimits = { config: { rateLimit: options.rateLimit === false ? false : { max: 10, timeWindow: '1 minute' } } };
   app.get('/api/health', async () => ({ status: 'ok',version:packageInfo.version }));
   let analytics;
-  app.get('/api/v1/config', async () => ({ allowRegistration, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, uploadChunkBytes: chunkSize, uploadSessionHours: 24, analytics }));
+  app.get('/api/v1/config', async () => ({ allowRegistration, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, uploadChunkBytes: chunkSize, uploadSessionHours: 24, analytics,
+    version: packageInfo.version, androidApkUrl: 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.2.0beta/mirea-0.2.0beta-android-debug.apk' }));
   app.post('/api/v1/auth/register', { ...authLimits, schema: { body: object({ email, password, name: text(80) }) } }, async (req, reply) => {
     if (!allowRegistration) throw httpError(403, '新規登録は現在停止しています。');
     const normalizedEmail = req.body.email.trim().toLowerCase();
@@ -196,9 +198,10 @@ export async function createApp(options = {}) {
     const series=shelfSeriesMembership(db,req.params.id);
     return { shelf: { ...shelf, role }, series:shelfSeries(db,req.params.id), items: db.prepare('SELECT * FROM items WHERE shelf_id=? ORDER BY created_at DESC, id').all(req.params.id).map(item=>({...publicItem(item),series:series.get(item.id)??null,progress:progress.get(item.id)??null})) };
   });
-  await registerResumableUploads(app, {
+  const uploads = await registerResumableUploads(app, {
     db, media, uploadDir, stagingDir, booksDir, thumbnailDir, authenticate, membership, maxUploadBytes, chunkSize, publicItem
   });
+  registerAccounts(app, { db, authenticate, membership, loginResult, cleanupUploads: uploads.cleanupUploads, rateLimit: options.rateLimit });
   const videoPreviews = await registerVideoPreviews(app, { db, media, dataDir, uploadDir, authenticate, findItem });
   analytics = await registerAnalytics(app, { db, authenticate, membership, findItem, options });
   registerProgress(app,{db,authenticate,findItem,options});

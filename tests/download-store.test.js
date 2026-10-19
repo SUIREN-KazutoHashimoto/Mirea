@@ -41,3 +41,14 @@ test('incomplete packages cannot become ready; resume preserves chunks; deletion
   await assert.rejects(()=>c.store.putChunk(key,replacement.id,0,1,new Uint8Array(32).buffer,'late'));
   assert.deepEqual([...c.db.objectStoreNames],['chunks','packages'],'there is no persistent key store');
 });
+test('account deletion purges only its partition and ciphertext, including incomplete downloads',async t=>{
+  const c=await setup(t),a=c.manifest(),b=c.manifest(),other=c.manifest();
+  for(const [key,partition,m] of [['a','server|user',a],['b','server|user',b],['other','other-server|user',other]]){
+    await c.store.savePackage(key,partition,m);await c.fill(key,m);
+  }
+  await c.store.removePartition('server|user');
+  assert.deepEqual(await c.store.list('server|user'),[]);
+  assert.equal(await c.store.count(a.id),0);assert.equal(await c.store.count(b.id),0);
+  assert.equal((await c.store.list('other-server|user')).length,1);assert.equal(await c.store.count(other.id),2);
+  await assert.rejects(()=>c.store.putChunk('a',a.id,0,0,new ArrayBuffer(8),'late'));
+});

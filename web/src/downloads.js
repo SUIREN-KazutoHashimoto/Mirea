@@ -46,6 +46,7 @@ export function ensureDownloadWorker(){
   })().catch(error=>{workerReady=null;throw error;});
 }
 export async function listDownloads(){const ctx=context(),store=await openDownloadDb();const rows=await store.list(ctx.partition);return current(ctx)?rows:[];}
+export async function clearAccountDownloads(){const ctx=context();closeDownloads();if(!globalThis.indexedDB)return;const store=await openDownloadDb();await store.removePartition(ctx.partition);}
 export async function removeDownload(assetId){const ctx=context(),store=await openDownloadDb();for(const [id,grant] of [...grants])if(grant.context.partition===ctx.partition && grant.manifest.assetId===assetId){lock(id);grant.onLock?.();}await store.remove(packageKey(ctx,assetId));}
 const delay=(ms,signal)=>new Promise((resolve,reject)=>{
   const abort=()=>{clearTimeout(timer);reject(new DOMException('中断しました。','AbortError'));};

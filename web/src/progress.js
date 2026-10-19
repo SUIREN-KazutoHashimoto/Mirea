@@ -5,6 +5,12 @@ const active=new Set(),finishing=new Set();
 let nativeActive=true;
 export function progressNativeState(isActive){nativeActive=isActive;if(!isActive)for(const manager of active)manager.checkpoint();}
 export async function flushProgress(){await Promise.all([...active].map(manager=>manager.checkpoint()).concat([...finishing]));}
+export async function clearAccountProgress(){
+  const user=getSession()?.user.id,endpoint=getEndpoint();if(!user)return;
+  await flushProgress();
+  const prefix=`mirea.progress.v1|${endpoint || location.origin}|${user}|`;
+  for(const key of Object.keys(localStorage))if(key.startsWith(prefix))localStorage.removeItem(key);
+}
 
 function cacheFor(partition,assetId){
   const prefix=`mirea.progress.v1|${partition}|`,key=prefix+assetId;

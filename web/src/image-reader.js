@@ -1,19 +1,16 @@
 import { api, authenticatedBlob } from './api.js';
 import { bookPosition,restoreBookPosition } from './progress-core.js';
 import { advanceBook } from './series-continuation.js';
+import { createBookChrome, bookScale } from './book-viewer.js';
 
 export function openImageBook(container, item, onError, tracker, progress, downloaded, seriesNavigation) {
-  container.innerHTML = `<div class="pdf-toolbar image-toolbar"><button class="icon-button previous" aria-label="前のページ">←</button>
-    <label><input class="page-input" type="number" min="1" value="1" aria-label="ページ番号"> <span class="page-total">/ ${item.pageCount}</span></label>
-    <button class="icon-button next" aria-label="次のページ">→</button><span class="toolbar-divider"></span>
-    <label class="sr-only" for="image-zoom">表示倍率</label><select id="image-zoom"><option value="fit">幅に合わせる</option><option value="1">100%</option><option value="1.5">150%</option><option value="2">200%</option></select></div>
-    <div class="image-stage" tabindex="0" aria-label="画像の本"><p class="image-loading" role="status">ページを読み込んでいます…</p><img class="image-page" alt="1ページ目" hidden></div>`;
+  const chrome = createBookChrome(container, { kind: 'image-book', total: item.pageCount, onError });
   const stage = container.querySelector('.image-stage');
   const image = container.querySelector('.image-page');
   const input = container.querySelector('.page-input');
   const previous = container.querySelector('.previous');
   const next = container.querySelector('.next');
-  const zoom = container.querySelector('select');
+  const zoom = container.querySelector('.book-zoom');
   const loading = container.querySelector('.image-loading');
   let pages = [], current = 1, displayedPage=1, ready=false,disposed = false, request, objectUrl, generation = 0,restartRequested=false;
   const updateNext=()=>{
@@ -21,7 +18,7 @@ export function openImageBook(container, item, onError, tracker, progress, downl
     next.disabled=!ready || (current===pages.length && !continues);
     next.textContent=continues?'次の作品 →':'→';next.setAttribute('aria-label',continues?'次のアセットへ読み進む':'次のページ');
   };
-  const publishPage=()=>{seriesNavigation?.bookState({ready,page:current,total:pages.length});updateNext();};
+  const publishPage=()=>{chrome.update({ready,page:current,total:pages.length});seriesNavigation?.bookState({ready,page:current,total:pages.length});updateNext();};
   const unsubscribeSeries=seriesNavigation?.subscribe(updateNext);
   if(progress?.initial?.zoom)zoom.value=progress.initial.zoom;
   progress?.bind(()=>ready?bookPosition(stage,displayedPage,zoom.value):null);
@@ -30,7 +27,8 @@ export function openImageBook(container, item, onError, tracker, progress, downl
     const page = pages[current - 1];
     if (!page) return;
     const anchor=ready?bookPosition(stage,displayedPage,zoom.value):null;
-    const scale = zoom.value === 'fit' ? Math.min(1, (stage.clientWidth - 40) / page.width) : Number(zoom.value);
+    const scale = bookScale(page.width,page.height,stage.clientWidth,stage.clientHeight,zoom.value,1);
+    stage.style.touchAction=zoom.value==='fit'?'pan-y pinch-zoom':'pan-x pan-y pinch-zoom';
     image.style.width = `${Math.max(1, page.width * scale)}px`;
     if(anchor)restoreBookPosition(stage,anchor);
   }
@@ -73,12 +71,7 @@ export function openImageBook(container, item, onError, tracker, progress, downl
   let scrollTimer;
   const scroll = () => { if(ready)progress?.capture();clearTimeout(scrollTimer); scrollTimer=setTimeout(()=>tracker?.viewport(),150); };
   stage.addEventListener('scroll',scroll,{passive:true});
-  const keydown = event => {
-    if (['INPUT', 'SELECT', 'TEXTAREA'].includes(event.target.tagName)) return;
-    if (['ArrowLeft', 'PageUp'].includes(event.key)) { event.preventDefault(); go(current - 1); }
-    if (['ArrowRight', 'PageDown'].includes(event.key)) { event.preventDefault(); advance(); }
-  };
-  container.addEventListener('keydown', keydown);
+  chrome.bind({go,next:advance,previous:()=>go(current-1),outline:()=>chrome.outline([])});
   const observer = new ResizeObserver(resize);
   observer.observe(stage);
   previous.disabled = next.disabled = true;
@@ -98,7 +91,7 @@ export function openImageBook(container, item, onError, tracker, progress, downl
     request?.abort();
     observer.disconnect();
     clearTimeout(scrollTimer); stage.removeEventListener('scroll',scroll);
-    container.removeEventListener('keydown', keydown);
+    chrome.dispose();
     if (objectUrl) URL.revokeObjectURL(objectUrl);
   };
   cleanup.restart=()=>{restartRequested=true;zoom.value='fit';go(1);};return cleanup;

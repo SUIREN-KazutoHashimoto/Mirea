@@ -79,7 +79,35 @@ export function openDatabase(filename) {
         UPDATE schema_version SET version = 2;
       `));
     } finally { db.exec('PRAGMA foreign_keys = ON'); }
-  } else if (![2, 3, 4, 5, 6, 7, 8].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
+  } else if (![2, 3, 4, 5, 6, 7, 8, 9].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
+  if (version !== 9) {
+    // Account deletion removes attribution, not another member's shared assets.
+    // Disable FK actions only while replacing the parent table, preserving all
+    // child rows; recreate the series guards below before serving requests.
+    db.exec('PRAGMA foreign_keys = OFF');
+    try {
+      transaction(db, () => db.exec(`
+        DROP TRIGGER IF EXISTS series_same_shelf_insert;
+        DROP TRIGGER IF EXISTS series_same_shelf_update;
+        DROP TRIGGER IF EXISTS series_asset_shelf_update;
+        DROP TRIGGER IF EXISTS series_shelf_update;
+        DROP TRIGGER IF EXISTS series_asset_removed;
+        CREATE TABLE items_v9 (
+          id TEXT PRIMARY KEY, shelf_id TEXT NOT NULL REFERENCES shelves(id) ON DELETE CASCADE,
+          title TEXT NOT NULL, filename TEXT NOT NULL,
+          mime_type TEXT NOT NULL CHECK(mime_type IN ('application/pdf','video/mp4','video/webm','application/vnd.mirea.image-book')),
+          size INTEGER NOT NULL CHECK(size > 0), uploaded_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+          created_at INTEGER NOT NULL, page_count INTEGER NOT NULL DEFAULT 1 CHECK(page_count > 0),
+          thumbnail_ready INTEGER NOT NULL DEFAULT 0 CHECK(thumbnail_ready IN (0,1))
+        );
+        INSERT INTO items_v9 SELECT * FROM items;
+        DROP TABLE items;
+        ALTER TABLE items_v9 RENAME TO items;
+        CREATE INDEX items_shelf ON items(shelf_id,created_at);
+        UPDATE schema_version SET version=9;
+      `));
+    } finally { db.exec('PRAGMA foreign_keys = ON'); }
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS image_pages (
       item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
@@ -234,7 +262,7 @@ export function openDatabase(filename) {
       BEGIN SELECT RAISE(ABORT, 'Remove assets before moving series'); END;
     CREATE TRIGGER IF NOT EXISTS series_asset_removed AFTER DELETE ON series_items
       BEGIN UPDATE series SET revision=revision+1 WHERE id=OLD.series_id; END;
-    UPDATE schema_version SET version=8;
+    UPDATE schema_version SET version=9;
   `);
   if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Database foreign key validation failed');
   return db;
