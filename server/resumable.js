@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, rename, unlink } from 'node:fs/promises';
+import { mkdir, rename, unlink, open, writeFile } from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { join } from 'node:path';
 import { Transform, Readable } from 'node:stream';
@@ -8,9 +8,10 @@ import { httpError } from './security.js';
 import { IMAGE_TYPES, MAX_BOOK_PAGES, MAX_IMAGE_BYTES, removeItemDirectory } from './media.js';
 import { EPUB_MIME, MAX_EPUB_BYTES } from './ebook-types.js';
 import { publishStagedUpload } from './upload-publish.js';
+import { VIDEO_TYPES, isVideo } from './video-types.js';
 
 const UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
-const MIME_TYPES = ['application/pdf', EPUB_MIME, 'video/mp4', 'video/webm', ...IMAGE_TYPES];
+const MIME_TYPES = ['application/pdf', EPUB_MIME, ...VIDEO_TYPES, ...IMAGE_TYPES];
 const integer = { type: 'integer', minimum: 0 };
 
 export async function registerResumableUploads(app, context) {
@@ -25,7 +26,7 @@ export async function registerResumableUploads(app, context) {
     const upload = get(req.params.id);
     if (!upload || upload.user_id !== req.user.id) throw httpError(404, 'アップロードが見つかりません。');
     membership(upload.shelf_id, req.user.id, ['owner', 'editor']);
-    if (upload.expires_at <= Date.now()) throw httpError(410, 'アップロードの有効期限が切れました。ファイルを選択し直してください。');
+    if (upload.expires_at <= Date.now() && upload.state === 'uploading') throw httpError(410, 'アップロードの有効期限が切れました。ファイルを選択し直してください。');
     return upload;
   }
   function authorizeJob(upload) {
@@ -34,16 +35,18 @@ export async function registerResumableUploads(app, context) {
     if (!session) throw httpError(401, 'ログインの有効期限が切れました。');
     membership(upload.shelf_id, upload.user_id, ['owner', 'editor']);
   }
-  function status(upload) {
-    const parts = db.prepare('SELECT file_index,part_index,size,sha256 FROM upload_parts WHERE upload_id=? ORDER BY file_index,part_index').all(upload.id);
+  function status(upload,detail=true) {
+    const parts = detail?db.prepare('SELECT file_index,part_index,size,sha256 FROM upload_parts WHERE upload_id=? ORDER BY file_index,part_index').all(upload.id):[];
     const item = upload.state === 'complete' && db.prepare('SELECT * FROM items WHERE id=?').get(upload.id);
     return {
       id: upload.id, state: upload.state, chunkSize: upload.chunk_size, expiresAt: upload.expires_at,
+      title: upload.title, retainOriginal: Boolean(upload.retain_original), processing: JSON.parse(upload.processing_json),
+      sourceRetained: upload.state === 'failed' && isVideo(JSON.parse(upload.files_json)[0].mime),
       receivedBytes: parts.reduce((sum, part) => sum + part.size, 0),
-      files: JSON.parse(upload.files_json).map((file, index) => {
+      files: detail?JSON.parse(upload.files_json).map((file, index) => {
         const received = parts.filter(part => part.file_index === index);
         return { ...file, receivedParts: received.map(part => part.part_index), receivedHashes: Object.fromEntries(received.map(part => [part.part_index, part.sha256])) };
-      }),
+      }):undefined,
       ...(upload.error ? { error: upload.error } : {}), ...(item ? { item: publicItem(item) } : {})
     };
   }
@@ -56,7 +59,7 @@ export async function registerResumableUploads(app, context) {
     await Promise.all([removeItemDirectory(transferDir, id), removeItemDirectory(stagingDir, id)]);
   }
   function schedule(id) {
-    if (jobs.has(id) || closing) return;
+    if (jobs.has(id) || closing) return jobs.get(id);
     const job = queue.then(async () => {
       const upload = get(id);
       if (!upload || upload.state !== 'processing') { if (upload?.state === 'cancelled') await discard(id); return; }
@@ -93,19 +96,25 @@ export async function registerResumableUploads(app, context) {
         }
         await publishStagedUpload(context, upload, () => authorizeJob(upload));
       } catch (error) {
+        if(error.code==='SERVER_CLOSING')return; // durable processing state is recovered on startup
         db.prepare("UPDATE upload_sessions SET state='failed',error=? WHERE id=? AND state='processing'").run(
           error.statusCode ? error.message : 'メディアの保存に失敗しました。選択し直してください。', id);
         app.log.error({ err: error, uploadId: id }, 'Upload processing failed');
       } finally {
-        await discard(id);
+        // A failed video remains retryable indefinitely. Never sweep its source
+        // just because the 24-hour *transfer* deadline elapsed.
+        const state=get(id)?.state;
+        if (!state || state==='complete' || state==='cancelled' || state==='failed'&&!isVideo(JSON.parse(upload.files_json)[0].mime)) await discard(id);
       }
     }).catch(error => { app.log.error({ err: error, uploadId: id }, 'Upload cleanup failed'); });
     queue = job;
     jobs.set(id, job);
     job.finally(() => jobs.delete(id));
+    return job;
   }
   async function sweep() {
-    for (const row of db.prepare('SELECT id FROM upload_sessions WHERE expires_at<=?').all(Date.now())) {
+    for (const row of db.prepare("SELECT id,state,files_json FROM upload_sessions WHERE expires_at<=? AND state != 'processing'").all(Date.now())) {
+      if(row.state==='failed'&&isVideo(JSON.parse(row.files_json)[0].mime))continue;
       if (jobs.has(row.id) || locked.has(row.id)) continue;
       await exclusive(row.id, async () => {
         await discard(row.id);
@@ -114,6 +123,7 @@ export async function registerResumableUploads(app, context) {
     }
   }
   await sweep();
+  for (const row of db.prepare("SELECT id FROM upload_sessions WHERE state IN ('complete','cancelled')").all()) await discard(row.id);
   // A single container owns the SQLite volume and queue. Durable processing jobs
   // are reassembled and retried after restart; no browser connection is required.
   for (const row of db.prepare("SELECT id FROM upload_sessions WHERE state='processing'").all()) schedule(row.id);
@@ -128,6 +138,7 @@ export async function registerResumableUploads(app, context) {
       type: 'object', additionalProperties: false, required: ['title', 'files'],
       properties: {
         title: { type: 'string', minLength: 1, maxLength: 200 },
+        retainOriginal: { type: 'boolean', default: false },
         files: { type: 'array', minItems: 1, maxItems: MAX_BOOK_PAGES, items: {
           type: 'object', additionalProperties: false, required: ['filename', 'mime', 'size'],
           properties: { filename: { type: 'string', minLength: 1, maxLength: 255 }, mime: { enum: MIME_TYPES }, size: { type: 'integer', minimum: 1, maximum: maxUploadBytes } }
@@ -143,15 +154,15 @@ export async function registerResumableUploads(app, context) {
     if (files.some(file => IMAGE_TYPES.includes(file.mime) && file.size > MAX_IMAGE_BYTES) || files.reduce((sum, file) => sum + file.size, 0) > maxUploadBytes) {
       throw httpError(413, 'アップロードの合計、または画像1枚のサイズ上限を超えています。');
     }
-    const active = db.prepare("SELECT COUNT(*) AS n FROM upload_sessions WHERE user_id=? AND state IN ('uploading','processing') AND expires_at>?").get(req.user.id, Date.now()).n;
+    const active = db.prepare("SELECT COUNT(*) AS n FROM upload_sessions WHERE user_id=? AND (state IN ('processing','failed') OR (state='uploading' AND expires_at>?))").get(req.user.id, Date.now()).n;
     if (active >= 3) throw httpError(429, '同時アップロードは3件までです。不要なアップロードを取り消してください。');
     const id = randomUUID(), now = Date.now();
     try {
       // Count and reserve synchronously before filesystem I/O: concurrent
       // requests cannot all pass the per-user active-upload limit.
-      db.prepare(`INSERT INTO upload_sessions(id,shelf_id,user_id,session_id,title,files_json,chunk_size,state,created_at,expires_at)
-        VALUES(?,?,?,?,?,?,?,'uploading',?,?)`).run(id, req.params.id, req.user.id, req.session.id, title,
-        JSON.stringify(files.map(file => ({ ...file, filename: file.filename.replaceAll('\\', '/').split('/').pop() || 'file' }))), chunkSize, now, now + UPLOAD_TTL_MS);
+      db.prepare(`INSERT INTO upload_sessions(id,shelf_id,user_id,session_id,title,files_json,chunk_size,state,created_at,expires_at,retain_original)
+        VALUES(?,?,?,?,?,?,?,'uploading',?,?,?)`).run(id, req.params.id, req.user.id, req.session.id, title,
+        JSON.stringify(files.map(file => ({ ...file, filename: file.filename.replaceAll('\\', '/').split('/').pop() || 'file' }))), chunkSize, now, now + UPLOAD_TTL_MS, req.body.retainOriginal && isVideo(files[0].mime)?1:0);
       await mkdir(join(transferDir, id), { mode: 0o700 });
       authenticate(req);
       membership(req.params.id, req.user.id, ['owner', 'editor']);
@@ -159,6 +170,17 @@ export async function registerResumableUploads(app, context) {
     return reply.code(201).send(status(get(id)));
   });
   app.get('/api/v1/uploads/:id', auth, async req => status(owned(req)));
+  app.get('/api/v1/uploads', auth, async req => ({uploads:db.prepare("SELECT u.* FROM upload_sessions u JOIN memberships m ON m.shelf_id=u.shelf_id AND m.user_id=u.user_id WHERE u.user_id=? AND m.role IN ('owner','editor') AND u.state IN ('processing','failed') ORDER BY u.created_at DESC LIMIT 100").all(req.user.id).map(row=>status(row,false))}));
+  app.post('/api/v1/uploads/:id/retry', auth, async(req,reply)=>{
+    await exclusive(req.params.id,async()=>{
+      const upload=owned(req);
+      if(upload.state!=='failed'||!isVideo(JSON.parse(upload.files_json)[0].mime))throw httpError(409,'再試行できる動画ではありません。');
+      if(jobs.has(upload.id))throw httpError(409,'直前の処理を終了しています。少し待って再試行してください。');
+      db.prepare("UPDATE upload_sessions SET state='processing',error=NULL,session_id=?,processing_json='{}' WHERE id=?").run(req.session.id,upload.id);
+      schedule(upload.id);
+    });
+    return reply.code(202).send(status(get(req.params.id)));
+  });
 
   await app.register(async routes => {
     routes.addContentTypeParser('application/octet-stream', (_req, payload, done) => done(null, payload));
@@ -232,7 +254,32 @@ export async function registerResumableUploads(app, context) {
     });
     return reply.code(204).send();
   });
-  return { async cleanupUploads(ids) {
+  return {
+    // Compatibility API: multipart clients enter the same durable, serialized
+    // processing path as resumable uploads; they cannot bypass normalization.
+    async publishMultipartVideo({id,shelfId,userId,sessionId,title,file,retainOriginal}) {
+      const now=Date.now();
+      db.prepare(`INSERT INTO upload_sessions(id,shelf_id,user_id,session_id,title,files_json,chunk_size,state,created_at,expires_at,retain_original)
+        VALUES(?,?,?,?,?,?,?,'uploading',?,?,?)`).run(id,shelfId,userId,sessionId,title,JSON.stringify([file]),chunkSize,now,now+UPLOAD_TTL_MS,retainOriginal?1:0);
+      try {
+        await mkdir(join(transferDir,id),{mode:0o700});
+        const handle=await open(join(stagingDir,id,'raw-1'),'r');
+        try {
+          for(let part=0;part<Math.ceil(file.size/chunkSize);part++){
+            const bytes=Buffer.alloc(Math.min(chunkSize,file.size-part*chunkSize));let n=0;
+            while(n<bytes.length){const result=await handle.read(bytes,n,bytes.length-n,part*chunkSize+n);if(!result.bytesRead)throw new Error('Incomplete multipart source');n+=result.bytesRead;}
+            await writeFile(join(transferDir,id,`0-${part}`),bytes,{flag:'wx',mode:0o600});
+            db.prepare('INSERT INTO upload_parts VALUES(?,?,?,?,?)').run(id,0,part,bytes.length,createHash('sha256').update(bytes).digest('hex'));
+          }
+        }finally{await handle.close();}
+        db.prepare("UPDATE upload_sessions SET state='processing' WHERE id=?").run(id);
+        await schedule(id);
+        const state=get(id);
+        if(state.state!=='complete')throw httpError(422,`${state.error||'動画を変換できませんでした。'} 処理状況から再試行できます。`);
+        return publicItem(db.prepare('SELECT * FROM items WHERE id=?').get(id));
+      }catch(error){if(get(id)?.state==='uploading'){await discard(id);db.prepare('DELETE FROM upload_sessions WHERE id=?').run(id);}throw error;}
+    },
+    async cleanupUploads(ids) {
     for (const id of ids) {
       try { await discard(id); }
       catch (error) { app.log.error({ err: error, uploadId: id }, 'Deleted account upload cleanup requires attention'); }

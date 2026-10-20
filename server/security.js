@@ -47,6 +47,13 @@ export function matchesFileType(mime, head) {
   if (mime === 'application/pdf') return head.subarray(0, 5).toString() === '%PDF-';
   if (mime === 'video/mp4') return head.length >= 12 && head.subarray(4, 8).toString() === 'ftyp';
   if (mime === 'video/webm') return head.length >= 4 && head.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
+  if (mime === 'video/x-matroska') return matchesFileType('video/webm',head);
+  if (mime === 'video/quicktime') return head.length>=8 && ['ftyp','moov','mdat','wide','free'].includes(head.subarray(4,8).toString());
+  if (mime === 'video/x-msvideo') return head.length>=12 && head.subarray(0,4).toString()==='RIFF' && head.subarray(8,12).toString()==='AVI ';
+  if (['video/x-ms-wmv','video/x-ms-asf'].includes(mime)) return head.length>=16 && head.subarray(0,16).equals(Buffer.from('3026b2758e66cf11a6d900aa0062ce6c','hex'));
+  if (mime === 'video/mp2t') return head[0]===0x47 || head[4]===0x47;
+  if (mime === 'video/x-flv') return head.subarray(0,3).toString()==='FLV';
+  if (mime === 'video/mpeg') return head.length>=4 && head[0]===0 && head[1]===0 && head[2]===1 && [0xba,0xb3].includes(head[3]);
   if (mime === 'image/jpeg') return head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff;
   if (mime === 'image/png') return head.length >= 8 && head.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
   if (mime === 'image/webp') return head.length >= 12 && head.subarray(0, 4).toString() === 'RIFF' && head.subarray(8, 12).toString() === 'WEBP';

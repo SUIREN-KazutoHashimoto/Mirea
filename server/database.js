@@ -79,8 +79,8 @@ export function openDatabase(filename) {
         UPDATE schema_version SET version = 2;
       `));
     } finally { db.exec('PRAGMA foreign_keys = ON'); }
-  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
-  if (version !== 10) {
+  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
+  if (version < 10) {
     // v10 adds EPUB while retaining v9's nullable uploader attribution.
     // Account deletion removes attribution, not another member's shared assets.
     // Disable FK actions only while replacing the parent table, preserving all
@@ -229,8 +229,7 @@ export function openDatabase(filename) {
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       asset_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
       manifest_json TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      UNIQUE(user_id,asset_id)
+      created_at INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS series (
       id TEXT PRIMARY KEY,
@@ -263,8 +262,28 @@ export function openDatabase(filename) {
       BEGIN SELECT RAISE(ABORT, 'Remove assets before moving series'); END;
     CREATE TRIGGER IF NOT EXISTS series_asset_removed AFTER DELETE ON series_items
       BEGIN UPDATE series SET revision=revision+1 WHERE id=OLD.series_id; END;
-    UPDATE schema_version SET version=10;
+    CREATE TABLE IF NOT EXISTS video_assets (
+      item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+      metadata_json TEXT NOT NULL,
+      original_retained INTEGER NOT NULL CHECK(original_retained IN (0,1))
+    );
+    UPDATE schema_version SET version=11;
   `);
+  // Multiple devices may save different qualities. Preserve every old manifest
+  // ID/key binding while removing the former one-registration-per-asset limit.
+  if(/UNIQUE\s*\(user_id,\s*asset_id\)/i.test(db.prepare("SELECT sql FROM sqlite_master WHERE name='encrypted_downloads'").get().sql))transaction(db,()=>db.exec(`
+    CREATE TABLE encrypted_downloads_v11 (
+      id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      asset_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,manifest_json TEXT NOT NULL,created_at INTEGER NOT NULL
+    );
+    INSERT INTO encrypted_downloads_v11 SELECT * FROM encrypted_downloads;
+    DROP TABLE encrypted_downloads;
+    ALTER TABLE encrypted_downloads_v11 RENAME TO encrypted_downloads;
+  `));
+  db.exec('CREATE INDEX IF NOT EXISTS downloads_user_asset ON encrypted_downloads(user_id,asset_id)');
+  const uploadColumns = db.prepare('PRAGMA table_info(upload_sessions)').all();
+  if (!uploadColumns.some(column => column.name === 'retain_original')) db.exec('ALTER TABLE upload_sessions ADD COLUMN retain_original INTEGER NOT NULL DEFAULT 0 CHECK(retain_original IN (0,1))');
+  if (!uploadColumns.some(column => column.name === 'processing_json')) db.exec("ALTER TABLE upload_sessions ADD COLUMN processing_json TEXT NOT NULL DEFAULT '{}'");
   if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Database foreign key validation failed');
   return db;
 }

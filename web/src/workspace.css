@@ -17,3 +17,11 @@ label{color:var(--text)}input:not([type=file]),select,textarea{background:var(--
 @media(max-width:760px){.settings-nav,.apk-nav{display:none}.mobile-settings{display:flex;position:fixed;right:57px;top:max(16px,env(safe-area-inset-top));z-index:3}.settings-body{padding:14px}.settings-section{padding:17px}.settings-section h3{font-size:16px}.viewer-header{gap:11px;min-height:59px;padding:10px 14px}.viewer-header h1{font-size:12px}.viewer-back{padding:9px 10px}.viewer-back span{display:none}.viewer-screen>.resume-toolbar{padding:6px 14px;font-size:9px;gap:5px}.viewer-screen .series-reader-nav{padding:5px 14px}.series-reader-nav details>div{flex-wrap:wrap}.series-reader-nav details select{flex-basis:100%;order:-1}.book-toolbar{padding:6px 12px;gap:7px}.book-reader-label{display:none}.book-display-options{gap:6px}.book-display-options select{font-size:10px;min-width:86px}.book-footer{padding:7px 16px}.book-stage{padding:18px}.book-directory-panel{position:absolute;inset:0 auto 0 0;box-shadow:12px 0 35px #00000022}.player-controls{padding:40px 12px 10px}.player-control-row{gap:2px;flex-wrap:wrap}.player-control-row button{min-width:34px;min-height:38px}.player-volume-controls label{display:none}.player-time{font-size:10px}.player-speed select{width:59px;font-size:11px}.player-help{display:none}.player-center{width:62px;height:62px;font-size:22px}.player-volume-controls{margin-left:auto}.member-row>.owner-transfer{flex-basis:100%;margin-left:40px;text-align:left}.auth-apk{font-size:11px}}
 .book-stage{align-items:flex-start}
 @media(prefers-reduced-motion:reduce){.book-stage>canvas,.book-stage>.image-page{animation:none}.player-controls{transition:none}}
+/* Upload retention is deliberately opt-in; processing survives this dialog. */
+.retain-original{display:flex!important;flex-direction:row!important;align-items:center;gap:.6rem;margin-top:.7rem}
+.retain-original input{width:1.1rem!important;height:1.1rem;flex:none;accent-color:var(--primary,#5268ef)}
+.retention-note,.download-quality small{font-size:.8rem;line-height:1.7;opacity:.75}
+.upload-job{padding:1rem 0;border-bottom:1px solid var(--border,#72788855);overflow-wrap:anywhere}
+.upload-job small{display:block;margin-bottom:.7rem}
+.upload-job>div{display:flex;gap:.5rem;flex-wrap:wrap}
+.player-quality select{max-width:10rem}

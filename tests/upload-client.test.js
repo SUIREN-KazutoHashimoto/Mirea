@@ -80,3 +80,27 @@ test('web upload client recovers a lost part response and resumes received parts
   await assert.rejects(cancelled.promise, /キャンセル/);
   assert.equal(memory.size, 0);
 });
+
+test('retention choice is sent explicitly and partitions resumable upload identity; detaching processing never cancels the server job',async t=>{
+  const previous=Object.fromEntries(['localStorage','XMLHttpRequest','fetch'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));
+  t.after(()=>{for(const[key,value]of Object.entries(previous)){if(value)Object.defineProperty(globalThis,key,value);else delete globalThis[key];}});
+  const memory=new Map(),calls=[];let transferFailure=true,id=0;
+  Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:k=>memory.get(k)??null,setItem:(k,v)=>memory.set(k,v),removeItem:k=>memory.delete(k)}});
+  Object.defineProperty(globalThis,'XMLHttpRequest',{configurable:true,value:class{
+    upload={};open(){}setRequestHeader(){}abort(){}
+    send(){this.status=transferFailure?400:204;this.responseText='{}';queueMicrotask(()=>this.onload());}
+  }});
+  Object.defineProperty(globalThis,'fetch',{configurable:true,value:async(url,options)=>{
+    calls.push({url,method:options.method,body:options.body&&JSON.parse(options.body)});
+    if(url.endsWith('/uploads'))return Response.json({id:String(++id),expiresAt:Date.now()+86400000,state:'uploading',chunkSize:1,receivedBytes:0,files:[{receivedParts:[],receivedHashes:{}}]},{status:201});
+    if(url.endsWith('/complete'))return Response.json({state:'processing',processing:{stage:'probe'}});
+    return new Response(null,{status:204});
+  }});
+  const file=new File(['x'],'video.mp4',{type:'video/mp4'}),context={endpoint:'https://synthetic.test',token:'test',userId:'user',unauthorized(){assert.fail();}};
+  for(const retainOriginal of [false,true])await assert.rejects(createResumableUpload(context,'shelf',[file],'same file',()=>{},{retainOriginal}).promise);
+  assert.equal(memory.size,2,'different retention choices must never reuse a prior session');
+  assert.deepEqual(calls.filter(c=>c.url.endsWith('/uploads')).map(c=>c.body.retainOriginal),[false,true]);
+  transferFailure=false;let job;
+  job=createResumableUpload(context,'shelf',[file],'background',percent=>{if(percent===100){assert.equal(job.processing,true);job.detach();}});
+  await assert.rejects(job.promise);assert.equal(calls.some(c=>c.method==='DELETE'),false);
+});

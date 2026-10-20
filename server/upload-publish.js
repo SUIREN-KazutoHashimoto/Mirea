@@ -4,10 +4,13 @@ import { transaction } from './database.js';
 import { httpError, matchesFileType } from './security.js';
 import { IMAGE_TYPES, IMAGE_BOOK_MIME, imageExtension, removeItemDirectory } from './media.js';
 import { EPUB_MIME } from './ebook-types.js';
+import { isVideo } from './video-types.js';
+import { publishVideo } from './video-publish.js';
 
 // Only fully verified media is published. An upload ID also becomes its item ID,
 // allowing a persisted job to recognize publication after an interrupted restart.
-export async function publishStagedUpload({ db, media, uploadDir, stagingDir, booksDir, thumbnailDir, publicItem }, upload, authorize) {
+export async function publishStagedUpload(context, upload, authorize) {
+  const { db, media, uploadDir, stagingDir, booksDir, thumbnailDir, publicItem } = context;
   const { id, shelf_id: shelfId, user_id: userId, title } = upload;
   const files = JSON.parse(upload.files_json);
   const stage = join(stagingDir, id);
@@ -15,6 +18,7 @@ export async function publishStagedUpload({ db, media, uploadDir, stagingDir, bo
   const finalThumbnail = join(thumbnailDir, `${id}.jpg`);
   const existing = db.prepare('SELECT * FROM items WHERE id=?').get(id);
   if (existing) return publicItem(existing);
+  if (isVideo(files[0].mime)) return publishVideo(context, upload, authorize);
   const isBook = IMAGE_TYPES.includes(files[0].mime);
   const isEpub = files[0].mime === EPUB_MIME;
   const pages = [];

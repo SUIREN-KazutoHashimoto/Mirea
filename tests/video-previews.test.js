@@ -1,4 +1,6 @@
 import test from 'node:test';
+import { randomUUID } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -21,6 +23,16 @@ async function setup(t, customize) {
   ctx.owner = await ctx.register('owner');
   ctx.shelf = (await ctx.request('POST', '/shelves', ctx.owner, { name: 'Video previews' })).json().id;
   ctx.upload = async (bytes, mime = 'video/mp4', filename = 'test.mp4') => {
+    // These tests exercise legacy lazy-preview behaviour. New-upload eager
+    // conversion/publication has its own integration tests.
+    if(mime.startsWith('video/')){
+      const id=randomUUID(),source=join(dataDir,'uploads',id);
+      await writeFile(source,bytes);
+      await options.mediaProcessor.thumbnail(source,mime,join(dataDir,'thumbnails',id+'.jpg'));
+      const db=new DatabaseSync(join(dataDir,'mirea.sqlite'));
+      try{db.prepare('INSERT INTO items VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,ctx.shelf,filename,filename,mime,bytes.length,ctx.owner.user.id,Date.now(),1,1);}finally{db.close();}
+      return {id,kind:'video',mimeType:mime,size:bytes.length};
+    }
     const boundary = 'preview-test';
     const body = Buffer.concat([
       Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${mime}\r\n\r\n`),

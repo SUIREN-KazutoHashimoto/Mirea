@@ -62,11 +62,11 @@ export async function authenticatedBlob(path, signal) {
   return response.blob();
 }
 
-export function upload(shelfId, files, title, onProgress) {
+export function upload(shelfId, files, title, onProgress, options) {
   const token = session?.token;
   return createResumableUpload({ endpoint, token, userId: session?.user?.id, unauthorized: () => {
     if (session?.token !== token) return;
     setSession(null);
     window.dispatchEvent(new Event('mirea:unauthorized'));
-  } }, shelfId, files, title, onProgress);
+  } }, shelfId, files, title, onProgress, options);
 }

@@ -4,6 +4,7 @@ RUN npm install --global pnpm@11.25.0
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 RUN pnpm install --frozen-lockfile
 COPY web ./web
+COPY server/video-types.js ./server/video-types.js
 COPY vite.config.js ./
 RUN pnpm build
 

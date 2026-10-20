@@ -53,12 +53,12 @@ const delay=(ms,signal)=>new Promise((resolve,reject)=>{
   const timer=setTimeout(()=>{signal.removeEventListener('abort',abort);resolve();},ms);
   signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();
 });
-export async function downloadToDevice(item,onProgress=()=>{},externalSignal){
+export async function downloadToDevice(item,onProgress=()=>{},externalSignal,quality){
   const ctx=context(),controller=new AbortController();tasks.add(controller);
   const signal=externalSignal?AbortSignal.any([controller.signal,externalSignal]):controller.signal;
   try{
     await ensureDownloadWorker();signal.throwIfAborted();
-    const result=await api(`/items/${item.id}/download`,{method:'POST',signal});
+    const result=await api(`/items/${item.id}/download`,{method:'POST',signal,...(quality?{body:{quality}}:{})});
     if(!current(ctx))throw new Error('ログイン先が変更されました。');
     const manifest=validateManifest(result.manifest);
     if(manifest.assetId!==item.id)throw new Error('アセットが一致しません。');

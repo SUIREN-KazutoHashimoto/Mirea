@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -173,7 +173,8 @@ test('chunked video has a thumbnail and supports suffix ranges and scoped-ticket
   const ticket = (await ctx.request('POST', `/items/${item.id}/playback-ticket`, ctx.owner)).json();
   const range = await ctx.app.inject({ url: ticket.url, headers: { range: 'bytes=-32' } });
   assert.equal(range.statusCode, 206);
-  assert.deepEqual(range.rawPayload, video.subarray(-32));
+  const canonical=(await ctx.request('GET',`/items/${item.id}/content`,ctx.owner)).rawPayload;
+  assert.deepEqual(range.rawPayload, canonical.subarray(-32));
   const head = await ctx.app.inject({ method: 'HEAD', url: ticket.url, headers: { range: 'bytes=0-31' } });
   assert.equal(head.statusCode, 206);
   assert.equal(head.headers['content-length'], '32');
@@ -186,17 +187,20 @@ test('chunked video has a thumbnail and supports suffix ranges and scoped-ticket
   assert.ok(preflight.headers['access-control-allow-headers'].toLowerCase().includes('x-chunk-sha256'));
 });
 
-test('chunked short MP4 with an invalid edit list publishes a real thumbnail without altering the original', async t => {
+test('chunked short MP4 with an invalid edit list normalizes playback and preserves the original only when opted in', async t => {
   const ctx = await setup(t);
   const video = withOutOfRangeEditList(await makeMp4(join(ctx.dataDir, 'short.mp4'), { duration: 0.04 }));
-  const upload = await ctx.start([{ filename: 'short.mp4', mime: 'video/mp4', size: video.length }]);
+  const response=await ctx.request('POST',`/shelves/${ctx.shelfId}/uploads`,ctx.owner,{title:'Short clip',retainOriginal:true,files:[{filename:'short.mp4',mime:'video/mp4',size:video.length}]});
+  assert.equal(response.statusCode,201,response.body);
+  const upload=response.json();
   await ctx.send(upload, [video]);
   assert.equal((await ctx.request('POST', `/uploads/${upload.id}/complete`, ctx.owner)).statusCode, 202);
   const { item } = await ctx.wait(upload.id);
   const thumbnail = await ctx.request('GET', `/items/${item.id}/thumbnail`, ctx.owner);
   assert.equal(thumbnail.statusCode, 200, thumbnail.body);
   assert.equal((await sharp(thumbnail.rawPayload).metadata()).format, 'jpeg');
-  assert.deepEqual((await ctx.request('GET', `/items/${item.id}/content`, ctx.owner)).rawPayload, video);
+  assert.deepEqual(await readFile(join(ctx.dataDir,'originals',item.id)),video);
+  assert.notDeepEqual((await ctx.request('GET',`/items/${item.id}/content`,ctx.owner)).rawPayload,video);
 });
 
 test('cancellation, logout and role revocation during thumbnail processing prevent publication', async t => {

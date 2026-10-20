@@ -4,10 +4,11 @@ import { join } from 'node:path';
 import { httpError } from './security.js';
 import { IMAGE_BOOK_MIME,imageExtension } from './media.js';
 import { EPUB_MIME, EPUB_BUNDLE_MIME } from './ebook-types.js';
+import { videoMetadata } from './video-stream.js';
 
 const CHUNK=1024*1024;
 const aad=(id,file,part,length)=>Buffer.from(`mirea-download-v1|${id}|${file}|${part}|${length}`);
-export async function registerDownloads(app,{db,dataDir,uploadDir,booksDir,authenticate,findItem,options}){
+export async function registerDownloads(app,{db,dataDir,uploadDir,booksDir,videoDir,authenticate,findItem,options}){
   let master=options.downloadMasterKey;
   if(!master){
     const folder=join(dataDir,'keys'),path=join(folder,'download-master.key');
@@ -40,9 +41,21 @@ export async function registerDownloads(app,{db,dataDir,uploadDir,booksDir,authe
     if(!row)throw httpError(404,'ダウンロードが見つかりません。');
     return {row,item:findItem(row.asset_id,req.user.id)};
   }
-  function source(item,file){return item.mime_type===EPUB_MIME?join(booksDir,item.id,'book.json'):item.mime_type===IMAGE_BOOK_MIME?join(booksDir,item.id,`${file.number}.${imageExtension(file.mime)}`):join(uploadDir,item.id);}
-  async function manifestFor(item){
+  function source(item,file){
+    if(file.quality){
+      if(!videoMetadata(db,item.id)?.renditions.some(r=>r.quality===file.quality))throw httpError(409,'選択した画質のデータがありません。');
+      return join(videoDir,item.id,`${file.quality}.mp4`);
+    }
+    return item.mime_type===EPUB_MIME?join(booksDir,item.id,'book.json'):item.mime_type===IMAGE_BOOK_MIME?join(booksDir,item.id,`${file.number}.${imageExtension(file.mime)}`):join(uploadDir,item.id);
+  }
+  async function manifestFor(item,quality){
     const files=item.mime_type===IMAGE_BOOK_MIME?db.prepare('SELECT page_number AS number,size,mime_type AS mime,width,height FROM image_pages WHERE item_id=? ORDER BY page_number').all(item.id):[{number:1,size:item.size,mime:item.mime_type}];
+    const video=videoMetadata(db,item.id);
+    if(video){
+      const rendition=quality?video.renditions.find(r=>r.quality===quality):video.renditions[0];
+      if(!rendition)throw httpError(400,'生成済みの画質を選択してください。');
+      Object.assign(files[0],{size:rendition.size,mime:'video/mp4',quality:rendition.quality});
+    }else if(quality)throw httpError(400,'このアセットは画質を選択できません。');
     if(item.mime_type===EPUB_MIME){files[0].size=(await stat(source(item,files[0])).catch(()=>{throw httpError(404,'EPUBの閲覧データが見つかりません。');})).size;files[0].mime=EPUB_BUNDLE_MIME;}
     if(!files.length)throw httpError(404,'原本が見つかりません。');
     for(const [index,file] of files.entries()){
@@ -54,14 +67,15 @@ export async function registerDownloads(app,{db,dataDir,uploadDir,booksDir,authe
   }
   const publicManifest=(row,manifest)=>({...manifest,id:row.id,files:manifest.files.map(({stamp,...file})=>file)});
   async function validateSource(row,item){
-    const old=JSON.parse(row.manifest_json),current=await manifestFor(item);
+    const old=JSON.parse(row.manifest_json),current=await manifestFor(item,old.files[0].quality);
     if(JSON.stringify(old)!==JSON.stringify(current))throw httpError(409,'原本が変更されました。暗号化ダウンロードを作り直してください。');
     return old;
   }
   app.post('/api/v1/items/:id/download',{...auth,config:limit},async req=>{
-    const item=findItem(req.params.id,req.user.id),manifest=await manifestFor(item);
+    if(req.body!==undefined&&(!req.body||typeof req.body!=='object'||Array.isArray(req.body)||Object.keys(req.body).some(k=>k!=='quality')||req.body.quality!==undefined&&!/^[0-9]{2,4}p$/.test(req.body.quality)))throw httpError(400,'画質の指定が不正です。');
+    const item=findItem(req.params.id,req.user.id),manifest=await manifestFor(item,req.body?.quality);
     authenticate(req);findItem(item.id,req.user.id);
-    let row=db.prepare('SELECT * FROM encrypted_downloads WHERE user_id=? AND asset_id=?').get(req.user.id,item.id);
+    let row=db.prepare("SELECT * FROM encrypted_downloads WHERE user_id=? AND asset_id=? AND json_extract(manifest_json,'$.files[0].quality') IS ?").get(req.user.id,item.id,manifest.files[0].quality??null);
     if(row && row.manifest_json!==JSON.stringify(manifest)){db.prepare('DELETE FROM encrypted_downloads WHERE id=?').run(row.id);row=null;}
     if(!row){
       row={id:randomUUID(),user_id:req.user.id,asset_id:item.id,manifest_json:JSON.stringify(manifest),created_at:Date.now()};

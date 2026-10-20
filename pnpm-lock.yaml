@@ -17,6 +17,9 @@ importers:
       '@capacitor/core':
         specifier: ^8.0.0
         version: 8.5.3
+      '@derhuerst/ffprobe-static':
+        specifier: 5.3.0
+        version: 5.3.0
       '@fastify/cors':
         specifier: ^11.0.0
         version: 11.3.1
@@ -38,6 +41,9 @@ importers:
       ffmpeg-static:
         specifier: 5.3.0
         version: 5.3.0
+      hls.js:
+        specifier: 1.7.3
+        version: 1.7.3
       parse5:
         specifier: 8.0.1
         version: 8.0.1
@@ -83,6 +89,10 @@ packages:
 
   '@capacitor/core@8.5.3':
     resolution: {integrity: sha512-oBE1oGuYE4ZzYYrulC75OuHdSsD6zLUy7d5o1tFwDLG4govGoubY15cxpiI5l0+q87Lm5p0bhbehMdzJg4aFag==}
+
+  '@derhuerst/ffprobe-static@5.3.0':
+    resolution: {integrity: sha512-Ka4MiaFdO6xAWpyKWWE5sRAQ8kSl0ddrLnDKPJzLtg/yEkmCr+GV841GGFzfVYomwVbVvmemLlkL4uvTYpJIbQ==}
+    engines: {node: '>=16'}
 
   '@derhuerst/http-basic@8.2.4':
     resolution: {integrity: sha512-F9rL9k9Xjf5blCz8HsJRO4diy111cayL2vkY2XE4r4t3n0yPXVYy3KD3nJ1qbrSn9743UWSXH4IwuCa/HWlGFw==}
@@ -962,6 +972,9 @@ packages:
   graceful-fs@4.2.11:
     resolution: {integrity: sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==}
 
+  hls.js@1.7.3:
+    resolution: {integrity: sha512-MsPlx6yVW4Qv4C7mEVou4/gk/5cN2dVxOTnrNjPSmyH2f0Ln+/UkG10Ax1PE6OvrmTVPKgQYozTtBaPOuCzq7A==}
+
   http-errors@2.0.1:
     resolution: {integrity: sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ==}
     engines: {node: '>= 0.8'}
@@ -1420,6 +1433,15 @@ snapshots:
   '@capacitor/core@8.5.3':
     dependencies:
       tslib: 2.8.1
+
+  '@derhuerst/ffprobe-static@5.3.0':
+    dependencies:
+      '@derhuerst/http-basic': 8.2.4
+      env-paths: 2.2.1
+      https-proxy-agent: 5.0.1
+      progress: 2.0.3
+    transitivePeerDependencies:
+      - supports-color
 
   '@derhuerst/http-basic@8.2.4':
     dependencies:
@@ -2147,6 +2169,8 @@ snapshots:
       path-scurry: 2.0.2
 
   graceful-fs@4.2.11: {}
+
+  hls.js@1.7.3: {}
 
   http-errors@2.0.1:
     dependencies:
