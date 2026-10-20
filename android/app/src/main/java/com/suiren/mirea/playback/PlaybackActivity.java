@@ -2,89 +2,136 @@ package com.suiren.mirea.playback;
 
 import android.app.*;
 import android.content.*;
+import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.*;
 import android.os.*;
 import android.util.Rational;
 import android.view.*;
+import android.view.accessibility.AccessibilityManager;
 import android.widget.*;
 import androidx.core.content.ContextCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.*;
 import androidx.activity.ComponentActivity;
 import androidx.activity.OnBackPressedCallback;
 import org.json.*;
 import java.util.*;
 
-/** Native surface/custom transport controls; only the video surface remains in PiP. */
+/** Immersive presentation only; rotation never opens, pauses or replaces the service's player. */
 public final class PlaybackActivity extends ComponentActivity implements SurfaceHolder.Callback {
     private FrameLayout root;
     private SurfaceView video;
-    private LinearLayout top,controls,audioArt;
-    private TextView title,time,message;
-    private ImageView cover;
-    private SeekBar seek;
-    private Button play,pip,quality;
-    private Switch continuous;
-    private boolean visible,preserve,backgroundRequested,scrubbing;
+    private PlaybackScreen screen;
+    private PlaybackService surfaceService;
+    private Surface boundSurface;
+    private PlaybackPresentation.Orientation orientation;
+    private final PlaybackPresentation.Chrome chrome=new PlaybackPresentation.Chrome();
+    private final ArrayList<Dialog> dialogs=new ArrayList<>();
+    private boolean visible,preserve,backgroundRequested,scrubbing,destroyed;
+    private Boolean windowVideo;
+    private long createdAt;
     private final Handler handler=new Handler(Looper.getMainLooper());
-    private final Runnable tick=new Runnable(){public void run(){render();handler.postDelayed(this,500);}};
+    private final Runnable tick=new Runnable(){public void run(){if(destroyed)return;render();handler.postDelayed(this,500);}};
     private final BroadcastReceiver changed=new BroadcastReceiver(){public void onReceive(Context c,Intent i){render();}};
     private PlaybackService service(){return PlaybackService.current;}
-    private int dp(int value){return Math.round(getResources().getDisplayMetrics().density*value);}
-    private Button button(String text,Runnable action){Button b=new Button(this);b.setText(text);b.setTextColor(Color.WHITE);b.setTextSize(13);b.setOnClickListener(v->action.run());return b;}
-    private void rowButton(LinearLayout row,Button b){row.addView(b,new LinearLayout.LayoutParams(0,dp(48),1));}
     @Override public void onCreate(Bundle saved){
-        super.onCreate(saved);getOnBackPressedDispatcher().addCallback(this,new OnBackPressedCallback(true){public void handleOnBackPressed(){preserve=false;stop();finish();}});setVolumeControlStream(android.media.AudioManager.STREAM_MUSIC);getWindow().setStatusBarColor(Color.BLACK);getWindow().setNavigationBarColor(Color.BLACK);
-        root=new FrameLayout(this);root.setBackgroundColor(Color.rgb(7,10,20));setContentView(root);
+        super.onCreate(saved);createdAt=SystemClock.elapsedRealtime();orientation=new PlaybackPresentation.Orientation(saved==null?0:saved.getInt("orientationMode"));
+        getOnBackPressedDispatcher().addCallback(this,new OnBackPressedCallback(true){public void handleOnBackPressed(){closePlayback();}});
+        setVolumeControlStream(android.media.AudioManager.STREAM_MUSIC);
+        WindowCompat.setDecorFitsSystemWindows(getWindow(),false);getWindow().setStatusBarColor(Color.TRANSPARENT);getWindow().setNavigationBarColor(Color.TRANSPARENT);
+        WindowManager.LayoutParams attributes=getWindow().getAttributes();attributes.layoutInDisplayCutoutMode=Build.VERSION.SDK_INT>=30?WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS:WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;getWindow().setAttributes(attributes);
+        root=new FrameLayout(this);root.setBackgroundColor(Color.BLACK);setContentView(root);
         video=new SurfaceView(this);video.getHolder().addCallback(this);root.addView(video,new FrameLayout.LayoutParams(-1,-1,Gravity.CENTER));
-        audioArt=new LinearLayout(this);audioArt.setGravity(Gravity.CENTER);audioArt.setOrientation(LinearLayout.VERTICAL);
-        cover=new ImageView(this);cover.setScaleType(ImageView.ScaleType.FIT_CENTER);audioArt.addView(cover,new LinearLayout.LayoutParams(dp(260),dp(260)));
-        TextView symbol=new TextView(this);symbol.setText("♫  MIREA / LISTEN");symbol.setTextColor(Color.rgb(210,201,255));symbol.setTextSize(24);symbol.setGravity(Gravity.CENTER);audioArt.addView(symbol);
-        root.addView(audioArt,new FrameLayout.LayoutParams(-1,-1,Gravity.CENTER));
-        top=new LinearLayout(this);top.setOrientation(LinearLayout.VERTICAL);top.setPadding(dp(8),dp(8),dp(8),dp(4));top.setBackgroundColor(0xc0161b2d);
-        LinearLayout heading=new LinearLayout(this);Button close=button("← 終了",()->{preserve=false;stop();finish();});heading.addView(close);
-        title=new TextView(this);title.setTextColor(Color.WHITE);title.setTextSize(16);title.setMaxLines(2);heading.addView(title,new LinearLayout.LayoutParams(0,-2,1));top.addView(heading);
-        message=new TextView(this);message.setTextColor(Color.rgb(215,210,245));top.addView(message);root.addView(top,new FrameLayout.LayoutParams(-1,-2,Gravity.TOP));
-        controls=new LinearLayout(this);controls.setOrientation(LinearLayout.VERTICAL);controls.setPadding(dp(8),dp(4),dp(8),dp(8));controls.setBackgroundColor(0xd0121726);
-        time=new TextView(this);time.setTextColor(Color.WHITE);controls.addView(time);
-        seek=new SeekBar(this);seek.setMax(10000);seek.setContentDescription("再生位置");seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){public void onStartTrackingTouch(SeekBar b){scrubbing=true;}public void onStopTrackingTouch(SeekBar b){scrubbing=false;PlaybackService s=service();if(s!=null)s.seek(s.duration()*b.getProgress()/10000);}public void onProgressChanged(SeekBar b,int p,boolean user){}});controls.addView(seek);
-        LinearLayout transports=new LinearLayout(this);rowButton(transports,button("−10秒",()->{PlaybackService s=service();if(s!=null)s.seek(s.position()-10000);}));
-        play=button("再生",()->{PlaybackService s=service();if(s!=null){if(s.playing())s.pause();else s.play();}});rowButton(transports,play);
-        rowButton(transports,button("＋10秒",()->{PlaybackService s=service();if(s!=null)s.seek(s.position()+10000);}));rowButton(transports,button("次へ",()->{if(service()!=null)service().navigate(1);}));controls.addView(transports);
-        LinearLayout options=new LinearLayout(this);pip=button("PiP",this::enterPip);rowButton(options,pip);
-        rowButton(options,button("背景再生",()->{backgroundRequested=true;preserve=true;configurePip(false);moveTaskToBack(true);}));
-        quality=button("画質",this::qualities);rowButton(options,quality);
-        rowButton(options,button("速度",()->new AlertDialog.Builder(this).setTitle("再生速度").setItems(new String[]{"0.5×","1×","1.25×","1.5×","2×"},(d,index)->{if(service()!=null)service().speed(new float[]{.5f,1,1.25f,1.5f,2}[index]);}).show()));controls.addView(options);
-        LinearLayout last=new LinearLayout(this);continuous=new Switch(this);continuous.setText("連続再生");continuous.setTextColor(Color.WHITE);continuous.setOnCheckedChangeListener((b,value)->{if(service()!=null)service().continuous(value);});last.addView(continuous,new LinearLayout.LayoutParams(0,dp(48),1));
-        last.addView(button("消音",()->{if(service()!=null)service().mute();}));last.addView(button("ライブラリへ",()->{preserve=true;finish();}));last.addView(button("再接続",()->{if(service()!=null)service().reconnect();}));controls.addView(last);
-        root.addView(controls,new FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM));
-        root.setOnClickListener(v->{if(!isInPictureInPictureMode()){int state=top.getVisibility()==View.VISIBLE?View.GONE:View.VISIBLE;top.setVisibility(state);controls.setVisibility(state);}});
+        screen=new PlaybackScreen(this,new PlaybackScreen.Actions(){
+            public void perform(String action){act(action);}
+            public void seek(long position){if(service()!=null)service().seek(position);}
+            public void scrub(boolean value){scrubbing=value;chrome.interact(SystemClock.elapsedRealtime());render();}
+        });root.addView(screen,new FrameLayout.LayoutParams(-1,-1));
+        ViewCompat.setOnApplyWindowInsetsListener(root,(v,insets)->{
+            Insets safe=insets.getInsetsIgnoringVisibility(WindowInsetsCompat.Type.systemBars()|WindowInsetsCompat.Type.displayCutout()),gestures=insets.getInsets(WindowInsetsCompat.Type.systemGestures());
+            screen.setSafeInsets(Math.max(safe.left,gestures.left),safe.top,Math.max(safe.right,gestures.right),Math.max(safe.bottom,gestures.bottom));return insets;
+        });ViewCompat.requestApplyInsets(root);
+        root.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob)->{if(r-l!=or-ol||b-t!=ob-ot)fitVideo();});
         ContextCompat.registerReceiver(this,changed,new IntentFilter(PlaybackService.EVENT),ContextCompat.RECEIVER_NOT_EXPORTED);handler.post(tick);
     }
-    private void qualities(){PlaybackService s=service();if(s==null)return;try{JSONObject state=s.status();JSONArray values=state.getJSONArray("qualities");ArrayList<String> names=new ArrayList<>(),ids=new ArrayList<>();names.add("標準（基本MP4・自動HLSではありません）");ids.add("legacy");for(int n=0;n<values.length();n++){String q=values.getJSONObject(n).getString("quality");names.add(q+"（固定）");ids.add(q);}int selected=Math.max(0,ids.indexOf(state.optString("quality","legacy")));new AlertDialog.Builder(this).setTitle("再生する画質（次の動画にも適用）").setSingleChoiceItems(names.toArray(new String[0]),selected,(d,i)->{PlaybackService target=service();if(target!=null)target.quality(ids.get(i));d.dismiss();}).setNegativeButton("閉じる",null).show();}catch(Exception ignored){}}
-    private String time(long ms){long seconds=ms/1000;return seconds/60+":"+String.format(Locale.ROOT,"%02d",seconds%60);}
-    private void render(){PlaybackService s=service();if(s==null){message.setText("再生を終了しました。");play.setEnabled(false);return;}s.visibility(visible&&!isInPictureInPictureMode(),isInPictureInPictureMode());JSONObject status=s.status();JSONObject item=status.optJSONObject("item");title.setText(item==null?"Mirea":item.optString("title"));
-        video.setVisibility(s.video()?View.VISIBLE:View.GONE);audioArt.setVisibility(s.video()?View.GONE:View.VISIBLE);
-        cover.setImageBitmap(s.artwork);
-        play.setEnabled(status.optBoolean("prepared"));play.setText(s.playing()?"一時停止":"再生");seek.setEnabled(status.optBoolean("prepared"));
-        if(!scrubbing&&s.duration()>0)seek.setProgress((int)(s.position()*10000/s.duration()));time.setText(time(s.position())+" / "+time(s.duration())+(status.optBoolean("download")?" · 暗号化保存データ":" · ストリーミング"));
-        message.setText(!status.optString("error").isEmpty()?status.optString("error"):status.optString("notice"));pip.setVisibility(s.video()?View.VISIBLE:View.GONE);quality.setVisibility(s.video()&&!status.optBoolean("download")?View.VISIBLE:View.GONE);
-        String selectedQuality=status.optString("quality","legacy");quality.setText("legacy".equals(selectedQuality)?"画質：標準":selectedQuality+" 固定");
-        if(continuous.isChecked()!=status.optBoolean("continuous"))continuous.setChecked(status.optBoolean("continuous"));
-        if(s.video()){int w=status.optInt("width",16),h=status.optInt("height",9);if(w>0&&h>0&&root.getWidth()>0){float scale=Math.min(root.getWidth()/(float)w,root.getHeight()/(float)h);FrameLayout.LayoutParams p=new FrameLayout.LayoutParams(Math.max(1,(int)(w*scale)),Math.max(1,(int)(h*scale)),Gravity.CENTER);video.setLayoutParams(p);}}
-        configurePip(!backgroundRequested&&s.video()&&s.playing());
+    private void act(String action){
+        long now=SystemClock.elapsedRealtime();if(action.equals("toggle-chrome")){chrome.toggle(now);render();return;}chrome.interact(now);PlaybackService s=service();
+        switch(action){
+            case "close":closePlayback();return;
+            case "rotate":{
+                if(isInMultiWindowMode()||Build.VERSION.SDK_INT>=36&&getResources().getConfiguration().smallestScreenWidthDp>=600){Toast.makeText(this,"この画面では、端末の向きやウィンドウの大きさに合わせて表示します。",Toast.LENGTH_SHORT).show();break;}
+                boolean landscape=getResources().getConfiguration().orientation==Configuration.ORIENTATION_LANDSCAPE;
+                orientation.toggle(landscape);applyOrientation();screen.landscape(!landscape);break;
+            }
+            case "options":options();break;
+            case "quality":qualities();break;
+            case "speed":speeds();break;
+            case "pip":enterPip();break;
+            case "background":backgroundRequested=true;preserve=true;configurePip(false);moveTaskToBack(true);break;
+            case "library":preserve=true;configurePip(false);finish();return;
+            case "play":if(s!=null){if(s.playing())s.pause();else s.play();}break;
+            case "rewind":if(s!=null)s.seek(s.position()-10000);break;
+            case "forward":if(s!=null)s.seek(s.position()+10000);break;
+            case "previous":if(s!=null)s.navigate(-1);break;
+            case "next":if(s!=null)s.navigate(1);break;
+            case "continuous":if(s!=null)s.continuous(!s.status().optBoolean("continuous"));break;
+            case "mute":if(s!=null)s.mute();break;
+            case "reconnect":if(s!=null)s.reconnect();break;
+            default:break;
+        }
+        render();
+    }
+    private void options(){
+        PlaybackService s=service();JSONObject state=s==null?new JSONObject():s.status();ArrayList<String> names=new ArrayList<>(),actions=new ArrayList<>();
+        if(s!=null&&s.video()){if(canPip()){names.add("ピクチャーインピクチャー（PiP）");actions.add("pip");}if(!state.optBoolean("download")){names.add("画質を選択");actions.add("quality");}}
+        names.add("再生速度");actions.add("speed");names.add(state.optBoolean("muted")?"消音を解除":"消音にする");actions.add("mute");names.add("連続再生："+(state.optBoolean("continuous")?"オン":"オフ"));actions.add("continuous");
+        names.add("前の作品");actions.add("previous");names.add("次の作品");actions.add("next");names.add("バックグラウンドで再生");actions.add("background");names.add("ライブラリへ戻る（再生を継続）");actions.add("library");names.add("再接続");actions.add("reconnect");names.add("再生を終了");actions.add("close");
+        show(new AlertDialog.Builder(this).setTitle("再生オプション").setItems(names.toArray(new String[0]),(d,index)->act(actions.get(index))).setNegativeButton("閉じる",null).create());
+    }
+    private void qualities(){PlaybackService s=service();if(s==null||!s.video()||s.status().optBoolean("download"))return;try{
+        JSONObject state=s.status();JSONArray values=state.getJSONArray("qualities");ArrayList<String> names=new ArrayList<>(),ids=new ArrayList<>();names.add("標準（基本MP4）");ids.add("legacy");for(int n=0;n<values.length();n++){String q=values.getJSONObject(n).getString("quality");names.add(q+"（固定）");ids.add(q);}int selected=Math.max(0,ids.indexOf(state.optString("quality","legacy")));
+        show(new AlertDialog.Builder(this).setTitle("画質（次の動画にも適用）").setSingleChoiceItems(names.toArray(new String[0]),selected,(d,i)->{if(service()!=null)service().quality(ids.get(i));d.dismiss();}).setNegativeButton("閉じる",null).create());
+    }catch(JSONException ignored){}}
+    private void speeds(){PlaybackService s=service();float[] rates={.5f,1,1.25f,1.5f,2};double rate=s==null?1:s.status().optDouble("rate",1);int selected=1;for(int i=0;i<rates.length;i++)if(Math.abs(rates[i]-rate)<.01)selected=i;
+        show(new AlertDialog.Builder(this).setTitle("再生速度").setSingleChoiceItems(new String[]{"0.5×","1×（標準）","1.25×","1.5×","2×"},selected,(d,index)->{if(service()!=null)service().speed(rates[index]);d.dismiss();}).setNegativeButton("閉じる",null).create());
+    }
+    private void show(Dialog d){dialogs.add(d);d.setOnDismissListener(value->{dialogs.remove(d);chrome.interact(SystemClock.elapsedRealtime());if(!destroyed)render();});d.show();}
+    private void render(){
+        if(destroyed||screen==null)return;PlaybackService s=service();if(s==null){try{boolean starting=SystemClock.elapsedRealtime()-createdAt<2000;screen.bind(new JSONObject().put("video",true).put("buffering",starting).put("error",starting?"":"再生を終了しました。ライブラリから開いてください。"),null);}catch(JSONException ignored){}return;}
+        boolean inPip=isInPictureInPictureMode();s.visibility(visible&&!inPip,inPip);JSONObject state=s.status();boolean isVideo=s.video();
+        video.setVisibility(isVideo?View.VISIBLE:View.GONE);screen.bind(state,s.artwork);screen.setPip(inPip);
+        AccessibilityManager accessibility=getSystemService(AccessibilityManager.class);boolean assisted=accessibility!=null&&accessibility.isTouchExplorationEnabled();boolean busy=scrubbing||!dialogs.isEmpty()||state.optBoolean("buffering")||!state.optString("error").isEmpty();
+        screen.setChromeVisible(chrome.update(SystemClock.elapsedRealtime(),isVideo,s.playing(),busy,assisted,inPip));screen.landscape(getResources().getConfiguration().orientation==Configuration.ORIENTATION_LANDSCAPE);
+        if(isVideo){Surface surface=video.getHolder().getSurface();if(surface!=null&&surface.isValid()&&(s!=surfaceService||surface!=boundSurface))attach(surface);fitVideo();}
+        if(isVideo&&s.playing()&&visible&&!inPip)getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        if(windowVideo==null||windowVideo!=isVideo){windowVideo=isVideo;applySystemBars();}
+        applyOrientation();configurePip(!backgroundRequested&&isVideo&&s.playing());
+    }
+    private void fitVideo(){PlaybackService s=service();if(video==null||s==null||!s.video()||root.getWidth()<=0)return;JSONObject state=s.status();int[] size=PlaybackPresentation.fit(root.getWidth(),root.getHeight(),state.optInt("width",16),state.optInt("height",9));FrameLayout.LayoutParams p=(FrameLayout.LayoutParams)video.getLayoutParams();if(p.width!=size[0]||p.height!=size[1]){p.width=size[0];p.height=size[1];p.gravity=Gravity.CENTER;video.setLayoutParams(p);}}
+    private void applySystemBars(){if(isInPictureInPictureMode())return;WindowInsetsControllerCompat controller=WindowCompat.getInsetsController(getWindow(),root);controller.setAppearanceLightStatusBars(false);controller.setAppearanceLightNavigationBars(false);controller.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);if(Boolean.FALSE.equals(windowVideo))controller.show(WindowInsetsCompat.Type.systemBars());else controller.hide(WindowInsetsCompat.Type.systemBars());}
+    private void applyOrientation(){
+        PlaybackService s=service();if(s==null||!visible||isInPictureInPictureMode()||isInMultiWindowMode()||Build.VERSION.SDK_INT>=36&&getResources().getConfiguration().smallestScreenWidthDp>=600)return;JSONObject state=s.status();int target=orientation.target(s.video(),state.optBoolean("prepared"),state.optInt("width"),state.optInt("height"));int requested=target==PlaybackPresentation.Orientation.LANDSCAPE?ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE:target==PlaybackPresentation.Orientation.PORTRAIT?ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT:ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
+        // Keep the current video orientation during preparation/quality changes.
+        if(s.video()&&target==PlaybackPresentation.Orientation.AUTOMATIC)return;
+        if(getRequestedOrientation()!=requested)setRequestedOrientation(requested);
     }
     private boolean canPip(){return getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE);}
-    private PictureInPictureParams params(boolean auto){PlaybackService s=service();JSONObject state=s==null?new JSONObject():s.status();double ratio=state.optInt("width",16)/(double)Math.max(1,state.optInt("height",9));ratio=Math.max(1/2.39,Math.min(2.39,ratio));
-        Rect rect=new Rect();video.getGlobalVisibleRect(rect);PictureInPictureParams.Builder b=new PictureInPictureParams.Builder().setAspectRatio(new Rational((int)(ratio*1000),1000)).setSourceRectHint(rect);
-        if(Build.VERSION.SDK_INT>=31)b.setAutoEnterEnabled(auto).setSeamlessResizeEnabled(true);return b.build();}
-    private void configurePip(boolean auto){if(canPip()){try{setPictureInPictureParams(params(auto));}catch(IllegalArgumentException ignored){}}}
+    private PictureInPictureParams params(boolean auto){PlaybackService s=service();JSONObject state=s==null?new JSONObject():s.status();double ratio=state.optInt("width",16)/(double)Math.max(1,state.optInt("height",9));ratio=Math.max(1/2.39,Math.min(2.39,ratio));PictureInPictureParams.Builder b=new PictureInPictureParams.Builder().setAspectRatio(new Rational((int)(ratio*1000),1000));Rect rect=new Rect();if(video.getGlobalVisibleRect(rect)&&!rect.isEmpty())b.setSourceRectHint(rect);if(Build.VERSION.SDK_INT>=31)b.setAutoEnterEnabled(auto).setSeamlessResizeEnabled(true);return b.build();}
+    private void configurePip(boolean auto){if(canPip())try{setPictureInPictureParams(params(auto));}catch(IllegalArgumentException|IllegalStateException ignored){}}
     private void enterPip(){PlaybackService s=service();if(s==null||!s.video()||!canPip()){Toast.makeText(this,"この端末ではPiPを利用できません。",Toast.LENGTH_SHORT).show();return;}try{enterPictureInPictureMode(params(false));}catch(IllegalStateException|IllegalArgumentException e){Toast.makeText(this,"PiPに切り替えられません。",Toast.LENGTH_SHORT).show();}}
     @Override public void onUserLeaveHint(){super.onUserLeaveHint();PlaybackService s=service();if(Build.VERSION.SDK_INT<31&&!backgroundRequested&&s!=null&&s.video()&&s.playing())enterPip();}
-    @Override public void onPictureInPictureModeChanged(boolean value,Configuration config){super.onPictureInPictureModeChanged(value,config);top.setVisibility(value?View.GONE:View.VISIBLE);controls.setVisibility(value?View.GONE:View.VISIBLE);if(service()!=null)service().visibility(!value&&visible,value);}
-    @Override public void onResume(){super.onResume();visible=true;backgroundRequested=false;if(service()!=null)service().visibility(true,isInPictureInPictureMode());render();}
+    @Override public void onPictureInPictureModeChanged(boolean value,Configuration config){super.onPictureInPictureModeChanged(value,config);if(screen!=null)screen.setPip(value);chrome.interact(SystemClock.elapsedRealtime());if(service()!=null)service().visibility(!value&&visible,value);if(!value)applySystemBars();render();}
+    @Override public void onConfigurationChanged(Configuration config){super.onConfigurationChanged(config);chrome.interact(SystemClock.elapsedRealtime());fitVideo();render();ViewCompat.requestApplyInsets(root);}
+    @Override public void onWindowFocusChanged(boolean focus){super.onWindowFocusChanged(focus);if(focus&&root!=null)applySystemBars();}
+    @Override public void onSaveInstanceState(Bundle out){out.putInt("orientationMode",orientation.manual());super.onSaveInstanceState(out);}
+    @Override public void onResume(){super.onResume();visible=true;backgroundRequested=false;chrome.interact(SystemClock.elapsedRealtime());if(service()!=null)service().visibility(true,isInPictureInPictureMode());render();}
     @Override public void onPause(){visible=false;if(service()!=null)service().visibility(false,isInPictureInPictureMode());super.onPause();}
-    private void stop(){stopService(new Intent(this,PlaybackService.class));}
-    @Override public void onDestroy(){handler.removeCallbacks(tick);try{unregisterReceiver(changed);}catch(Exception ignored){}if(isFinishing()&&!preserve)stop();super.onDestroy();}
-    public void surfaceCreated(SurfaceHolder h){if(service()!=null)service().setSurface(h.getSurface());}public void surfaceChanged(SurfaceHolder h,int format,int w,int height){surfaceCreated(h);}public void surfaceDestroyed(SurfaceHolder h){if(service()!=null)service().clearSurface(h.getSurface());}
+    private void closePlayback(){preserve=false;stopService(new Intent(this,PlaybackService.class));finish();}
+    @Override public void onDestroy(){destroyed=true;handler.removeCallbacks(tick);for(Dialog d:new ArrayList<>(dialogs))d.dismiss();try{unregisterReceiver(changed);}catch(IllegalArgumentException ignored){}if(isFinishing()&&!preserve)stopService(new Intent(this,PlaybackService.class));super.onDestroy();}
+    private void attach(Surface surface){PlaybackService s=service();if(s==null)return;if(surfaceService!=null&&boundSurface!=null&&surfaceService!=s)surfaceService.clearSurface(boundSurface);surfaceService=s;boundSurface=surface;s.setSurface(surface);}
+    public void surfaceCreated(SurfaceHolder holder){attach(holder.getSurface());}
+    public void surfaceChanged(SurfaceHolder holder,int format,int w,int height){attach(holder.getSurface());}
+    public void surfaceDestroyed(SurfaceHolder holder){if(surfaceService!=null&&boundSurface!=null)surfaceService.clearSurface(boundSurface);surfaceService=null;boundSurface=null;}
 }
