@@ -127,6 +127,11 @@ test('common non-MP4 containers/codecs are probed and normalized; audio-only and
   for(const [ext,mime,v,a] of formats)await t.test(ext,async()=>{
     const path=join(c.dataDir,'source.'+ext);
     await promisify(execFile)(ffmpegPath(),['-hide_banner','-loglevel','error','-y','-f','lavfi','-i','testsrc2=size=128x96:rate=25:duration=0.4','-f','lavfi','-i','sine=duration=0.4','-c:v',v,'-threads','1','-c:a',a,'-shortest',path],{windowsHide:true,timeout:15000});
+    // Production staging files have no extension. Include the bounded probe
+    // cause for this synthetic fixture so platform-specific demuxer failures
+    // are diagnosable without exposing real uploaded media or weakening checks.
+    const unlabelled=join(c.dataDir,'probe-input');await writeFile(unlabelled,await readFile(path));
+    try{await probeVideo(unlabelled);}catch(error){assert.fail(`Synthetic ${ext} probe: ${error.cause?.stderr||error.cause?.message||error.message}`);}
     const upload=await c.start(await readFile(path),{mime,filename:'video.'+ext}),{item}=await c.wait(upload.id);
     const result=await probeVideo(join(c.dataDir,'uploads',item.id));assert.equal(result.video.codec_name,'h264');assert.equal(result.audio.codec_name,'aac');
   });
