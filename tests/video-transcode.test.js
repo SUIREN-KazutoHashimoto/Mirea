@@ -10,7 +10,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createApp } from '../server/app.js';
 import { createMediaProcessor, ffmpegPath } from '../server/media.js';
-import { probeVideo, videoLadder } from '../server/video-transcode.js';
+import { probeVideo, videoLadder, ffprobePath } from '../server/video-transcode.js';
 import { makeMp4 } from './fixtures.js';
 
 async function setup(t,overrides={}) {
@@ -131,7 +131,14 @@ test('common non-MP4 containers/codecs are probed and normalized; audio-only and
     // cause for this synthetic fixture so platform-specific demuxer failures
     // are diagnosable without exposing real uploaded media or weakening checks.
     const unlabelled=join(c.dataDir,'probe-input');await writeFile(unlabelled,await readFile(path));
-    try{await probeVideo(unlabelled);}catch(error){assert.fail(`Synthetic ${ext} probe: ${error.cause?.stderr||error.cause?.message||error.message}`);}
+    try{await probeVideo(unlabelled);}catch(error){
+      const cause=error.cause,diagnostics=[];
+      for(const args of [['-show_format','-show_streams','-of','json'],['-show_entries','format=format_name,duration:stream=index,codec_type,codec_name,width,height,duration','-of','json'],['-show_format','-of','default']]){
+        try{const result=await promisify(execFile)(ffprobePath(),['-v','error','-threads','1','-max_alloc','268435456','-protocol_whitelist','file,pipe','-format_whitelist','mov,matroska,webm,avi,asf,mpeg,mpegts,flv',...args,unlabelled],{windowsHide:true,timeout:10000,maxBuffer:65536});diagnostics.push({args,ok:true,stdout:result.stdout.slice(-4096)});}
+        catch(e){diagnostics.push({args,code:e.code,signal:e.signal,stderr:e.stderr,stdout:e.stdout?.slice(-4096)});}
+      }
+      assert.fail(`Synthetic ${ext} probe: ${JSON.stringify({code:cause?.code,signal:cause?.signal,stderr:cause?.stderr,stdout:cause?.stdout?.slice(-4096),diagnostics})}`);
+    }
     const upload=await c.start(await readFile(path),{mime,filename:'video.'+ext}),{item}=await c.wait(upload.id);
     const result=await probeVideo(join(c.dataDir,'uploads',item.id));assert.equal(result.video.codec_name,'h264');assert.equal(result.audio.codec_name,'aac');
   });
