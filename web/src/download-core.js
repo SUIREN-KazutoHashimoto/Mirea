@@ -1,11 +1,11 @@
 export const DOWNLOAD_PATH='/__mirea_download__/';
 export const chunkKey=(id,file,part)=>`${id}|${file}|${part}`;
 export function validateManifest(manifest){
-  if(manifest?.version!==1 || manifest.algorithm!=='AES-256-GCM' || manifest.chunkSize!==1048576 || !/^[0-9a-f-]{36}$/.test(manifest.id) || !/^[0-9a-f-]{36}$/.test(manifest.assetId) || !['video','pdf','image-book'].includes(manifest.kind) || !Array.isArray(manifest.files) || !manifest.files.length || manifest.files.length>500)throw new Error('ダウンロード情報が不正です。');
+  if(manifest?.version!==1 || manifest.algorithm!=='AES-256-GCM' || manifest.chunkSize!==1048576 || !/^[0-9a-f-]{36}$/.test(manifest.id) || !/^[0-9a-f-]{36}$/.test(manifest.assetId) || !['video','pdf','image-book','epub'].includes(manifest.kind) || !Array.isArray(manifest.files) || !manifest.files.length || manifest.files.length>500)throw new Error('ダウンロード情報が不正です。');
   if(!Number.isSafeInteger(manifest.pageCount) || manifest.pageCount<1 || manifest.pageCount>1000000 || manifest.kind==='image-book' && manifest.files.length!==manifest.pageCount || manifest.kind!=='image-book' && manifest.files.length!==1)throw new Error('ページ情報が不正です。');
   let total=0;
   for(const [index,file] of manifest.files.entries()){
-    if(file.index!==index || !Number.isSafeInteger(file.size) || file.size<=0 || file.size>2147483648 || file.chunks!==Math.ceil(file.size/manifest.chunkSize) || !['video/mp4','video/webm','application/pdf','image/png','image/jpeg','image/webp'].includes(file.mime))throw new Error('ダウンロード情報が不正です。');
+    if(file.index!==index || !Number.isSafeInteger(file.size) || file.size<=0 || file.size>2147483648 || file.chunks!==Math.ceil(file.size/manifest.chunkSize) || !['video/mp4','video/webm','application/pdf','image/png','image/jpeg','image/webp','application/vnd.mirea.epub+json'].includes(file.mime) || (manifest.kind==='epub')!==(file.mime==='application/vnd.mirea.epub+json'))throw new Error('ダウンロード情報が不正です。');
     total+=file.size;
   }
   if(total>2147483648)throw new Error('ダウンロード容量の上限を超えています。');

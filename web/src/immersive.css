@@ -1,0 +1,23 @@
+/* Controls overlay the viewport; revealing them never resizes the media. */
+.viewer-screen{padding:0;background:var(--reader-bg)}
+.viewer-screen>.viewer-body{position:absolute;inset:0;width:100%;height:100%;padding:0;min-height:0;max-height:none;display:flex;overflow:hidden}
+.viewer-top{position:absolute;inset:0 0 auto;z-index:15;max-height:min(65dvh,520px);overflow:auto;padding-top:env(safe-area-inset-top);background:var(--surface);box-shadow:0 6px 28px #0003}
+.viewer-header{min-height:54px;padding:7px 64px 7px 14px;gap:12px}.viewer-header small{display:none}.viewer-header h1{font-size:12px}.viewer-back{padding:8px 10px}
+.viewer-meta:empty,.viewer-tools:empty{display:none}.viewer-meta .resume-toolbar{font-size:10px;padding:6px 16px;margin:0;flex-wrap:wrap;background:var(--surface)}
+.viewer-chrome-toggle{position:absolute;right:max(12px,env(safe-area-inset-right));top:max(10px,env(safe-area-inset-top));z-index:20;width:38px;height:34px;border:1px solid #ffffff35;border-radius:10px;background:#172035a6;color:#fff;box-shadow:0 2px 8px #0002;font-size:18px;letter-spacing:2px;opacity:.45}
+.viewer-chrome-toggle:hover,.viewer-chrome-toggle:focus-visible,.viewer-screen[data-chrome=visible]>.viewer-chrome-toggle{opacity:1}
+.viewer-screen[data-chrome=hidden] [data-viewer-chrome]{opacity:0;visibility:hidden;pointer-events:none}
+[data-viewer-chrome]{transition:opacity .15s,visibility .15s}
+.viewer-body.book-viewer{display:block}.book-workspace{width:100%;height:100%}.book-stage{padding:4px;outline:none;user-select:none;-webkit-user-select:none}.book-stage>.image-page{pointer-events:none;-webkit-user-drag:none}
+.book-stage>canvas,.book-stage>.image-page{animation:none}
+.book-toolbar{padding:5px 14px;min-height:44px}.book-footer{position:absolute;z-index:12;bottom:0;left:0;right:0;padding:6px max(16px,env(safe-area-inset-right)) max(6px,env(safe-area-inset-bottom));box-shadow:0 -6px 28px #0002;background:var(--surface)}.book-reading-hint{display:none}
+.book-directory-panel{position:absolute;inset:0 auto 0 0;width:min(300px,80vw);padding-top:calc(var(--viewer-top-height,140px) + 12px);box-shadow:12px 0 35px #0004}.viewer-screen[data-chrome=hidden] .book-directory-panel{display:none}
+.viewer-screen .series-reader-nav{padding:5px 16px;max-height:240px}.viewer-screen .series-book-end{font-size:11px;padding:8px 16px;margin:0}
+.viewer-screen .viewer-error{position:absolute;z-index:25;top:70px;left:5%;right:5%;margin:0;max-height:50%;overflow:auto}
+.video-screen .viewer-top,.video-screen .viewer-meta .resume-toolbar{background:#101724;color:#dce6fa}.mirea-player{width:100%;height:100%}
+@media(max-width:760px){.viewer-header{min-height:50px}.book-stage{padding:4px}.viewer-meta .download-source{display:none}}
+@media(prefers-reduced-motion:reduce){[data-viewer-chrome]{transition:none}}
+.epub-stage{display:block;padding:clamp(16px,3dvh,36px) clamp(12px,4vw,60px);background:var(--surface);font-size:clamp(17px,1.35vw,23px);color:var(--text)}
+.epub-viewport{height:100%;width:100%;max-width:1000px;margin:auto;overflow:hidden;position:relative}
+.epub-flow{width:100%;height:100%;column-count:auto;column-gap:48px;column-fill:auto;line-height:1.95;overflow:visible;overflow-wrap:anywhere;word-break:normal;font-family:Georgia,'Noto Serif JP','Yu Mincho',serif;will-change:transform}
+.epub-flow p{margin:0 0 1em;text-indent:1em}.epub-flow h1,.epub-flow h2,.epub-flow h3{line-height:1.5;break-after:avoid;margin:0 0 1em}.epub-flow img{display:block;max-width:100%;max-height:85%;object-fit:contain;margin:auto;break-inside:avoid;pointer-events:none}.epub-flow figure,.epub-flow table{break-inside:avoid;margin:0 0 1em;max-width:100%}.epub-flow pre{white-space:pre-wrap}.epub-flow a{color:var(--blue);text-decoration:underline;cursor:pointer}.epub-flow blockquote{margin:1em;padding-left:1em;border-left:2px solid var(--border)}.epub-flow td,.epub-flow th{border:1px solid var(--border);padding:5px}.epub-flow h1{font-size:1.6em}.epub-flow h2{font-size:1.35em}

@@ -10,7 +10,8 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, doc
   video.controls = false;
   const listeners = []; let disposed = false, timer, scrubbing = false;
   const listen = (target, event, fn, options) => { target.addEventListener(event, fn, options); listeners.push(() => target.removeEventListener(event, fn, options)); };
-  function showControls() { root.classList.remove('controls-hidden'); clearTimeout(timer); if (!video.paused) timer = setTimeout(() => { if (!video.paused && !root.querySelector('.player-controls').contains(doc.activeElement)) root.classList.add('controls-hidden'); }, 2600); }
+  const announceControls = visible => root.dispatchEvent(new CustomEvent('viewer:player-controls', { bubbles:true, detail:visible }));
+  function showControls() { root.classList.remove('controls-hidden'); announceControls(true); clearTimeout(timer); if (!video.paused) timer = setTimeout(() => { if (!video.paused && !root.querySelector('.player-controls').contains(doc.activeElement)) { root.classList.add('controls-hidden'); announceControls(false); } }, 2600); }
   const play = async () => { try { if (video.paused || video.ended) { if (video.ended) seekVideo(video, 0); await video.play(); } else video.pause(); } catch { if (!disposed) onError(new Error('再生を開始できません。再生ボタンを押すか、再接続してください。')); } };
   const fullscreen = () => { const screen = root.closest('.viewer-screen') ?? root; const result = doc.fullscreenElement ? doc.exitFullscreen?.() : screen.requestFullscreen?.(); result?.catch?.(() => {}); };
   function update() {

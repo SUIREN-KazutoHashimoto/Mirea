@@ -30,7 +30,7 @@ test('version 1 migration preserves accounts, shelves, items, sessions and ticke
     `);
     db.close();
     db = openDatabase(filename);
-    assert.equal(db.prepare('SELECT version FROM schema_version').get().version, 9);
+    assert.equal(db.prepare('SELECT version FROM schema_version').get().version, 10);
     assert.equal(db.prepare('SELECT name FROM users').get().name, 'Existing user');
     assert.equal(db.prepare('SELECT title FROM items').get().title, 'Existing PDF');
     assert.equal(db.prepare('SELECT thumbnail_ready FROM items').get().thumbnail_ready, 0);
@@ -63,7 +63,7 @@ test('version 5 upgrade adds resume state without deleting detailed analytics',a
       INSERT INTO analytics_events(event_id,view_id,seq,event_type,client_at,received_at,elapsed_ms,interval_ms,visible_ms,active_ms,watch_ms,payload_json,payload_hash)
       VALUES('event','view',1,'open',1,1,0,0,0,0,0,'{}','hash');`);
     db.close();db=openDatabase(filename);
-    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,9);
+    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,10);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM asset_progress').get().n,0);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM analytics_events').get().n,1);
     assert.equal(db.prepare('SELECT asset_title FROM analytics_views').get().asset_title,'Preserved');
@@ -92,7 +92,7 @@ test('version 7 upgrade adds empty series without altering existing assets, prog
     const tables=['users','memberships','items','asset_progress','encrypted_downloads','analytics_views','analytics_events'];
     const before=tables.map(table=>db.prepare(`SELECT * FROM ${table}`).all());
     db.close();db=openDatabase(filename);
-    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,9);
+    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,10);
     tables.forEach((table,index)=>assert.deepEqual(db.prepare(`SELECT * FROM ${table}`).all(),before[index],table));
     assert.equal(db.prepare('SELECT COUNT(*) n FROM series').get().n,0);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM series_items').get().n,0);
@@ -100,7 +100,7 @@ test('version 7 upgrade adds empty series without altering existing assets, prog
   }finally{db.close();await rm(folder,{recursive:true,force:true});}
 });
 
-test('real version 8 item-table rebuild preserves every child row and series guards, then safely clears deleted uploader attribution',async()=>{
+for (const oldVersion of [8,9]) test(`real version ${oldVersion} item-table rebuild preserves every child row and series guards, then safely clears deleted uploader attribution`,async()=>{
   const folder=await mkdtemp(join(tmpdir(),'mirea-account-migration-')),filename=join(folder,'migration.sqlite');
   let db=openDatabase(filename);
   try{
@@ -117,18 +117,20 @@ test('real version 8 item-table rebuild preserves every child row and series gua
       INSERT INTO series_items VALUES('series','i',1,'Volume');`);
     const oldDefinition=db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='items'").get().sql
       .replace('CREATE TABLE "items"','CREATE TABLE items_v8').replace('CREATE TABLE items (','CREATE TABLE items_v8 (')
-      .replace('uploaded_by TEXT REFERENCES users(id) ON DELETE SET NULL','uploaded_by TEXT NOT NULL REFERENCES users(id)');
+      .replace(",'application/epub+zip'",'')
+      .replace('uploaded_by TEXT REFERENCES users(id) ON DELETE SET NULL',oldVersion===8?'uploaded_by TEXT NOT NULL REFERENCES users(id)':'uploaded_by TEXT REFERENCES users(id) ON DELETE SET NULL');
     assert.match(oldDefinition,/CREATE TABLE items_v8/);
     const guards=db.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name LIKE 'series_%'").all();
     db.exec('PRAGMA foreign_keys=OFF');
     for(const {name} of db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'series_%'").all())db.exec(`DROP TRIGGER ${name}`);
-    db.exec(`${oldDefinition};INSERT INTO items_v8 SELECT * FROM items;DROP TABLE items;ALTER TABLE items_v8 RENAME TO items;UPDATE schema_version SET version=8;`);
+    db.exec(`${oldDefinition};INSERT INTO items_v8 SELECT * FROM items;DROP TABLE items;ALTER TABLE items_v8 RENAME TO items;UPDATE schema_version SET version=${oldVersion};`);
     for(const {sql} of guards)db.exec(sql);
     const tables=['users','shelves','memberships','sessions','items','image_pages','playback_tickets','asset_progress','encrypted_downloads','series','series_items'];
     const before=tables.map(table=>db.prepare(`SELECT * FROM ${table}`).all());
     db.close();db=openDatabase(filename);
     tables.forEach((table,index)=>assert.deepEqual(db.prepare(`SELECT * FROM ${table}`).all(),before[index],table));
-    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,9);
+    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,10);
+    db.prepare("INSERT INTO items VALUES('epub','s','EPUB','book.epub','application/epub+zip',100,NULL,1,2,1)").run();
     assert.throws(()=>db.prepare("UPDATE items SET shelf_id='other' WHERE id='i'").run(),/before moving/);
     assert.throws(()=>db.prepare("UPDATE series SET shelf_id='other' WHERE id='series'").run(),/before moving/);
     db.prepare("DELETE FROM users WHERE id='u'").run();

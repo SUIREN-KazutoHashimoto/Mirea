@@ -6,10 +6,11 @@ import { Transform, Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { httpError } from './security.js';
 import { IMAGE_TYPES, MAX_BOOK_PAGES, MAX_IMAGE_BYTES, removeItemDirectory } from './media.js';
+import { EPUB_MIME, MAX_EPUB_BYTES } from './ebook-types.js';
 import { publishStagedUpload } from './upload-publish.js';
 
 const UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
-const MIME_TYPES = ['application/pdf', 'video/mp4', 'video/webm', ...IMAGE_TYPES];
+const MIME_TYPES = ['application/pdf', EPUB_MIME, 'video/mp4', 'video/webm', ...IMAGE_TYPES];
 const integer = { type: 'integer', minimum: 0 };
 
 export async function registerResumableUploads(app, context) {
@@ -136,8 +137,9 @@ export async function registerResumableUploads(app, context) {
   }, async (req, reply) => {
     membership(req.params.id, req.user.id, ['owner', 'editor']);
     const title = req.body.title.trim(), files = req.body.files;
+    if (files.some(file=>file.mime===EPUB_MIME && file.size>MAX_EPUB_BYTES)) throw httpError(413,'EPUBは64 MiB以下にしてください。');
     if (!title) throw httpError(400, 'タイトルを入力してください。');
-    if (files.length > 1 && !files.every(file => IMAGE_TYPES.includes(file.mime))) throw httpError(400, '画像の本は画像だけを選択してください。PDF・動画は1ファイルずつ登録します。');
+    if (files.length > 1 && !files.every(file => IMAGE_TYPES.includes(file.mime))) throw httpError(400, '画像の本は画像だけを選択してください。PDF・EPUB・動画は1ファイルずつ登録します。');
     if (files.some(file => IMAGE_TYPES.includes(file.mime) && file.size > MAX_IMAGE_BYTES) || files.reduce((sum, file) => sum + file.size, 0) > maxUploadBytes) {
       throw httpError(413, 'アップロードの合計、または画像1枚のサイズ上限を超えています。');
     }

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { transaction } from './database.js';
 import { httpError, matchesFileType } from './security.js';
 import { IMAGE_TYPES, IMAGE_BOOK_MIME, imageExtension, removeItemDirectory } from './media.js';
+import { EPUB_MIME } from './ebook-types.js';
 
 // Only fully verified media is published. An upload ID also becomes its item ID,
 // allowing a persisted job to recognize publication after an interrupted restart.
@@ -15,6 +16,7 @@ export async function publishStagedUpload({ db, media, uploadDir, stagingDir, bo
   const existing = db.prepare('SELECT * FROM items WHERE id=?').get(id);
   if (existing) return publicItem(existing);
   const isBook = IMAGE_TYPES.includes(files[0].mime);
+  const isEpub = files[0].mime === EPUB_MIME;
   const pages = [];
   try {
     // Recover uncommitted filesystem moves from a process crash. Chunk sources
@@ -40,13 +42,14 @@ export async function publishStagedUpload({ db, media, uploadDir, stagingDir, bo
       authorize();
     }
     const first = files[0];
-    const thumbnail = await media.thumbnail(join(stage, isBook ? `1.${imageExtension(first.mime)}` : 'raw-1'), first.mime, join(stage, 'thumbnail.jpg'));
+    const thumbnail = await media.thumbnail(join(stage, isBook ? `1.${imageExtension(first.mime)}` : 'raw-1'), first.mime, join(stage, 'thumbnail.jpg'), isEpub ? join(stage,'book.json') : undefined);
     authorize();
     await rename(join(stage, 'thumbnail.jpg'), finalThumbnail);
     if (isBook) await rename(stage, join(booksDir, id));
     else {
       await rename(join(stage, 'raw-1'), finalPath);
-      await removeItemDirectory(stagingDir, id);
+      if (isEpub) await rename(stage,join(booksDir,id));
+      else await removeItemDirectory(stagingDir, id);
     }
     authorize();
     transaction(db, () => {

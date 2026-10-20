@@ -14,7 +14,7 @@ export async function openPdf(container, item, onError, tracker, progress, downl
   const input = container.querySelector('.page-input');
   const previous = container.querySelector('.previous');
   const next = container.querySelector('.next');
-  const zoom = container.querySelector('.book-zoom');
+  const zoom = chrome.zoom;
   let pdf, task, current = Math.max(1,Math.min(item.pageCount,progress?.initial?.page??1)), displayedPage=current, ready=false, disposed = false, generation = 0;
   const updateNext=()=>{
     const continues=ready && current===pdf?.numPages && seriesNavigation?.canContinue;
@@ -88,7 +88,7 @@ export async function openPdf(container, item, onError, tracker, progress, downl
   }});
   let resizeTimer;
   const observer = new ResizeObserver(() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(redraw, 100); });
-  observer.observe(stage);
+  observer.observe(stage,{box:'border-box'});
   load.promise.then(document => {
     if (disposed) return;
     pdf = document;
