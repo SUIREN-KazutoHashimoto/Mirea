@@ -1,5 +1,6 @@
 import './style.css';
 import './workspace.css';
+import './immersive.css';
 import { api, native, getEndpoint, setEndpoint, getSession, setSession, upload, absoluteUrl, authenticatedBlob } from './api.js';
 import { openImageBook } from './image-reader.js';
 import { App } from '@capacitor/app';
@@ -296,8 +297,8 @@ function renderItems() {
   }
   node.innerHTML = selected.map(item => {
     const isBook = item.kind !== 'video';
-    const label = item.kind === 'image-book' ? `画像・${item.pageCount}ページ` : item.kind === 'pdf' ? 'PDF' : item.mimeType === 'video/mp4' ? 'MP4' : 'WebM';
-    return `<article class="media-card"><button class="card-open" data-open="${item.id}" ${isBook ? '' : `data-preview-id="${item.id}"`} aria-label="${esc(item.title)}を${isBook ? '読む' : '再生する'}"><div class="card-art actual-cover ${isBook ? 'book-cover' : 'video-cover'}"><img data-thumbnail="${esc(item.thumbnailUrl)}" alt="${esc(item.title)}のサムネイル"><span class="cover-placeholder">${icon(isBook ? 'book' : 'video')}<span>表紙を読み込んでいます…</span></span><span class="media-type">${item.kind === 'image-book' ? 'IMAGE BOOK' : isBook ? 'PDF' : 'VIDEO'}</span><span class="card-open-label">${isBook ? '本を開く' : '再生する'} ${icon('arrow')}</span></div><div class="card-content"><span class="card-shelf">${icon('shelf')}${esc(item.shelfName)}</span><h3>${esc(item.title)}</h3><div class="card-meta"><span>${label} <span class="meta-dot">·</span> ${bytes(item.size)}</span><span>${date(item.createdAt)}</span></div><div class="card-progress">${esc(progressLabel(item,item.progress))}</div></div></button>${item.role !== 'viewer' ? `<button class="card-delete icon-button" data-delete="${item.id}" aria-label="${esc(item.title)}を削除">${icon('trash')}</button>` : ''}</article>`;
+    const label = item.kind === 'image-book' ? `画像・${item.pageCount}ページ` : item.kind === 'epub' ? 'EPUB' : item.kind === 'pdf' ? 'PDF' : item.mimeType === 'video/mp4' ? 'MP4' : 'WebM';
+    return `<article class="media-card"><button class="card-open" data-open="${item.id}" ${isBook ? '' : `data-preview-id="${item.id}"`} aria-label="${esc(item.title)}を${isBook ? '読む' : '再生する'}"><div class="card-art actual-cover ${isBook ? 'book-cover' : 'video-cover'}"><img data-thumbnail="${esc(item.thumbnailUrl)}" alt="${esc(item.title)}のサムネイル"><span class="cover-placeholder">${icon(isBook ? 'book' : 'video')}<span>表紙を読み込んでいます…</span></span><span class="media-type">${item.kind === 'image-book' ? 'IMAGE BOOK' : item.kind==='epub' ? 'EPUB' : isBook ? 'PDF' : 'VIDEO'}</span><span class="card-open-label">${isBook ? '本を開く' : '再生する'} ${icon('arrow')}</span></div><div class="card-content"><span class="card-shelf">${icon('shelf')}${esc(item.shelfName)}</span><h3>${esc(item.title)}</h3><div class="card-meta"><span>${label} <span class="meta-dot">·</span> ${bytes(item.size)}</span><span>${date(item.createdAt)}</span></div><div class="card-progress">${esc(progressLabel(item,item.progress))}</div></div></button>${item.role !== 'viewer' ? `<button class="card-delete icon-button" data-delete="${item.id}" aria-label="${esc(item.title)}を削除">${icon('trash')}</button>` : ''}</article>`;
   }).join('');
   node.querySelectorAll('[data-open]').forEach(button => { button.onclick = () => openViewer(items.find(i => i.id === button.dataset.open)); });
   node.querySelectorAll('[data-delete]').forEach(button => { button.onclick = () => deleteItem(items.find(i => i.id === button.dataset.delete)); });
@@ -337,10 +338,10 @@ function openCreateShelf() {
 function openUpload() {
   const editable = shelves.filter(s => s.role !== 'viewer');
   if (!editable.length) return openCreateShelf();
-  const node = dialog('コンテンツを追加', `<form class="modal-body" id="upload-form"><label>追加する本棚<select name="shelf">${editable.map(s => `<option value="${s.id}" ${s.id === activeShelf ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label><label class="dropzone" id="dropzone"><input name="file" type="file" aria-label="アップロードするファイル" accept="application/pdf,video/mp4,video/webm,image/jpeg,image/png,image/webp,.pdf,.mp4,.webm,.jpg,.jpeg,.png,.webp" multiple required>${icon('upload')}<strong id="file-label">ファイルを選択、またはドロップ</strong><span>PDF / 動画は1ファイル・画像は複数枚で1冊</span><small>JPEG / PNG / WebP（静止画）・合計 ${bytes(config.maxUploadBytes)}まで</small></label><div id="selected-files" hidden></div><label>タイトル<input name="title" maxlength="200" required placeholder="ライブラリに表示するタイトル"></label><p class="thumbnail-note">${icon('book')} 表紙はPDFの1ページ目、動画のフレーム、画像の本の先頭ページから生成します。</p><div class="upload-progress" hidden><div><span id="upload-status">アップロード中…</span><span id="upload-percent">0%</span></div><progress max="100" value="0" aria-label="アップロードの進行状況"></progress></div><p class="form-error" role="alert" hidden></p><div class="modal-actions"><button class="button primary" type="submit">${icon('upload')}アップロードする</button></div></form>`);
+  const node = dialog('コンテンツを追加', `<form class="modal-body" id="upload-form"><label>追加する本棚<select name="shelf">${editable.map(s => `<option value="${s.id}" ${s.id === activeShelf ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label><label class="dropzone" id="dropzone"><input name="file" type="file" aria-label="アップロードするファイル" accept="application/epub+zip,.epub,application/pdf,video/mp4,video/webm,image/jpeg,image/png,image/webp,.pdf,.mp4,.webm,.jpg,.jpeg,.png,.webp" multiple required>${icon('upload')}<strong id="file-label">ファイルを選択、またはドロップ</strong><span>PDF / EPUB / 動画は1ファイル・画像は複数枚で1冊</span><small>JPEG / PNG / WebP（静止画）・合計 ${bytes(config.maxUploadBytes)}まで</small></label><div id="selected-files" hidden></div><label>タイトル<input name="title" maxlength="200" required placeholder="ライブラリに表示するタイトル"></label><p class="thumbnail-note">${icon('book')} 表紙はEPUBのカバー・PDFの1ページ目、動画のフレーム、画像の本の先頭ページから生成します。</p><div class="upload-progress" hidden><div><span id="upload-status">アップロード中…</span><span id="upload-percent">0%</span></div><progress max="100" value="0" aria-label="アップロードの進行状況"></progress></div><p class="form-error" role="alert" hidden></p><div class="modal-actions"><button class="button primary" type="submit">${icon('upload')}アップロードする</button></div></form>`);
   const form = node.querySelector('form'), input = form.elements.file, zone = node.querySelector('#dropzone');
   const errorBox = form.querySelector('.form-error');
-  const mimeByExtension = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', pdf: 'application/pdf', mp4: 'video/mp4', webm: 'video/webm' };
+  const mimeByExtension = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', pdf: 'application/pdf', epub: 'application/epub+zip', mp4: 'video/mp4', webm: 'video/webm' };
   const imageMime = file => ['image/jpeg', 'image/png', 'image/webp'].includes(file.type);
   let selectedFiles = [], activeUpload, lastDefaultTitle = '';
   const previewUrls = new Map();
@@ -370,7 +371,7 @@ function openUpload() {
   const selectFiles = incoming => {
     for (const url of previewUrls.values()) URL.revokeObjectURL(url);
     previewUrls.clear();
-    selectedFiles = Array.from(incoming).map(file => file.type ? file : new File([file], file.name, { type: mimeByExtension[file.name.split('.').pop().toLowerCase()] || 'application/octet-stream', lastModified: file.lastModified }));
+    selectedFiles = Array.from(incoming).map(file => file.type && !(file.name.toLowerCase().endsWith('.epub') && file.type !== 'application/epub+zip') ? file : new File([file], file.name, { type: mimeByExtension[file.name.split('.').pop().toLowerCase()] || 'application/octet-stream', lastModified: file.lastModified }));
     if (selectedFiles.every(imageMime)) selectedFiles.sort((a, b) => a.name.localeCompare(b.name, 'ja', { numeric: true, sensitivity: 'base' }));
     if (selectedFiles.length && (!form.elements.title.value || form.elements.title.value === lastDefaultTitle)) {
       lastDefaultTitle = selectedFiles[0].name.replace(/\.[^.]+$/, '').slice(0, 200);
@@ -391,9 +392,10 @@ function openUpload() {
     let validation;
     const allImages = selectedFiles.every(imageMime);
     if (!selectedFiles.length) validation = 'ファイルを選択してください。';
-    else if (selectedFiles.length > 1 && !allImages) validation = 'PDF・動画は1ファイルずつ、画像の本は画像だけを選択してください。';
+    else if (selectedFiles.length > 1 && !allImages) validation = 'PDF・EPUB・動画は1ファイルずつ、画像の本は画像だけを選択してください。';
     else if (selectedFiles.length > config.maxBookPages) validation = `1冊は${config.maxBookPages}ページまでです。`;
     else if (allImages && selectedFiles.some(file => file.size > config.maxImageBytes)) validation = `画像は1枚${bytes(config.maxImageBytes)}以下にしてください。`;
+    else if (selectedFiles.some(file => file.type==='application/epub+zip' && file.size>(config.maxEpubBytes??64*1024*1024))) validation = 'EPUBは64 MiB以下にしてください。';
     else if (selectedFiles.reduce((sum, file) => sum + file.size, 0) > config.maxUploadBytes) validation = `合計${bytes(config.maxUploadBytes)}以下で選択してください。`;
     if (validation) { errorBox.textContent = validation; errorBox.hidden = false; return; }
     button.disabled = true;
@@ -481,7 +483,7 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false}={}) {
   node.addEventListener('close', () => { seriesNavigation.dispose();progress?.dispose();tracker?.dispose();cleanup?.();const video=body.querySelector('video');video?.pause();downloaded?.dispose();if(downloaded && video){video.removeAttribute('src');video.load();} }, { once: true });
   const progressBar=document.createElement('div');progressBar.className='resume-toolbar';
   progressBar.innerHTML='<span class="resume-status" role="status">続き位置を確認しています…</span><button class="text-button" type="button" disabled>最初から</button>';
-  body.before(progressBar);
+  node.querySelector('.viewer-meta').append(progressBar);
   const resumeStatus=progressBar.querySelector('.resume-status'),restart=progressBar.querySelector('button');
   const updateStatus=state=>{
     const messages={pending:'続き位置は送信待ちです。接続後に再送します。',conflict:'別の画面で進行度が更新されました。この画面の保存を停止しました。開き直してください。',forbidden:'続き位置を保存する権限がありません。',unauthorized:'続き位置を保存するには再ログインが必要です。',saved:'続き位置を保存しました。'};
@@ -519,6 +521,10 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false}={}) {
     else if(resumeStatus.textContent==='続き位置を確認しています…')resumeStatus.textContent='閲覧中は続き位置を自動保存します。';
     if (item.kind === 'image-book') {
       cleanup = openImageBook(body, item, onError, tracker,progress,downloaded,seriesNavigation);
+    } else if (item.kind === 'epub') {
+      const { openEpub } = await import('./epub-reader.js');
+      if (!node.isConnected) return;
+      cleanup = openEpub(body,item,onError,tracker,progress,downloaded,seriesNavigation);
     } else if (isPdf) {
       const { openPdf } = await import('./pdf-reader.js');
       if (!node.isConnected) return;
@@ -571,7 +577,7 @@ function openDownloadManager(){
 }
 function progressLabel(item,position){
   if(!position)return '';
-  if(item.kind!=='video')return `続きから: ${position.page} / ${item.pageCount}ページ`;
+  if(item.kind!=='video')return `続きから: ${position.page} / ${item.pageCount}${item.kind==='epub'?'章':'ページ'}`;
   const time=ms=>{const seconds=Math.floor((ms??0)/1000);return `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`;};
   return position.completed?'最後まで再生済み（次回は最初から）':`続きから: ${time(position.positionMs)} / ${time(position.durationMs)}`;
 }

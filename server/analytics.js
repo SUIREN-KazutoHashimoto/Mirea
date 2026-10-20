@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { transaction } from './database.js';
 import { httpError } from './security.js';
 import { IMAGE_BOOK_MIME } from './media.js';
+import { EPUB_MIME } from './ebook-types.js';
 
 const DAY = 86400000, MAX_SESSION = 7 * DAY, BIN_MS = 10000;
 const uuid = { type: 'string', pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' };
@@ -20,7 +21,7 @@ const properties = {
   errorCode: { enum: ['network','decode','render','load','unknown'] }
 };
 const canonical = event => JSON.stringify(Object.fromEntries(Object.keys(event).sort().map(key => [key, event[key]])));
-const kindOf = item => item.mime_type === IMAGE_BOOK_MIME ? 'image-book' : item.mime_type === 'application/pdf' ? 'pdf' : 'video';
+const kindOf = item => item.mime_type === IMAGE_BOOK_MIME ? 'image-book' : item.mime_type === EPUB_MIME ? 'epub' : item.mime_type === 'application/pdf' ? 'pdf' : 'video';
 
 export async function registerAnalytics(app, { db, authenticate, membership, findItem, options }) {
   const enabled = options.analyticsEnabled ?? process.env.ANALYTICS_ENABLED !== 'false';

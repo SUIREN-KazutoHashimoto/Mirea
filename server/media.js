@@ -5,6 +5,7 @@ import { access, rename, rm, stat, unlink } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import bundledFfmpeg from 'ffmpeg-static';
 import { httpError } from './security.js';
+import { EPUB_MIME } from './ebook-types.js';
 
 export const IMAGE_BOOK_MIME = 'application/vnd.mirea.image-book';
 export const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
@@ -66,14 +67,14 @@ function workerOperation(data) {
       workerData: data, resourceLimits: { maxOldGenerationSizeMb: 256 }
     });
     let receivedResult = false;
-    const timer = setTimeout(() => { worker.terminate(); reject(httpError(422, '画像・PDFの処理が時間内に完了しませんでした。')); }, 30_000);
+    const timer = setTimeout(() => { worker.terminate(); reject(httpError(422, '本・画像の処理が時間内に完了しませんでした。')); }, 30_000);
     worker.once('message', async result => {
       receivedResult = true;
       clearTimeout(timer);
       // Native decoders may hold source files open until the worker exits on Windows.
       await worker.terminate();
       if (result.error && process.env.TEST_LOG === '1') console.error('Media worker:', result.error);
-      if (result.error) reject(httpError(422, '画像またはPDFを読み込めません。破損・暗号化・対応形式を確認してください。'));
+      if (result.error) reject(httpError(422, data.mode==='epub-thumbnail'?'EPUBを読み込めません。破損・DRM・固定レイアウト・サイズ制限を確認してください。':'画像またはPDFを読み込めません。破損・暗号化・対応形式を確認してください。'));
       else resolve(result);
     });
     worker.once('error', error => { clearTimeout(timer); reject(error); });
@@ -103,7 +104,7 @@ export function createMediaProcessor() {
         ], 'プレビュー', MAX_PREVIEW_BYTES);
       });
     },
-    thumbnail(source, mime, destination) {
+    thumbnail(source, mime, destination, bundlePath) {
       return enqueue(async () => {
         if (mime.startsWith('video/')) {
           // Sample at most 30 frames from the opening 2.5 seconds. At EOF,
@@ -116,7 +117,7 @@ export function createMediaProcessor() {
           ], 'サムネイル');
           return { pageCount: 1 };
         }
-        return workerOperation({ source, destination, mode: mime === 'application/pdf' ? 'pdf-thumbnail' : 'image-thumbnail' });
+        return workerOperation({ source, destination, bundlePath, mode: mime === EPUB_MIME ? 'epub-thumbnail' : mime === 'application/pdf' ? 'pdf-thumbnail' : 'image-thumbnail' });
       });
     }
   };

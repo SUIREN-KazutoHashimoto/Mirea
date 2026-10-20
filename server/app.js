@@ -4,7 +4,7 @@ import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import { randomUUID } from 'node:crypto';
-import { mkdir, rename, unlink, access } from 'node:fs/promises';
+import { mkdir, rename, unlink, access, stat } from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +20,7 @@ import { registerProgress, publicProgress } from './progress.js';
 import { registerDownloads } from './downloads.js';
 import { registerSeries, shelfSeries, shelfSeriesMembership } from './series.js';
 import { registerAccounts } from './accounts.js';
+import { EPUB_MIME, EPUB_BUNDLE_MIME, MAX_EPUB_BYTES } from './ebook-types.js';
 import packageInfo from '../package.json' with {type:'json'};
 
 const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -33,7 +34,7 @@ const memberRole = { type: 'string', enum: ['editor', 'viewer'] };
 const publicUser = u => ({ id: u.id, email: u.email, name: u.name });
 const publicItem = i => ({
   id: i.id, shelfId: i.shelf_id, title: i.title, filename: i.filename, mimeType: i.mime_type,
-  kind: i.mime_type === IMAGE_BOOK_MIME ? 'image-book' : i.mime_type === 'application/pdf' ? 'pdf' : 'video',
+  kind: i.mime_type === IMAGE_BOOK_MIME ? 'image-book' : i.mime_type === EPUB_MIME ? 'epub' : i.mime_type === 'application/pdf' ? 'pdf' : 'video',
   pageCount: i.page_count, thumbnailUrl: `/api/v1/items/${i.id}/thumbnail`, size: i.size, createdAt: i.created_at
 });
 
@@ -121,7 +122,7 @@ export async function createApp(options = {}) {
   const authLimits = { config: { rateLimit: options.rateLimit === false ? false : { max: 10, timeWindow: '1 minute' } } };
   app.get('/api/health', async () => ({ status: 'ok',version:packageInfo.version }));
   let analytics;
-  app.get('/api/v1/config', async () => ({ allowRegistration, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, uploadChunkBytes: chunkSize, uploadSessionHours: 24, analytics,
+  app.get('/api/v1/config', async () => ({ allowRegistration, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadSessionHours: 24, analytics,
     version: packageInfo.version, androidApkUrl: 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.2.0beta/mirea-0.2.0beta-android-debug.apk' }));
   app.post('/api/v1/auth/register', { ...authLimits, schema: { body: object({ email, password, name: text(80) }) } }, async (req, reply) => {
     if (!allowRegistration) throw httpError(403, '新規登録は現在停止しています。');
@@ -227,13 +228,13 @@ export async function createApp(options = {}) {
           continue;
         }
         const isImage = IMAGE_TYPES.includes(part.mimetype);
-        if (part.fieldname !== 'file' || !['application/pdf', 'video/mp4', 'video/webm', ...IMAGE_TYPES].includes(part.mimetype)) {
+        if (part.fieldname !== 'file' || !['application/pdf', EPUB_MIME, 'video/mp4', 'video/webm', ...IMAGE_TYPES].includes(part.mimetype)) {
           part.file.resume();
-          throw httpError(415, 'PDF・MP4・WebM、またはJPEG・PNG・WebP画像を選択してください。');
+          throw httpError(415, 'PDF・EPUB・MP4・WebM、またはJPEG・PNG・WebP画像を選択してください。');
         }
         if (files.length && (!isImage || !isImageBook)) {
           part.file.resume();
-          throw httpError(400, 'PDF・動画は1ファイルずつ、画像の本は画像だけを選択してください。');
+          throw httpError(400, 'PDF・EPUB・動画は1ファイルずつ、画像の本は画像だけを選択してください。');
         }
         isImageBook = isImage;
         const number = files.length + 1;
@@ -243,6 +244,7 @@ export async function createApp(options = {}) {
         const inspect = new Transform({ transform(chunk, _encoding, callback) {
           receivedBytes += chunk.length;
           fileSize += chunk.length;
+          if (file.mime===EPUB_MIME && fileSize>MAX_EPUB_BYTES) return callback(httpError(413,'EPUBは64 MiB以下にしてください。'));
           if (receivedBytes > maxUploadBytes || (isImage && fileSize > MAX_IMAGE_BYTES)) {
             return callback(httpError(413, isImage && fileSize > MAX_IMAGE_BYTES ? '画像は1枚25 MiB以下にしてください。' : 'アップロードの合計サイズ上限を超えています。'));
           }
@@ -266,7 +268,7 @@ export async function createApp(options = {}) {
       const uploaded = files[0];
       title = (title || uploaded.filename.replace(/\.[^.]+$/, '')).trim();
       if (!title || title.length > 200) throw httpError(400, 'タイトルは1〜200文字で入力してください。');
-      const thumbnail = await media.thumbnail(join(stage, isImageBook ? `1.${imageExtension(uploaded.mime)}` : 'raw-1'), uploaded.mime, join(stage, 'thumbnail.jpg'));
+      const thumbnail = await media.thumbnail(join(stage, isImageBook ? `1.${imageExtension(uploaded.mime)}` : 'raw-1'), uploaded.mime, join(stage, 'thumbnail.jpg'), uploaded.mime===EPUB_MIME?join(stage,'book.json'):undefined);
       // Uploads can take a long time; recheck revoked sessions and membership before publishing.
       authenticate(req);
       membership(req.params.id, req.user.id, ['owner', 'editor']);
@@ -274,7 +276,8 @@ export async function createApp(options = {}) {
       if (isImageBook) await rename(stage, join(booksDir, id));
       else {
         await rename(join(stage, 'raw-1'), finalPath);
-        await removeItemDirectory(stagingDir, id);
+        if (uploaded.mime===EPUB_MIME) await rename(stage,join(booksDir,id));
+        else await removeItemDirectory(stagingDir, id);
       }
       // Recheck after the last asynchronous operation, immediately before the database write.
       authenticate(req);
@@ -297,6 +300,7 @@ export async function createApp(options = {}) {
     db.prepare('DELETE FROM items WHERE id=?').run(req.params.id);
     const results = await Promise.allSettled([
       item.mime_type === IMAGE_BOOK_MIME ? removeItemDirectory(booksDir, item.id) : unlink(join(uploadDir, item.id)),
+      ...(item.mime_type===EPUB_MIME?[removeItemDirectory(booksDir,item.id)]:[]),
       unlink(join(thumbnailDir, `${item.id}.jpg`)),
       videoPreviews.remove(item.id)
     ]);
@@ -320,6 +324,16 @@ export async function createApp(options = {}) {
       url: `/api/v1/items/${item.id}/pages/${page.page_number}/content`
     })) };
   });
+  app.route({method:['GET','HEAD'],url:'/api/v1/items/:id/epub',...auth,handler:async(req,reply)=>{
+    const item=findItem(req.params.id,req.user.id);
+    if(item.mime_type!==EPUB_MIME)throw httpError(400,'EPUBではありません。');
+    const path=join(booksDir,item.id,'book.json');
+    const info=await stat(path).catch(()=>{throw httpError(404,'EPUBの閲覧データが見つかりません。');});
+    authenticate(req);
+    findItem(item.id,req.user.id);
+    reply.type(EPUB_BUNDLE_MIME).header('Content-Length',info.size);
+    return req.method==='HEAD'?reply.send():reply.send(createReadStream(path));
+  }});
   app.route({ method: ['GET', 'HEAD'], url: '/api/v1/items/:id/pages/:number/content', ...auth, handler: async (req, reply) => {
     const item = findItem(req.params.id, req.user.id);
     if (item.mime_type !== IMAGE_BOOK_MIME || !/^[1-9]\d{0,3}$/.test(req.params.number)) throw httpError(404, 'ページが見つかりません。');

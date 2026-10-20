@@ -10,7 +10,7 @@ export function openImageBook(container, item, onError, tracker, progress, downl
   const input = container.querySelector('.page-input');
   const previous = container.querySelector('.previous');
   const next = container.querySelector('.next');
-  const zoom = container.querySelector('.book-zoom');
+  const zoom = chrome.zoom;
   const loading = container.querySelector('.image-loading');
   let pages = [], current = 1, displayedPage=1, ready=false,disposed = false, request, objectUrl, generation = 0,restartRequested=false;
   const updateNext=()=>{
@@ -27,7 +27,7 @@ export function openImageBook(container, item, onError, tracker, progress, downl
     const page = pages[current - 1];
     if (!page) return;
     const anchor=ready?bookPosition(stage,displayedPage,zoom.value):null;
-    const scale = bookScale(page.width,page.height,stage.clientWidth,stage.clientHeight,zoom.value,1);
+    const scale = bookScale(page.width,page.height,stage.clientWidth,stage.clientHeight,zoom.value);
     stage.style.touchAction=zoom.value==='fit'?'pan-y pinch-zoom':'pan-x pan-y pinch-zoom';
     image.style.width = `${Math.max(1, page.width * scale)}px`;
     if(anchor)restoreBookPosition(stage,anchor);
@@ -73,7 +73,7 @@ export function openImageBook(container, item, onError, tracker, progress, downl
   stage.addEventListener('scroll',scroll,{passive:true});
   chrome.bind({go,next:advance,previous:()=>go(current-1),outline:()=>chrome.outline([])});
   const observer = new ResizeObserver(resize);
-  observer.observe(stage);
+  observer.observe(stage,{box:'border-box'});
   previous.disabled = next.disabled = true;
   (downloaded?Promise.resolve({pages:downloaded.pages}):api(`/items/${item.id}/pages`, { signal: manifestRequest.signal })).then(result => {
     if (disposed) return;

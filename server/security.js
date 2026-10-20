@@ -43,6 +43,7 @@ export function parseRange(header, size) {
 }
 
 export function matchesFileType(mime, head) {
+  if (mime === 'application/epub+zip') return head.length >= 4 && head.subarray(0,4).equals(Buffer.from([0x50,0x4b,3,4]));
   if (mime === 'application/pdf') return head.subarray(0, 5).toString() === '%PDF-';
   if (mime === 'video/mp4') return head.length >= 12 && head.subarray(4, 8).toString() === 'ftyp';
   if (mime === 'video/webm') return head.length >= 4 && head.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));

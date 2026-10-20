@@ -3,6 +3,7 @@ import { mkdir,readFile,writeFile,stat,open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { httpError } from './security.js';
 import { IMAGE_BOOK_MIME,imageExtension } from './media.js';
+import { EPUB_MIME, EPUB_BUNDLE_MIME } from './ebook-types.js';
 
 const CHUNK=1024*1024;
 const aad=(id,file,part,length)=>Buffer.from(`mirea-download-v1|${id}|${file}|${part}|${length}`);
@@ -39,16 +40,17 @@ export async function registerDownloads(app,{db,dataDir,uploadDir,booksDir,authe
     if(!row)throw httpError(404,'ダウンロードが見つかりません。');
     return {row,item:findItem(row.asset_id,req.user.id)};
   }
-  function source(item,file){return item.mime_type===IMAGE_BOOK_MIME?join(booksDir,item.id,`${file.number}.${imageExtension(file.mime)}`):join(uploadDir,item.id);}
+  function source(item,file){return item.mime_type===EPUB_MIME?join(booksDir,item.id,'book.json'):item.mime_type===IMAGE_BOOK_MIME?join(booksDir,item.id,`${file.number}.${imageExtension(file.mime)}`):join(uploadDir,item.id);}
   async function manifestFor(item){
     const files=item.mime_type===IMAGE_BOOK_MIME?db.prepare('SELECT page_number AS number,size,mime_type AS mime,width,height FROM image_pages WHERE item_id=? ORDER BY page_number').all(item.id):[{number:1,size:item.size,mime:item.mime_type}];
+    if(item.mime_type===EPUB_MIME){files[0].size=(await stat(source(item,files[0])).catch(()=>{throw httpError(404,'EPUBの閲覧データが見つかりません。');})).size;files[0].mime=EPUB_BUNDLE_MIME;}
     if(!files.length)throw httpError(404,'原本が見つかりません。');
     for(const [index,file] of files.entries()){
       const info=await stat(source(item,file)).catch(()=>{throw httpError(404,'原本が見つかりません。');});
       if(!info.isFile() || info.size!==file.size)throw httpError(409,'原本のサイズが変更されています。');
       Object.assign(file,{index,chunks:Math.ceil(file.size/CHUNK),stamp:info.mtimeMs});
     }
-    return {version:1,algorithm:'AES-256-GCM',chunkSize:CHUNK,assetId:item.id,title:item.title,kind:item.mime_type===IMAGE_BOOK_MIME?'image-book':item.mime_type==='application/pdf'?'pdf':'video',pageCount:item.page_count,files};
+    return {version:1,algorithm:'AES-256-GCM',chunkSize:CHUNK,assetId:item.id,title:item.title,kind:item.mime_type===IMAGE_BOOK_MIME?'image-book':item.mime_type===EPUB_MIME?'epub':item.mime_type==='application/pdf'?'pdf':'video',pageCount:item.page_count,files};
   }
   const publicManifest=(row,manifest)=>({...manifest,id:row.id,files:manifest.files.map(({stamp,...file})=>file)});
   async function validateSource(row,item){

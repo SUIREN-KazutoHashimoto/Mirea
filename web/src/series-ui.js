@@ -16,7 +16,7 @@ export function openSeriesManager({dialog,api,esc,shelves,initialShelfId,initial
     try{
       const result=await api(`/shelves/${shelfId}/series`);
       if(!alive() || revision!==generation)return;
-      body.innerHTML=`<label>本棚<select class="series-shelf">${editable.map(s=>`<option value="${s.id}" ${s.id===shelfId?'selected':''}>${esc(s.name)}</option>`).join('')}</select></label><p class="muted">1つのアセットは1シリーズに所属できます。PDF・画像本・動画を混在させられます。</p><div class="series-list">${result.series.map(s=>`<button class="button secondary" data-edit-series="${s.id}">${esc(s.title)} · ${s.assetCount}件</button>`).join('')||'<p>まだシリーズはありません。</p>'}</div><form class="series-create"><label>新しいシリーズ名<input name="title" maxlength="200" required placeholder="例：旅の記録・第1シーズン"></label><button class="button primary" type="submit">シリーズを作成</button></form><p class="form-error" role="alert" hidden></p>`;
+      body.innerHTML=`<label>本棚<select class="series-shelf">${editable.map(s=>`<option value="${s.id}" ${s.id===shelfId?'selected':''}>${esc(s.name)}</option>`).join('')}</select></label><p class="muted">1つのアセットは1シリーズに所属できます。PDF・EPUB・画像本・動画を混在させられます。</p><div class="series-list">${result.series.map(s=>`<button class="button secondary" data-edit-series="${s.id}">${esc(s.title)} · ${s.assetCount}件</button>`).join('')||'<p>まだシリーズはありません。</p>'}</div><form class="series-create"><label>新しいシリーズ名<input name="title" maxlength="200" required placeholder="例：旅の記録・第1シーズン"></label><button class="button primary" type="submit">シリーズを作成</button></form><p class="form-error" role="alert" hidden></p>`;
       body.querySelector('.series-shelf').onchange=e=>{shelfId=e.target.value;list();};
       body.querySelectorAll('[data-edit-series]').forEach(button=>{button.onclick=()=>edit(button.dataset.editSeries);});
       body.querySelector('form').onsubmit=async e=>{
@@ -74,7 +74,7 @@ const activeNavigations=new Set();
 export function seriesNativeState(active){for(const update of activeNavigations)update(active);}
 
 export function mountSeriesNavigation({node,body,item,api,esc,open,isCurrent,isActive=()=>!document.hidden,enabled=true,onEnabled=()=>{},beforeMove=async()=>{}}){
-  const bar=document.createElement('nav');bar.className='series-reader-nav';bar.setAttribute('aria-label','シリーズ内の移動');bar.hidden=true;body.before(bar);
+  const bar=document.createElement('nav');bar.className='series-reader-nav';bar.setAttribute('aria-label','シリーズ内の移動');bar.hidden=true;(node.querySelector('.viewer-meta')??node).append(bar);
   const footer=document.createElement('div');footer.className='series-book-end';footer.hidden=true;
   const subscribers=new Set();let disposed=false,book=null,videoCleanup,signature='',pendingEnd;
   const alive=()=>!disposed && node.isConnected && node.open && isCurrent();
@@ -108,7 +108,8 @@ export function mountSeriesNavigation({node,body,item,api,esc,open,isCurrent,isA
         bar.querySelector('.series-cancel').onclick=()=>core.cancel('今回の自動移動を停止しました。');
         bar.querySelector('.series-now').onclick=()=>core.navigate({continuous:true,autoplay:true});
       }
-      if(countdown!==null || busy)bar.querySelector('details').open=true;
+      bar.dataset.chromePinned=String(countdown!==null || busy);
+      if(countdown!==null || busy){bar.querySelector('details').open=true;node.showChrome?.();}
       bar.querySelector('.series-prev').disabled=busy || currentIndex===0;
       bar.querySelector('.series-next').disabled=busy || !next;
       bar.querySelector('select').disabled=busy;
@@ -118,10 +119,10 @@ export function mountSeriesNavigation({node,body,item,api,esc,open,isCurrent,isA
       bar.querySelector('.series-continuation-status').textContent=busy?'次のアセットの権限と続き位置を確認しています…':countdown!==null?`${countdown}秒後に「${next?.title??''}」へ進みます。`:message;
     }
     // Keep footer height stable during page re-render/resize to avoid a ResizeObserver loop.
-    const lastPage=book && book.page===book.total;
+    const lastPage=book && (book.atEnd??book.page===book.total);
     footer.hidden=!(lastPage && enabled && context?.series);
     if(!footer.hidden){
-      if(!footer.isConnected)body.append(footer);
+      if(!footer.isConnected)(node.querySelector('.viewer-meta')??body).append(footer);
       footer.innerHTML=next?`<span>この本の最後のページです。次は「${esc(next.title)}」</span><button type="button" class="button secondary" ${canContinue && book.ready?'':'disabled'}>次のアセットへ読み進む</button>`:'<span>この本はシリーズの最後のアセットです。</span>';
       const button=footer.querySelector('button');if(button)button.onclick=()=>core.nextBook();
     }

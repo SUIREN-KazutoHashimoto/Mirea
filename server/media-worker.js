@@ -12,7 +12,10 @@ sharp.concurrency(1);
 const { source, destination, mode } = workerData;
 const imageOptions = { limitInputPixels: 40_000_000, failOn: 'warning' };
 try {
-  if (mode === 'validate-image') {
+  if (mode === 'epub-thumbnail') {
+    const { compileEpub } = await import('./epub.js');
+    parentPort.postMessage(await compileEpub(source,destination,workerData.bundlePath));
+  } else if (mode === 'validate-image') {
     const input = await readFile(source);
     const metadata = await sharp(input, imageOptions).metadata();
     if (!['jpeg', 'png', 'webp'].includes(metadata.format) || (metadata.pages ?? 1) > 1) {
