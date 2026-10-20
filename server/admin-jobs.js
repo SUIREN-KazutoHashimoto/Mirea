@@ -75,6 +75,7 @@ export async function registerAdminJobs(app,context) {
           if(row.kind==='thumbnail')await media.validateImage(temporary);
           authorize();await rename(temporary,join(row.kind==='preview'?previewDir:thumbnailDir,item.id+(row.kind==='preview'?'.mp4':'.jpg')));
           if(row.kind==='thumbnail')db.prepare('UPDATE items SET thumbnail_ready=1 WHERE id=?').run(item.id);
+          if(row.kind==='preview')context.videoPreviews.clearFailure(item.id);
         }
         db.prepare("UPDATE admin_jobs SET state='complete',progress_json=?,error=NULL,updated_at=? WHERE id=?").run(JSON.stringify({stage:'complete',percent:100,...(selectedSource?{source:selectedSource.kind,sourceQuality:selectedSource.quality}:{})}),Date.now(),id);
       }catch(error){
@@ -95,7 +96,7 @@ export async function registerAdminJobs(app,context) {
   app.get('/api/v1/admin/jobs',auth,async()=>({
     jobs:db.prepare("SELECT * FROM admin_jobs ORDER BY created_at DESC LIMIT 100").all().map(safe),
     uploads:db.prepare('SELECT id,title,state,error,processing_json,created_at,files_json FROM upload_sessions ORDER BY created_at DESC LIMIT 100').all().map(row=>({id:row.id,title:row.title,state:row.state,error:row.error,processing:JSON.parse(row.processing_json),createdAt:row.created_at,retryable:row.state==='failed'&&isTimedMime(JSON.parse(row.files_json)[0]?.mime)})),
-    previews:context.videoPreviews.inspect(),thumbnails:context.ensureThumbnail.inspect(),processors:media.inspect?.()??[]
+    previews:context.videoPreviews.inspect().map(row=>({...row,id:row.assetId,automatic:true,title:'自動動画プレビュー'})),thumbnails:context.ensureThumbnail.inspect().map(row=>({...row,id:row.assetId,automatic:true,title:'自動サムネイル'})),processors:media.inspect?.()??[]
   }));
   app.get('/api/v1/admin/assets',{...auth,schema:{querystring:{type:'object',additionalProperties:false,properties:{q:{type:'string',maxLength:100},after:{type:'string',maxLength:36}}}}},async req=>{
     const rows=db.prepare('SELECT i.id,i.title,i.mime_type AS mimeType,s.name AS shelf FROM items i JOIN shelves s ON s.id=i.shelf_id WHERE i.id>? AND instr(lower(i.title),lower(?))>0 ORDER BY i.id LIMIT 101').all(req.query.after??'',req.query.q??'');
@@ -116,12 +117,15 @@ export async function registerAdminJobs(app,context) {
   // Bounded media queue only; backups cannot be retried without their distinct
   // password and must be created through the existing protected backup API.
   const uuid={type:'string',pattern:'^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$'};
-  app.post('/api/v1/admin/jobs/retry',{...auth,config:{rateLimit:context.rateLimit===false?false:{max:6,timeWindow:'1 minute'}},schema:{body:retryBody({jobs:{type:'array',minItems:1,maxItems:20,uniqueItems:true,items:{type:'object',additionalProperties:false,required:['id','type'],properties:{id:uuid,type:{enum:['job','upload']}}}}})}},async(req,reply)=>{
+  app.post('/api/v1/admin/jobs/retry',{...auth,config:{rateLimit:context.rateLimit===false?false:{max:6,timeWindow:'1 minute'}},schema:{body:retryBody({jobs:{type:'array',minItems:1,maxItems:20,uniqueItems:true,items:{type:'object',additionalProperties:false,required:['id','type'],properties:{id:uuid,type:{enum:['job','upload','asset']},kind:{enum:['thumbnail','preview','transcode']}},allOf:[{if:{properties:{type:{const:'asset'}}},then:{required:['kind']}}]}}})}},async(req,reply)=>{
     const results=[];
     for(const entry of req.body.jobs){
       try{
         a.requireAdmin(req);if(maintenance.locked)throw httpError(409,'保守処理中です。');
-        if(entry.type==='upload'){await uploads.adminRetry(entry.id,req.user.id,req.session.id);a.audit(req,'upload.retry',entry.id);results.push({...entry,accepted:true});}
+        if(entry.type==='asset'){
+          if(![...context.videoPreviews.inspect(),...context.ensureThumbnail.inspect()].some(row=>row.assetId===entry.id&&row.kind===entry.kind&&row.state==='failed'))throw httpError(409,'再実行可能な自動生成ジョブがありません。');
+          results.push({...entry,accepted:true,job:enqueue(entry.id,entry.kind,req)});
+        }else if(entry.type==='upload'){await uploads.adminRetry(entry.id,req.user.id,req.session.id);a.audit(req,'upload.retry',entry.id);results.push({...entry,accepted:true});}
         else{const old=get(entry.id);if(!old||!['failed','complete'].includes(old.state)||!['thumbnail','preview','transcode'].includes(old.kind)||!old.asset_id)throw httpError(409,'再実行可能なメディアジョブではありません。');results.push({...entry,accepted:true,job:enqueue(old.asset_id,old.kind,req)});}
       }catch(error){if(!error.statusCode)throw error;results.push({...entry,accepted:false,error:error.message});}
     }

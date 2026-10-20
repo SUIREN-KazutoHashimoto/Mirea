@@ -7,7 +7,8 @@ import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {createApp} from '../server/app.js';
 import {selectVideoSource} from '../server/media-source.js';
-import {makePdf} from './fixtures.js';
+import {makePdf,makeMp4} from './fixtures.js';
+import {createMediaProcessor} from '../server/media.js';
 
 const password='maintenance-test-password';
 async function setup(t,extra={}){
@@ -17,7 +18,7 @@ async function setup(t,extra={}){
   const register=async name=>(await req('POST','/auth/register',null,{name,email:name+'@example.test',password})).json();
   const admin=await register('admin'),reader=await register('reader');options.serverAdminUserIds.push(admin.user.id);
   const shelf=(await req('POST','/shelves',reader,{name:'Private shelf'})).json().id;
-  const asset=async()=>{const id=randomUUID(),bytes=makePdf();await writeFile(join(dataDir,'uploads',id),bytes);db.prepare("INSERT INTO items(id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at) VALUES(?,?,?,'sample.pdf','application/pdf',?,?,?)").run(id,shelf,'Private sample',bytes.length,reader.user.id,Date.now());return id;};
+  const asset=async(mime='application/pdf',bytes=makePdf())=>{const id=randomUUID();await writeFile(join(dataDir,'uploads',id),bytes);db.prepare("INSERT INTO items(id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at) VALUES(?,?,?,'fixture',?,?,?,?)").run(id,shelf,'Private sample',mime,bytes.length,reader.user.id,Date.now());return id;};
   const wait=async id=>{for(let n=0;n<300;n++){const row=db.prepare('SELECT * FROM admin_jobs WHERE id=?').get(id);if(['complete','failed'].includes(row?.state))return row;await new Promise(r=>setTimeout(r,50));}throw Error('Job timeout');};
   return {dataDir,app,db,req,admin,reader,shelf,asset,wait};
 }
@@ -73,4 +74,14 @@ test('missing originals select the highest available canonical or historical ren
   let source=await selectVideoSource(args);assert.equal(source.kind,'best-available');assert.equal(source.path,join(videoDir,id,generation,'1080p.mp4'));
   source=await selectVideoSource({...args,probe:async()=>({width:3840,height:2160,video:{bit_rate:'20000000'}})});assert.equal(source.path,join(uploadDir,id));
   await writeFile(join(originalDir,id),'raw original');source=await selectVideoSource(args);assert.equal(source.kind,'original');assert.equal(source.path,join(originalDir,id));assert.equal(await readFile(source.path,'utf8'),'raw original');
+});
+test('failed automatic previews expose a valid asset retry identity, support bulk retry and clear stale failure after success',async t=>{
+  const media=createMediaProcessor(),realPreview=media.preview.bind(media);let fail=true;media.preview=async(...args)=>{if(fail){fail=false;throw Error('Planned automatic preview failure');}return realPreview(...args);};
+  const c=await setup(t,{mediaProcessor:media}),bytes=await makeMp4(join(c.dataDir,'preview-source.mp4'),{duration:.3,audio:true}),id=await c.asset('video/mp4',bytes);
+  assert.equal((await c.req('POST',`/items/${id}/preview`,c.reader)).statusCode,202);
+  let failed;for(let n=0;n<100;n++){const rows=(await c.req('GET','/admin/jobs',c.admin)).json().previews;failed=rows.find(row=>row.assetId===id&&row.state==='failed');if(failed)break;await new Promise(r=>setTimeout(r,20));}
+  assert(failed);assert.equal(failed.id,id);assert.equal(failed.automatic,true);
+  assert.equal((await c.req('POST','/admin/jobs/retry',c.admin,{acknowledgeCost:true,jobs:[{id,type:'asset'}]})).statusCode,400);
+  const retried=await c.req('POST','/admin/jobs/retry',c.admin,{acknowledgeCost:true,jobs:[{id,type:'asset',kind:'preview'}]});assert.equal(retried.statusCode,202,retried.body);assert(retried.json().results[0].accepted);assert.equal((await c.wait(retried.json().results[0].job.id)).state,'complete');
+  assert(!(await c.req('GET','/admin/jobs',c.admin)).json().previews.some(row=>row.assetId===id&&row.state==='failed'));assert((await readFile(join(c.dataDir,'previews',id+'.mp4'))).length>100);
 });
