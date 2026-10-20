@@ -54,7 +54,7 @@
 
 ## 分割アップロード（Web／Androidの標準経路）
 
-1. `POST /shelves/:id/uploads` に `{title,retainOriginal:false,files:[{filename,mime,size}]}` を送ります。PDF・動画は1件、画像本はページ順の画像だけを指定します。合計サイズ・形式・ページ数の上限は旧APIと同じです。
+1. `POST /shelves/:id/uploads` に `{title,retainOriginal:true,files:[{filename,mime,size}]}` を送ります。retainOriginalの省略時はtrueです。PDF・動画・音声は1件、画像本はページ順の画像だけを指定します。合計サイズ・形式・ページ数の上限は旧APIと同じです。
 2. 応答は `{id,state:"uploading",chunkSize,expiresAt,receivedBytes,files}`。ファイルごとの `receivedParts` は受信済み番号、`receivedHashes` は番号をキーとするSHA-256です。分割サイズはセッションごとに固定されます。
 3. `file.slice(partIndex*chunkSize,(partIndex+1)*chunkSize)` をPUTします。Content-Typeは `application/octet-stream`、`X-Chunk-SHA256` はその分割全体の小文字16進64桁です。最後の分割を除き、長さは必ず `chunkSize` です。再送は同じハッシュ・長さなら204、内容が異なる場合は409、ハッシュ不一致は422です。
 4. `POST /uploads/:id/complete` は202で直ちに応答します。結合・画像検査・サムネイル生成は別ジョブで行います。`GET /uploads/:id` を1.5秒程度の間隔で確認します。`state` は uploading / processing / complete / failed / cancelled、失敗時は `error`、完成時は `item` が返ります。未受信がある場合のcompleteは409です。
@@ -113,7 +113,7 @@ POST / GET `/items/:id/preview` の応答は `{state}` です。stateは `absent
 
 ## 動画変換／HLS（v11）
 
-- 新規動画の `retainOriginal` はセッション作成時のboolean、初期false。処理中に変更できません。動画以外には適用しません。
+- 新規動画・音声の `retainOriginal` はセッション作成時のboolean、0.3.1betaから省略時true。明示falseは尊重し、既存セッションの保持指定は変更しません。本の原本は常に残します。
 - `GET /uploads`: 本人かつ本棚の編集権限が残る処理中／失敗ジョブの簡易一覧。転送パートのハッシュは含めません。
 - `GET /uploads/:id`: `processing:{stage,quality,percent,completed,total}`、`retainOriginal`、失敗動画には `sourceRetained:true`。処理中／失敗動画は24時間の転送期限の後も保持。
 - `POST /uploads/:id/retry`: 原本を残した失敗動画の再試行、202。本人の現在のセッション・編集権限を再検査。

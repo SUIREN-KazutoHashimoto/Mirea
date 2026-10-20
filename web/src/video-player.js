@@ -75,7 +75,7 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
   return { video, surface:audioMode?root.querySelector('.audio-art'):video, setQuality({qualities=[],selected='auto',actual='unknown',auto=true},choose) {
     const label=root.querySelector('.player-quality'),select=label.querySelector('select');
     label.hidden=!qualities.length;
-    const values=[...(auto?[{value:'auto',text:'自動'+(actual!=='unknown'?' ('+actual+')':'')}]:[]),...qualities.filter(q=>/^\d{2,4}p$/.test(q.quality)).map(q=>({value:q.quality,text:q.quality}))];
+    const values=[...(auto?[{value:'auto',text:'自動'+(actual!=='unknown'?'（現在 '+actual+'）':'')}]:[]),...qualities.filter(q=>/^\d{2,4}p$/.test(q.quality)).sort((a,b)=>parseInt(b.quality)-parseInt(a.quality)).map(q=>({value:q.quality,text:q.quality+'（固定）'}))];
     const key=values.map(v=>v.value).join(',');
     if(select.dataset.levels!==key){select.replaceChildren(...values.map(value=>{const option=doc.createElement('option');option.value=value.value;option.textContent=value.text;return option;}));select.dataset.levels=key;}
     else for(const value of values){const option=[...select.options].find(o=>o.value===value.value);if(option)option.textContent=value.text;}

@@ -78,7 +78,7 @@ public final class PlaybackService extends Service {
             PlaybackApi nextApi=new PlaybackApi(next.getString("origin"),next.getString("token"),next.getString("userId"));
             if(api!=null&&api.partition.equals(nextApi.partition)&&item!=null&&id.equals(item.optString("id"))&&prepared&&!next.optBoolean("restart")&&!next.has("quality")){nextApi.close();changed();return;}
             final int epoch=++generation;cancelContinuation();record("close");checkpoint(true);releasePlayer();
-            PlaybackApi old=api;api=nextApi;if(old!=null)old.close();request=next;item=asset;error="";ended=false;prepared=false;seeking=false;buffering=true;quality=next.optString("quality","legacy");continuous=next.optBoolean("continuous",true);nextTitle="";pausedAt=SystemClock.elapsedRealtime();
+            PlaybackApi old=api;api=nextApi;if(old!=null)old.close();request=next;item=asset;error="";ended=false;prepared=false;seeking=false;buffering=true;quality=next.optString("quality",getSharedPreferences("mirea-playback-quality",MODE_PRIVATE).getString(nextApi.partition,"legacy"));continuous=next.optBoolean("continuous",true);nextTitle="";pausedAt=SystemClock.elapsedRealtime();
             recorder=null;progress=null;qualities=new JSONArray();artwork=null;final String requestedQuality=quality;updateSession();changed();
             io.submit(()->{
                 PlaybackSource candidate=null;String resolvedQuality=requestedQuality;JSONArray availableQualities=new JSONArray();android.graphics.Bitmap nextArtwork=null;
@@ -92,7 +92,7 @@ public final class PlaybackService extends Service {
                         candidate=new PlaybackSource(nextApi,grant,folder);grant.remove("key");resolvedQuality=verified.getJSONArray("files").getJSONObject(0).optString("quality","download");
                     }else{
                         long size=asset.getLong("size");String path="/api/v1/items/"+id+"/content";
-                        if("video".equals(asset.getString("kind"))){JSONObject info=nextApi.json("/items/"+id+"/video","GET",null);availableQualities=info.optJSONArray("renditions");if(availableQualities==null)availableQualities=new JSONArray();
+                        if("video".equals(asset.getString("kind"))){JSONObject info=nextApi.json("/items/"+id+"/video","GET",null);availableQualities=info.optJSONArray("renditions");if(availableQualities==null)availableQualities=new JSONArray();resolvedQuality=PlaybackQuality.resolve(availableQualities,resolvedQuality);
                             if(!"legacy".equals(resolvedQuality)){boolean found=false;for(int n=0;n<availableQualities.length();n++){JSONObject r=availableQualities.getJSONObject(n);if(resolvedQuality.equals(r.getString("quality"))){size=r.getLong("size");String mediaGeneration=info.optString("generation","base");if(!mediaGeneration.equals("base")&&!mediaGeneration.matches("[0-9a-f-]{36}"))throw new IOException("Invalid media generation");path="/api/v1/items/"+id+"/renditions/"+resolvedQuality+"/content?generation="+mediaGeneration;found=true;break;}}if(!found)throw new IOException("Quality unavailable");}}
                         if(size<1||size>8589934592L)throw new IOException("Invalid media size");candidate=new PlaybackSource(nextApi,path,size);
                     }
@@ -125,7 +125,7 @@ public final class PlaybackService extends Service {
     private void pauseInternal(boolean abandon){cancelContinuation();resumeFocus=false;record(null);try{if(playing())player.pause();}catch(Exception ignored){}pausedAt=SystemClock.elapsedRealtime();record("pause");checkpoint(true);if(abandon){audioManager.abandonAudioFocusRequest(focus);ownsAudioFocus=false;}updateSession();changed();}
     public void seek(long position){if(!prepared)return;cancelContinuation();lastInput=SystemClock.elapsedRealtime();record(null);seeking=true;ended=false;record("seeking");player.seekTo(Math.max(0,Math.min(position,duration())),MediaPlayer.SEEK_CLOSEST);}
     public void speed(float rate){if(!prepared||rate<.5f||rate>2)return;record(null);boolean wasPlaying=playing();player.setPlaybackParams(player.getPlaybackParams().setSpeed(rate));if(!wasPlaying)player.pause();record("rate_change");updateSession();}
-    public void quality(String value){if(request==null||request.has("download")||!value.matches("[0-9]{2,4}p|legacy"))return;try{JSONObject next=new JSONObject(request.toString());next.put("quality",value);open(next,playing(),position());}catch(Exception ignored){}}
+    public void quality(String value){if(request==null||request.has("download")||!value.matches("[0-9]{2,4}p|legacy"))return;try{getSharedPreferences("mirea-playback-quality",MODE_PRIVATE).edit().putString(api.partition,value).apply();JSONObject next=new JSONObject(request.toString());next.put("quality",value);open(next,playing(),position());}catch(Exception ignored){}}
     public void clearSurface(Surface value){if(surface==value)setSurface(null);}
     private void applyVolume(){if(player!=null){float level=(volume/100f)*(ducked?.2f:1f);player.setVolume(level,level);}}
     public void mute(){volume=volume==0?100:0;applyVolume();record("viewport");changed();}

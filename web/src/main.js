@@ -17,6 +17,7 @@ import { createViewerScreen } from './viewer-shell.js';
 import { initializeNativePlayback,openNativePlayback,refreshNativePlayback } from './native-playback.js';
 import { nativePlayerAvailable } from './native-player-bridge.js';
 import { mountVideoPlayer } from './video-player.js';
+import {loadQualityPreference,saveQualityPreference} from './quality-preference.js';
 import { AUDIO_EXTENSIONS, isTimedKind } from '../../server/audio-types.js';
 import { VIDEO_EXTENSIONS } from '../../server/video-types.js';
 import { beginUpdateActivity } from './update-busy.js';
@@ -27,6 +28,7 @@ import './admin.css';
 
 const theme = createTheme();
 const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.3.0beta/mirea-0.3.0beta-android.apk';
+const currentApkUrl=()=>config.androidApkUrl?.startsWith('/api/v1/app-updates/')?absoluteUrl(config.androidApkUrl):config.androidApkUrl||defaultApkUrl;
 
 const root = document.querySelector('#app');
 const roleName = { owner: '管理者', editor: '編集者', viewer: '閲覧者' };
@@ -150,7 +152,7 @@ function renderAuth(register = false) {
       <label>メールアドレス<input name="email" type="email" autocomplete="email" maxlength="254" placeholder="you@example.com" required></label>
       <label>パスワード<input name="password" type="password" autocomplete="${register ? 'new-password' : 'current-password'}" minlength="12" maxlength="128" placeholder="12文字以上" required></label>
       <p class="form-error" role="alert" hidden></p><button class="button primary auth-submit" type="submit">${register ? 'アカウントを作成する' : 'ログインする'}${icon('arrow')}</button>
-    </form><p class="auth-switch">${register ? 'すでにアカウントをお持ちですか？' : 'はじめてご利用ですか？'} <button class="text-button" id="switch-auth">${register ? 'ログイン' : 'アカウントを作成'}</button></p><a class="auth-apk" href="${esc(config.androidApkUrl || defaultApkUrl)}" target="_blank" rel="noopener noreferrer">${icon('download')} Android版APKをダウンロード</a><div class="auth-note">${icon('shelf')} 本棚ごとに、共有する相手を選べます。</div></div></section></main>`;
+    </form><p class="auth-switch">${register ? 'すでにアカウントをお持ちですか？' : 'はじめてご利用ですか？'} <button class="text-button" id="switch-auth">${register ? 'ログイン' : 'アカウントを作成'}</button></p><a class="auth-apk" href="${esc(currentApkUrl())}" target="_blank" rel="noopener noreferrer">${icon('download')} Android版APKをダウンロード</a><div class="auth-note">${icon('shelf')} 本棚ごとに、共有する相手を選べます。</div></div></section></main>`;
   const switchButton = document.querySelector('#switch-auth');
   switchButton.hidden = !register && !config.allowRegistration;
   switchButton.onclick = () => renderAuth(!register);
@@ -188,7 +190,7 @@ function renderShell() {
     <div class="workspace-label">MY WORKSPACE <span>PRIVATE</span></div><nav aria-label="ライブラリ"><button id="nav-all" class="nav-item">${icon('library')}<span>すべてのコンテンツ</span><span class="nav-count"></span></button>
     <div class="sidebar-heading"><span>本棚</span><button id="add-shelf" class="icon-button" aria-label="本棚を作成">${icon('plus')}</button></div><div id="shelf-nav"></div></nav>
     <div class="sidebar-hint">${icon('users')}<strong>好きなものを、共有しよう。</strong><p>本棚にメンバーを追加して、<br>動画・本・音楽を一緒に楽しめます。</p></div>
-    <button id="nav-settings" class="nav-item settings-nav">${icon('settings')}<span>設定</span></button><a class="nav-item apk-nav" href="${esc(config.androidApkUrl || defaultApkUrl)}" target="_blank" rel="noopener noreferrer">${icon('download')}<span>Androidアプリ</span></a>
+    <button id="nav-settings" class="nav-item settings-nav">${icon('settings')}<span>設定</span></button><a class="nav-item apk-nav" href="${esc(currentApkUrl())}" target="_blank" rel="noopener noreferrer">${icon('download')}<span>Androidアプリ</span></a>
     <div class="profile"><span class="avatar">${esc(user.name.slice(0, 1))}</span><div><strong>${esc(user.name)}</strong><small>${esc(user.email)}</small></div><button id="logout" class="icon-button" aria-label="ログアウト">${icon('logout')}</button></div></aside>
     <main class="main-content"><header class="topbar"><div class="breadcrumb">ワークスペース <span>/</span> <strong id="breadcrumb-title">ライブラリ</strong></div><span class="topbar-label">YOUR PERSONAL COLLECTION</span><button id="mobile-settings" class="icon-button mobile-settings" aria-label="設定">${icon('settings')}</button><button id="mobile-logout" class="icon-button mobile-logout" aria-label="ログアウト">${icon('logout')}</button></header>
     <div class="content-wrap"><section class="page-heading"><div><span class="eyebrow">THE LIBRARY, REIMAGINED</span><h1 id="page-title">あなたのライブラリ<span class="title-dot">.</span></h1><p id="page-description">動画も本も音楽も、ここに。お気に入りを集めた、あなたの場所。</p></div><div class="heading-actions"><button class="button secondary" id="manage-members" hidden>${icon('users')}共有設定</button><button class="button secondary" id="upload-jobs">アップロード処理</button><button class="button primary" id="open-upload">${icon('plus')}コンテンツを追加</button></div></section>
@@ -232,7 +234,7 @@ function renderShell() {
 function showSettings() {
   const actor=getSession(),server=getEndpoint();
   const current=()=>getSession()===actor && getEndpoint()===server;
-  openSettings({ dialog, api, esc, theme, flush:flushAnalytics, apkUrl: config.androidApkUrl || defaultApkUrl, version: config.version || '0.3.0-beta', manageShelf: id => openMembers(id), mountUpdates: native ? mountAppUpdates : null,
+  openSettings({ dialog, api, esc, theme, flush:flushAnalytics, apkUrl: currentApkUrl(), version: config.version || '0.3.1-beta', manageShelf: id => openMembers(id), mountUpdates: native ? mountAppUpdates : null,
     onUpdated: async result => { if(!current())return;closeDownloads();setSession(result);await stopAnalytics().catch(()=>{});if(getSession()!==result || getEndpoint()!==server)return;await startAnalytics();if(getSession()!==result || getEndpoint()!==server)return;renderShell();await refresh();toast('アカウント情報を更新しました。他の端末では再ログインが必要です。'); },
     onDeleted: async () => { if(!current())return;const results=await Promise.allSettled([clearAccountDownloads(),clearAccountAnalytics(),clearAccountProgress()]);if(!current())return;const cacheError=results.some(r=>r.status==='rejected');clearThumbnails();setSession(null);loadGeneration++;shelves=[];items=[];activeShelf=null;renderAuth();toast(cacheError?'アカウントを削除しました。端末内データを消去できませんでした。ブラウザーのサイトデータを削除してください。':'アカウントと個人の記録、この端末のダウンロードを削除しました。'); }
   });
@@ -365,7 +367,7 @@ function openCreateShelf() {
 function openUpload() {
   const editable = shelves.filter(s => s.role !== 'viewer');
   if (!editable.length) return openCreateShelf();
-  const node = dialog('コンテンツを追加', `<form class="modal-body" id="upload-form"><label>追加する本棚<select name="shelf">${editable.map(s => `<option value="${s.id}" ${s.id === activeShelf ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label><label class="dropzone" id="dropzone"><input name="file" type="file" aria-label="アップロードするファイル" accept="application/epub+zip,.epub,application/pdf,video/*,audio/*,image/jpeg,image/png,image/webp,.pdf,.mp4,.m4v,.mov,.mkv,.avi,.wmv,.asf,.mpeg,.mpg,.ts,.mts,.m2ts,.flv,.webm,.mp3,.m4a,.m4b,.aac,.wav,.flac,.ogg,.oga,.opus,.aif,.aiff,.wma,.weba,.jpg,.jpeg,.png,.webp" multiple required>${icon('upload')}<strong id="file-label">ファイルを選択、またはドロップ</strong><span>PDF / EPUB / 動画 / 音声は1ファイル・画像は複数枚で1冊</span><small>JPEG / PNG / WebP（静止画）・合計 ${bytes(config.maxUploadBytes)}まで</small></label><div id="selected-files" hidden></div><label>タイトル<input name="title" maxlength="200" required placeholder="ライブラリに表示するタイトル"></label><label class="retain-original"><input name="retainOriginal" type="checkbox">動画・音声の原本を保持する</label><p class="retention-note">初期設定では、配信用の変換データ（動画は全画質）・サムネイルの生成と検証が成功した後、動画・音声の原本を削除します。元の画質・音質・形式が必要な場合はチェックしてください。失敗時は原本を残します。本の原本は削除しません。</p><p class="thumbnail-note">${icon('book')} 表紙はEPUBのカバー・PDFの1ページ目、動画のフレーム、音声のジャケット（なければ専用表紙）、画像の本の先頭ページから生成します。</p><div class="upload-progress" hidden><div><span id="upload-status">アップロード中…</span><span id="upload-percent">0%</span></div><progress max="100" value="0" aria-label="アップロードの進行状況"></progress></div><p class="form-error" role="alert" hidden></p><div class="modal-actions"><button class="button primary" type="submit">${icon('upload')}アップロードする</button></div></form>`);
+  const node = dialog('コンテンツを追加', `<form class="modal-body" id="upload-form"><label>追加する本棚<select name="shelf">${editable.map(s => `<option value="${s.id}" ${s.id === activeShelf ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label><label class="dropzone" id="dropzone"><input name="file" type="file" aria-label="アップロードするファイル" accept="application/epub+zip,.epub,application/pdf,video/*,audio/*,image/jpeg,image/png,image/webp,.pdf,.mp4,.m4v,.mov,.mkv,.avi,.wmv,.asf,.mpeg,.mpg,.ts,.mts,.m2ts,.flv,.webm,.mp3,.m4a,.m4b,.aac,.wav,.flac,.ogg,.oga,.opus,.aif,.aiff,.wma,.weba,.jpg,.jpeg,.png,.webp" multiple required>${icon('upload')}<strong id="file-label">ファイルを選択、またはドロップ</strong><span>PDF / EPUB / 動画 / 音声は1ファイル・画像は複数枚で1冊</span><small>JPEG / PNG / WebP（静止画）・合計 ${bytes(config.maxUploadBytes)}まで</small></label><div id="selected-files" hidden></div><label>タイトル<input name="title" maxlength="200" required placeholder="ライブラリに表示するタイトル"></label><label class="retain-original"><input name="retainOriginal" type="checkbox" checked>動画・音声の原本を保持する</label><p class="retention-note">初期設定では動画・音声の原本を保持します。チェックを外した場合のみ、全画質・サムネイルなどの生成と検証が成功した後に原本を削除します。失敗時と本の原本は残します。失われた原本は復元できず、再変換時は残っている最高品質のデータを原本代用として使います。</p><p class="thumbnail-note">${icon('book')} 表紙はEPUBのカバー・PDFの1ページ目、動画のフレーム、音声のジャケット（なければ専用表紙）、画像の本の先頭ページから生成します。</p><div class="upload-progress" hidden><div><span id="upload-status">アップロード中…</span><span id="upload-percent">0%</span></div><progress max="100" value="0" aria-label="アップロードの進行状況"></progress></div><p class="form-error" role="alert" hidden></p><div class="modal-actions"><button class="button primary" type="submit">${icon('upload')}アップロードする</button></div></form>`);
   const form = node.querySelector('form'), input = form.elements.file, zone = node.querySelector('#dropzone');
   const errorBox = form.querySelector('.form-error');
   const mimeByExtension = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', pdf: 'application/pdf', epub: 'application/epub+zip', ...VIDEO_EXTENSIONS, ...AUDIO_EXTENSIONS };
@@ -600,7 +602,10 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false,background
       if(downloaded){
         video.src=downloaded.url(0);
         tracker?.quality({selectedQuality:downloaded.manifest.files[0].quality??'download',actualQuality:downloaded.manifest.files[0].quality??'download',streamKind:'download'});
-      }else stream=attachVideoStream(video,{ticket,absoluteUrl,renew,onError,onQuality:value=>tracker?.quality(value),onOptions:options=>player.setQuality(options,value=>stream?.choose(value))});
+      }else {
+        const qualityEndpoint=getEndpoint(),qualityUser=getSession()?.user.id;
+        stream=attachVideoStream(video,{ticket,absoluteUrl,renew,onError,initialQuality:loadQualityPreference(qualityEndpoint,qualityUser),onChoose:value=>saveQualityPreference(qualityEndpoint,qualityUser,value),onQuality:value=>tracker?.quality(value),onOptions:options=>player.setQuality(options,value=>stream?.choose(value))});
+      }
       if(downloaded)video.setAttribute('controlsList','nodownload');
     }
     restart.disabled=false;

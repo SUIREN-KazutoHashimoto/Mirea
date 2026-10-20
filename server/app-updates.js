@@ -59,12 +59,12 @@ export function registerAppUpdates(app, { directory, publicKey } = {}) {
     reply.type('application/json').header('Cache-Control', 'no-store, no-transform').header('Content-Length', Buffer.byteLength(raw));
     return req.method === 'HEAD' ? reply.send() : reply.send(raw);
   }});
-  app.route({ method: ['GET','HEAD'], url: '/api/v1/app-updates/android/apk/:code', handler: async (req, reply) => {
-    if (!/^[1-9]\d{0,9}$/.test(req.params.code)) throw httpError(404, '更新ファイルが見つかりません。');
+  const apkHandler=async (req, reply) => {
+    if (req.params.code!==undefined&&!/^[1-9]\d{0,9}$/.test(req.params.code)) throw httpError(404, '更新ファイルが見つかりません。');
     const { metadata, file } = await bundle();
     let handedOff = false;
     try {
-      if (String(metadata.versionCode) !== req.params.code) throw httpError(404, '更新ファイルが見つかりません。');
+      if (req.params.code!==undefined&&String(metadata.versionCode) !== req.params.code) throw httpError(404, '更新ファイルが見つかりません。');
       let range;
       try { range = parseRange(req.headers.range, metadata.size); }
       catch (error) { reply.header('Content-Range', `bytes */${metadata.size}`); throw error; }
@@ -76,5 +76,7 @@ export function registerAppUpdates(app, { directory, publicKey } = {}) {
       const stream = file.createReadStream(range ?? {}); handedOff = true;
       return reply.send(stream);
     } finally { if (!handedOff) await file.close(); }
-  }});
+  };
+  app.route({method:['GET','HEAD'],url:'/api/v1/app-updates/android/apk/:code',handler:apkHandler});
+  app.route({method:['GET','HEAD'],url:'/api/v1/app-updates/android/latest.apk',handler:apkHandler});
 }

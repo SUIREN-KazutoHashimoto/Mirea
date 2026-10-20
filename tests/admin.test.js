@@ -87,23 +87,23 @@ test('server admin transfers shelf ownership safely; owner deletion never remove
   assert.equal((await c.req('GET',`/items/${asset}/content`,c.other)).statusCode,200);
 });
 
-test('thumbnail regeneration is durable, reauthenticates and leaves canonical media unchanged',async t=>{
+test('thumbnail regeneration is durable, requires admin warning acknowledgement but no password and leaves canonical media unchanged',async t=>{
   const c=await setup(t),id=await c.asset(),before=await readFile(join(c.dataDir,'uploads',id));
-  assert.equal((await c.req('POST',`/admin/assets/${id}/regenerate`,c.reader,{currentPassword:password,kind:'thumbnail'})).statusCode,403);
-  const r=await c.req('POST',`/admin/assets/${id}/regenerate`,c.admin,{currentPassword:password,kind:'thumbnail'});assert.equal(r.statusCode,202,r.body);
+  assert.equal((await c.req('POST',`/admin/assets/${id}/regenerate`,c.reader,{acknowledgeCost:true,kind:'thumbnail'})).statusCode,403);
+  const r=await c.req('POST',`/admin/assets/${id}/regenerate`,c.admin,{acknowledgeCost:true,kind:'thumbnail'});assert.equal(r.statusCode,202,r.body);
   const job=await c.job(r.json().job.id);assert.equal(job.state,'complete',job.error);
   assert((await readFile(join(c.dataDir,'thumbnails',id+'.jpg'))).length>100);assert.deepEqual(await readFile(join(c.dataDir,'uploads',id)),before);
-  assert.equal((await c.req('POST',`/admin/assets/${id}/regenerate`,c.admin,{currentPassword:password,kind:'transcode'})).statusCode,400);
+  assert.equal((await c.req('POST',`/admin/assets/${id}/regenerate`,c.admin,{acknowledgeCost:true,kind:'transcode'})).statusCode,400);
 });
 
 test('video generation preserves old HLS tickets, canonical MP4 and existing encrypted download manifests',async t=>{
   const c=await setup(t),source=await makeMp4(join(c.dataDir,'source.mp4'),{duration:.4,audio:true}),id=await c.asset('video/mp4',source);
   // First regeneration also upgrades a legacy video without changing its file.
-  let r=await c.req('POST',`/admin/assets/${id}/regenerate`,c.admin,{currentPassword:password,kind:'transcode'});assert.equal(r.statusCode,202,r.body);assert.equal((await c.job(r.json().job.id)).state,'complete');
+  let r=await c.req('POST',`/admin/assets/${id}/regenerate`,c.admin,{acknowledgeCost:true,kind:'transcode'});assert.equal(r.statusCode,202,r.body);assert.equal((await c.job(r.json().job.id)).state,'complete');
   const ticket=(await c.req('POST',`/items/${id}/playback-ticket`,c.reader)).json();
   const manifest=(await c.req('POST',`/items/${id}/download`,c.reader)).json().manifest;
   const first=(await c.req('GET',`/downloads/${manifest.id}/files/0/parts/0`,c.reader)).rawPayload;
-  r=await c.req('POST',`/admin/assets/${id}/regenerate`,c.admin,{currentPassword:password,kind:'transcode'});assert.equal((await c.job(r.json().job.id)).state,'complete');
+  r=await c.req('POST',`/admin/assets/${id}/regenerate`,c.admin,{acknowledgeCost:true,kind:'transcode'});assert.equal((await c.job(r.json().job.id)).state,'complete');
   const oldHls=await c.app.inject({url:ticket.hlsUrl});assert.equal(oldHls.statusCode,200,oldHls.body);assert(oldHls.body.includes('generation='+manifest.files[0].generation));
   assert.equal((await c.req('POST',`/downloads/${manifest.id}/open`,c.reader)).statusCode,200,'old encrypted registration remains valid');
   assert.equal((await c.req('GET',`/downloads/${manifest.id}/files/0/parts/0`,c.reader)).statusCode,200);assert(first.length>source.length/10);
@@ -162,7 +162,7 @@ test('backup refuses active media jobs and releases the maintenance gate without
   const real=createMediaProcessor();let enter,finish;const entered=new Promise(r=>{enter=r;}),wait=new Promise(r=>{finish=r;});
   const media={...real,thumbnail:async(...args)=>{enter();await wait;return real.thumbnail(...args);}};
   const c=await setup(t,{mediaProcessor:media}),id=await c.asset();t.after(()=>finish());
-  const r=await c.req('POST',`/admin/assets/${id}/regenerate`,c.admin,{currentPassword:password,kind:'thumbnail'});await entered;
+  const r=await c.req('POST',`/admin/assets/${id}/regenerate`,c.admin,{acknowledgeCost:true,kind:'thumbnail'});await entered;
   const backup=await c.req('POST','/admin/backups',c.admin,{currentPassword:password,mode:'full',backupPassword:'backup-password-test',acknowledgeSensitive:true});assert.equal(backup.statusCode,409,backup.body);
   assert.equal((await c.req('GET','/auth/me',c.reader)).statusCode,200);
   assert.equal(c.db.prepare("SELECT COUNT(*) n FROM admin_jobs WHERE kind LIKE 'backup_%'").get().n,0);finish();assert.equal((await c.job(r.json().job.id)).state,'complete');
@@ -176,7 +176,7 @@ test('admin retries a failed timed upload with a delegated session even after up
   assert.equal((await c.req('POST',`/shelves/${c.shelf}/items`,c.reader,body,{'content-type':`multipart/form-data; boundary=${boundary}`})).statusCode,422);
   const upload=c.db.prepare("SELECT * FROM upload_sessions WHERE state='failed'").get();assert(upload);await access(join(c.dataDir,'uploads','transfers',upload.id,'0-0'));
   await c.req('POST','/auth/logout',c.reader);fail=false;
-  const retried=await c.req('POST',`/admin/uploads/${upload.id}/retry`,c.admin,{currentPassword:password});assert.equal(retried.statusCode,202,retried.body);
+  const retried=await c.req('POST',`/admin/uploads/${upload.id}/retry`,c.admin,{acknowledgeCost:true});assert.equal(retried.statusCode,202,retried.body);
   for(let n=0;n<100;n++){if(c.db.prepare('SELECT state FROM upload_sessions WHERE id=?').get(upload.id).state==='complete')break;await delay(50);}
   assert.equal(c.db.prepare('SELECT state FROM upload_sessions WHERE id=?').get(upload.id).state,'complete');await access(join(c.dataDir,'uploads',upload.id));
   // Cleanup follows the publication commit and may complete one tick later.
@@ -188,7 +188,7 @@ test('shutdown interrupts an admin encoder before awaiting its queue and resumes
   let entered,interrupt;const started=new Promise(resolve=>{entered=resolve;});
   const transcoder={convert(){entered();return new Promise((_resolve,reject)=>{interrupt=()=>reject(Object.assign(Error('Closing'),{code:'SERVER_CLOSING'}));});},close(){interrupt?.();}};
   const c=await setup(t,{videoTranscoder:transcoder}),bytes=await makeMp4(join(c.dataDir,'shutdown.mp4'),{duration:.3,audio:true}),id=await c.asset('video/mp4',bytes);
-  const result=await c.req('POST',`/admin/assets/${id}/regenerate`,c.admin,{currentPassword:password,kind:'transcode'});await started;
+  const result=await c.req('POST',`/admin/assets/${id}/regenerate`,c.admin,{acknowledgeCost:true,kind:'transcode'});await started;
   try{await Promise.race([c.app.close(),delay(3000).then(()=>{throw Error('Encoder must close before the queue drain');})]);}finally{transcoder.close();}
   assert.equal(c.db.prepare('SELECT state FROM admin_jobs WHERE id=?').get(result.json().job.id).state,'queued');
   delete c.options.videoTranscoder;c.app=await createApp(c.options);const resumed=await c.job(result.json().job.id);assert.equal(resumed.state,'complete',resumed.error);assert.deepEqual(await readFile(join(c.dataDir,'uploads',id)),bytes);

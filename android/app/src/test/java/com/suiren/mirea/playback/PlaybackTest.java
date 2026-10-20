@@ -9,6 +9,10 @@ import javax.crypto.*;
 import javax.crypto.spec.*;
 
 public class PlaybackTest {
+    @Test public void fixedQualityPersistsAsACompatibleResolutionWithoutClaimingNativeAbr()throws Exception{
+        JSONArray q=new JSONArray().put(new JSONObject().put("quality","360p")).put(new JSONObject().put("quality","720p"));
+        assertEquals("720p",PlaybackQuality.resolve(q,"1080p"));assertEquals("360p",PlaybackQuality.resolve(q,"480p"));assertEquals("360p",PlaybackQuality.resolve(q,"144p"));assertEquals("legacy",PlaybackQuality.resolve(q,"legacy"));assertEquals("legacy",PlaybackQuality.resolve(new JSONArray(),"720p"));assertEquals("legacy",PlaybackQuality.resolve(q,"../../original"));
+    }
     @Test public void contextsRequireHttpsAndNeverPutCredentialsInPaths()throws Exception{
         PlaybackApi api=new PlaybackApi("https://mirea.example:3443/","a".repeat(43),"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");assertEquals(64,api.partition.length());assertEquals("https://mirea.example:3443",api.origin);
         for(String origin:new String[]{"http://mirea.example","https://user:password@mirea.example","https://mirea.example/path","https://mirea.example/?token=abc"}){try{new PlaybackApi(origin,"a".repeat(43),api.userId);fail(origin);}catch(IllegalArgumentException expected){}}

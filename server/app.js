@@ -35,6 +35,7 @@ import {registerAdminJobs} from './admin-jobs.js';
 import {createMaintenanceGate} from './maintenance-gate.js';
 import {registerAdminBackups} from './admin-backups.js';
 import {registerServerUpdates} from './server-updates.js';
+import {registerAdminCleanup} from './admin-cleanup.js';
 
 const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 const TICKET_MS = 60 * 60 * 1000;
@@ -145,7 +146,7 @@ export async function createApp(options = {}) {
   registerAppUpdates(app, { directory: updatesPath ? resolve(PROJECT_ROOT, updatesPath) : undefined });
   let analytics;
   app.get('/api/v1/config', async () => ({ allowRegistration, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadSessionHours: 24, analytics,
-    version: packageInfo.version, androidApkUrl: 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.3.0beta/mirea-0.3.0beta-android.apk' }));
+    version: packageInfo.version, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.3.0beta/mirea-0.3.0beta-android.apk' }));
   app.post('/api/v1/auth/register', { ...authLimits, schema: { body: object({ email, password, name: text(80) }) } }, async (req, reply) => {
     if (!allowRegistration) throw httpError(403, '新規登録は現在停止しています。');
     const normalizedEmail = req.body.email.trim().toLowerCase();
@@ -228,9 +229,10 @@ export async function createApp(options = {}) {
   registerVideoStreams(app,{db,videoDir,authenticate,findItem});
   registerAccounts(app, { db, authenticate, membership, loginResult, cleanupUploads: uploads.cleanupUploads, rateLimit: options.rateLimit,adminAccess });
   const videoPreviews = await registerVideoPreviews(app, { db, media, dataDir, uploadDir, authenticate, findItem });
-  const adminJobs=await registerAdminJobs(app,{db,adminAccess,media,videoTranscoder,uploadDir,booksDir,thumbnailDir,previewDir,videoDir,originalDir,dataDir,uploads,maintenance,videoPreviews,ensureThumbnail});
+  const adminJobs=await registerAdminJobs(app,{db,adminAccess,media,videoTranscoder,uploadDir,booksDir,thumbnailDir,previewDir,videoDir,originalDir,dataDir,uploads,maintenance,videoPreviews,ensureThumbnail,rateLimit:options.rateLimit});
   registerAdmin(app,{db,adminAccess,uploads,rateLimit:options.rateLimit});
   maintenance.setBusy(()=>uploads.busy||adminJobs.busy||videoPreviews.busy||media.busy);
+  await registerAdminCleanup(app,{db,dataDir,adminAccess,maintenance,options});
   await registerAdminBackups(app,{db,dataDir,adminAccess,maintenance,options});
   await registerServerUpdates(app,{adminAccess,maintenance,options});
   // onClose runs in reverse order: stop encoders before waiting for either
@@ -249,7 +251,7 @@ export async function createApp(options = {}) {
     const finalThumbnail = join(thumbnailDir, `${id}.jpg`);
     const pages = [];
     const files = [];
-    let title = '', retainOriginal=false;
+    let title = '', retainOriginal=true;
     let receivedBytes = 0, size = 0;
     let isImageBook = false;
     try {

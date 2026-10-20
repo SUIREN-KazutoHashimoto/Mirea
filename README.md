@@ -1,12 +1,12 @@
 # Mirea
 
-このソースは **0.3.0beta**（内部バージョン `0.3.0-beta`、Android配布版versionCode 5）です。[専用署名APK・サーバーパッケージ](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.3.0beta)、[起動手順・ベータの制限](RELEASE.md)、[設定・アカウント・全画面ビューアー](docs/workspace.md) を参照してください。0.2.3betaと同じ専用署名を使います。旧デバッグ署名APKからの初回移行は手動です。
+このソースはLANパッチ **0.3.1beta**（内部 `0.3.1-beta`、Android versionCode 6）です。今回のPR・GitHub Releaseは作らず、LANサーバーと署名付き更新APKを反映します。[直近の公開リリース0.3.0beta](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.3.0beta)、[起動手順・ベータの制限](RELEASE.md)を参照してください。既存の専用署名を維持し、旧デバッグ署名からの初回移行だけは手動です。
 
 動画・音声・音楽・PDF・EPUB・複数画像の本を、本棚単位で共有できるクライアント・サーバー型メディアライブラリです。PCのWebブラウザとAndroidアプリが、同じAPI・アカウント・本棚を使います。
 
 0.2.1betaでは[コンテンツ優先の没入表示・スワイプ改善・EPUB対応](docs/immersive-epub.md)を追加しています。DRMなしのリフロー型EPUB 2／3を対象とし、章の目次・文字サイズ・続き位置・表紙・暗号化ダウンロードに対応します。固定レイアウト、MOBI／AZW／CBZ／CBRは対象外です。
 
-0.2.2betaでは[動画の画質選択・H.264＋AACへの変換・原本保持の選択](docs/video-transcoding.md)を追加しています。新規動画の原本保持は初期OFFで、全工程が成功した後にだけ原本を削除します。既存動画の自動変換・削除はしません。
+0.2.2betaでは[動画の画質選択・H.264＋AACへの変換・原本保持の選択](docs/video-transcoding.md)を追加しています。0.3.1betaから新規動画・音声の原本保持を初期ONに変更し、原本がない再変換には最高品質の既存データを代用します。既存動画の自動変換・削除はしません。
 
 0.2.3betaでは[ストア外Androidアプリの署名付き自動更新](docs/android-updates.md)を追加しています。自動確認・非従量制回線での取得・閲覧中の保留・OS確認への案内に対応します。旧デバッグ署名から専用署名への初回移行だけは手動です。
 

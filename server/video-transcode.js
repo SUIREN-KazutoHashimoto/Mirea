@@ -20,7 +20,7 @@ export async function probeVideo(source) {
   try {
     if(!ffprobePath())throw Object.assign(new Error('No FFprobe executable'),{code:'ENOENT'});
     const { stdout } = await exec(ffprobePath(), ['-v','error','-threads','1','-max_alloc','268435456','-protocol_whitelist','file,pipe','-format_whitelist',FORMATS,
-      '-show_entries','format=format_name,duration:stream=index,codec_type,codec_name,width,height,pix_fmt,duration,sample_aspect_ratio,color_transfer:stream_disposition=attached_pic:stream_tags=rotate:stream_side_data=rotation',
+      '-show_entries','format=format_name,duration:stream=index,codec_type,codec_name,width,height,bit_rate,pix_fmt,duration,sample_aspect_ratio,color_transfer:stream_disposition=attached_pic:stream_tags=rotate:stream_side_data=rotation',
       '-of','json',source], {timeout:30000,maxBuffer:1024*1024,windowsHide:true,killSignal:'SIGKILL'});
     const data = JSON.parse(stdout), video = data.streams?.find(s => s.codec_type === 'video' && !s.disposition?.attached_pic);
     if(!video)throw Object.assign(new Error('No decoded video stream'),{code:'EMPTY_VIDEO_OUTPUT'});
