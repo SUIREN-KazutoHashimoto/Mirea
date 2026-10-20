@@ -8,7 +8,7 @@ const DAY = 86400000, MAX_SESSION = 7 * DAY, BIN_MS = 10000;
 const uuid = { type: 'string', pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' };
 const int = maximum => ({ type: 'integer', minimum: 0, maximum });
 const number = maximum => ({ type: 'number', minimum: 0, maximum });
-const types = ['open','view_start','interval','ready','play','pause','seeking','seeked','ended','rate_change','buffering','page_enter','page_loading','zoom','viewport','visibility','focus','idle','close','error','loop'];
+const types = ['open','view_start','interval','ready','play','pause','seeking','seeked','ended','rate_change','buffering','page_enter','page_loading','zoom','viewport','visibility','focus','idle','close','error','loop','quality_change'];
 const properties = {
   id: uuid, seq: { ...int(2147483647), minimum: 1 }, type: { enum: types }, at: int(8640000000000000), elapsedMs: int(MAX_SESSION),
   intervalMs: int(5000), visibleMs: int(5000), activeMs: int(5000), watchMs: int(5000), gapMs: int(MAX_SESSION),
@@ -17,6 +17,8 @@ const properties = {
   rate: { type: 'number', minimum: 0.1, maximum: 16 }, muted: { type: 'boolean' }, volume: number(1), fullscreen: { type: 'boolean' },
   x: number(1), y: number(1), width: number(1), height: number(1), visibleRatio: number(1), zoom: number(20),
   viewportWidth: int(32768), viewportHeight: int(32768), droppedFrames: int(2147483647),
+  selectedQuality:{type:'string',pattern:'^(auto|legacy|download|[0-9]{2,4}p)$'}, actualQuality:{type:'string',pattern:'^(unknown|legacy|download|[0-9]{2,4}p)$'},
+  streamKind:{enum:['hls','mp4','download']}, bandwidthEstimate:int(10000000000),
   reason: { enum: ['heartbeat','scroll','resize','ready','page','zoom','play','pause','seeking','seeked','ratechange','buffering','ended','visibility','focus','idle','native','close','error','loop'] },
   errorCode: { enum: ['network','decode','render','load','unknown'] }
 };

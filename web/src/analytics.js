@@ -45,7 +45,7 @@ export function trackAsset(assetId, context = 'viewer') {
   if (!collectionEnabled || !getSession()) return null;
   const view = { id: crypto.randomUUID(), assetId, context, platform: native ? 'android' : 'web', clientVersion: version };
   const listeners = [];
-  let disposed = false, rendered = false, page, previousPage, element, stage, video, zoom = 1, buffering = true;
+  let disposed = false, rendered = false, page, previousPage, element, stage, video, zoom = 1, buffering = true, quality = {};
   let foreground = appActive && !document.hidden, focused = document.hasFocus(), lastInput = performance.now();
   const isIdle=()=>performance.now()-lastInput>120000 && (!video || video.paused || video.ended);
   const listen = (target, type, fn, options) => { target.addEventListener(type,fn,options); listeners.push(() => target.removeEventListener(type,fn,options)); };
@@ -58,6 +58,7 @@ export function trackAsset(assetId, context = 'viewer') {
     const state = { visible: foreground && rendered && (geometry.visibleRatio ?? 0)>0, focused, idle: isIdle(),
       ...geometry, viewportWidth: Math.min(32768,Math.round(innerWidth)), viewportHeight: Math.min(32768,Math.round(innerHeight)) };
     if (video) {
+      Object.assign(state,quality);
       state.toMs = Math.max(0,video.currentTime*1000 || 0);
       if (Number.isFinite(video.duration)) state.durationMs = Math.max(0,video.duration*1000);
       Object.assign(state, { playing: !video.paused && !video.ended, seeking: video.seeking, buffering, rate:Math.min(16,Math.max(0.1,video.playbackRate || 1)), muted:video.muted,volume:video.volume,fullscreen:Boolean(document.fullscreenElement?.contains(video)) });
@@ -78,6 +79,7 @@ export function trackAsset(assetId, context = 'viewer') {
   const lifecycle = reason => recorder.change(reason==='focus'?'focus':'visibility', () => { foreground=appActive&&!document.hidden; focused=document.hasFocus(); }, { reason });
   const tracker = {
     lifecycle,
+    quality(value) { recorder.change('quality_change',()=>{quality={...value};}); },
     loading() { recorder.change('page_loading',()=>{ rendered=false; },{ reason:'page' }); },
     ready(nextPage, node, viewport, scale = 1) {
       recorder.change(nextPage === previousPage ? 'ready' : 'page_enter',()=>{ page=nextPage; element=node; stage=viewport; zoom=scale; rendered=true; lastInput=performance.now(); }, { ...(previousPage ? { previousPage } : {}), reason:'ready' });

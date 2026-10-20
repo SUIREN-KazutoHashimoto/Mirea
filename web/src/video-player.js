@@ -5,7 +5,7 @@ export const formatVideoTime = value => {
 };
 export function seekVideo(video, value) { if (Number.isFinite(value) && Number.isFinite(video.duration) && video.duration > 0) video.currentTime = Math.min(video.duration, Math.max(0, value)); }
 export function mountVideoPlayer(container, { onError = () => {}, reconnect, doc = document } = {}) {
-  container.innerHTML = `<div class="mirea-player" tabindex="0" aria-label="動画プレーヤー"><video playsinline preload="metadata" aria-label="本編動画"></video><div class="player-loading" role="status" hidden>読み込み中…</div><button class="player-center" type="button" aria-label="動画を再生">▶</button><div class="player-controls"><label class="player-scrubber"><span class="sr-only">再生位置</span><input class="player-seek" type="range" min="0" max="1" step="0.01" value="0" disabled></label><div class="player-control-row"><button class="player-play" type="button" aria-label="再生">▶</button><button class="player-backward" type="button" aria-label="10秒戻る">−10</button><button class="player-forward" type="button" aria-label="10秒進む">＋10</button><span class="player-time">0:00 / 0:00</span><div class="player-volume-controls"><button class="player-mute" type="button" aria-label="消音">♫</button><label><span class="sr-only">音量</span><input class="player-volume" type="range" min="0" max="1" step="0.05" value="1"></label></div><label class="player-speed"><span class="sr-only">再生速度</span><select aria-label="再生速度"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label><button class="player-reconnect" type="button" aria-label="動画へ再接続">↻</button><button class="player-fullscreen" type="button" aria-label="全画面を切り替える">⛶</button></div><p class="player-help">Space 再生 / ← → シーク / M 消音 / F 全画面</p></div></div>`;
+  container.innerHTML = `<div class="mirea-player" tabindex="0" aria-label="動画プレーヤー"><video playsinline preload="metadata" aria-label="本編動画"></video><div class="player-loading" role="status" hidden>読み込み中…</div><button class="player-center" type="button" aria-label="動画を再生">▶</button><div class="player-controls"><label class="player-scrubber"><span class="sr-only">再生位置</span><input class="player-seek" type="range" min="0" max="1" step="0.01" value="0" disabled></label><div class="player-control-row"><button class="player-play" type="button" aria-label="再生">▶</button><button class="player-backward" type="button" aria-label="10秒戻る">−10</button><button class="player-forward" type="button" aria-label="10秒進む">＋10</button><span class="player-time">0:00 / 0:00</span><div class="player-volume-controls"><button class="player-mute" type="button" aria-label="消音">♫</button><label><span class="sr-only">音量</span><input class="player-volume" type="range" min="0" max="1" step="0.05" value="1"></label></div><label class="player-speed"><span class="sr-only">再生速度</span><select aria-label="再生速度"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label><label class="player-quality" hidden><span class="sr-only">画質</span><select aria-label="画質"></select></label><button class="player-reconnect" type="button" aria-label="動画へ再接続">↻</button><button class="player-fullscreen" type="button" aria-label="全画面を切り替える">⛶</button></div><p class="player-help">Space 再生 / ← → シーク / M 消音 / F 全画面</p></div></div>`;
   const root = container.querySelector('.mirea-player'), video = root.querySelector('video'), seek = root.querySelector('.player-seek'), volume = root.querySelector('.player-volume'), center = root.querySelector('.player-center');
   video.controls = false;
   const listeners = []; let disposed = false, timer, scrubbing = false;
@@ -29,11 +29,11 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, doc
   root.querySelector('.player-backward').onclick = () => seekVideo(video, video.currentTime - 10); root.querySelector('.player-forward').onclick = () => seekVideo(video, video.currentTime + 10);
   root.querySelector('.player-mute').onclick = () => { video.muted = !video.muted; };
   volume.oninput = () => { video.volume = Number(volume.value); video.muted = video.volume === 0; };
-  root.querySelector('select').onchange = event => { video.playbackRate = Number(event.target.value); };
+  root.querySelector('.player-speed select').onchange = event => { video.playbackRate = Number(event.target.value); };
   root.querySelector('.player-fullscreen').onclick = fullscreen;
   root.querySelector('.player-reconnect').onclick = async event => {
     if (!reconnect) return; const button = event.currentTarget; button.disabled = true;
-    try { const position = video.currentTime, playing = !video.paused, next = await reconnect(); if (disposed) return; video.src = next; video.addEventListener('loadedmetadata', () => { if (!disposed) { seekVideo(video, position); if (playing) video.play().catch(() => {}); } }, { once: true }); video.load(); } catch (error) { if (!disposed) onError(error); } finally { if (!disposed) button.disabled = false; }
+    try { const position = video.currentTime, playing = !video.paused, next = await reconnect(); if (disposed) return; if (!next) return; video.src = next; video.addEventListener('loadedmetadata', () => { if (!disposed) { seekVideo(video, position); if (playing) video.play().catch(() => {}); } }, { once: true }); video.load(); } catch (error) { if (!disposed) onError(error); } finally { if (!disposed) button.disabled = false; }
   };
   seek.oninput = () => { scrubbing = true; root.querySelector('.player-time').textContent = `${formatVideoTime(Number(seek.value))} / ${formatVideoTime(video.duration)}`; };
   seek.onchange = () => { seekVideo(video, Number(seek.value)); scrubbing = false; update(); };
@@ -52,5 +52,13 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, doc
     showControls();
   });
   update(); root.focus();
-  return { video, dispose() { disposed = true; clearTimeout(timer); for (const remove of listeners) remove(); video.pause(); video.removeAttribute('src'); video.load(); root.remove(); } };
+  return { video, setQuality({qualities=[],selected='auto',actual='unknown',auto=true},choose) {
+    const label=root.querySelector('.player-quality'),select=label.querySelector('select');
+    label.hidden=!qualities.length;
+    const values=[...(auto?[{value:'auto',text:'自動'+(actual!=='unknown'?' ('+actual+')':'')}]:[]),...qualities.filter(q=>/^\d{2,4}p$/.test(q.quality)).map(q=>({value:q.quality,text:q.quality}))];
+    const key=values.map(v=>v.value).join(',');
+    if(select.dataset.levels!==key){select.replaceChildren(...values.map(value=>{const option=doc.createElement('option');option.value=value.value;option.textContent=value.text;return option;}));select.dataset.levels=key;}
+    else for(const value of values){const option=[...select.options].find(o=>o.value===value.value);if(option)option.textContent=value.text;}
+    select.value=selected;select.onchange=()=>choose(select.value);
+  }, dispose() { disposed = true; clearTimeout(timer); for (const remove of listeners) remove(); video.pause(); video.removeAttribute('src'); video.load(); root.remove(); } };
 }

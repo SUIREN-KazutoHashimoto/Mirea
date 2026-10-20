@@ -14,9 +14,13 @@ import { createTheme } from './theme.js';
 import { openSettings } from './settings.js';
 import { createViewerScreen } from './viewer-shell.js';
 import { mountVideoPlayer } from './video-player.js';
+import { VIDEO_EXTENSIONS } from '../../server/video-types.js';
+import { beginUpdateActivity } from './update-busy.js';
+import { initializeAppUpdates, refreshAppUpdates, appUpdatesEndpointChanged, mountAppUpdates, openAppUpdates } from './app-updates.js';
+import './app-updates.css';
 
 const theme = createTheme();
-const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.2.0beta/mirea-0.2.0beta-android-debug.apk';
+const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.2.3beta/mirea-0.2.3beta-android.apk';
 
 const root = document.querySelector('#app');
 const roleName = { owner: '管理者', editor: '編集者', viewer: '閲覧者' };
@@ -51,6 +55,7 @@ if (native) {
   App.addListener('appStateChange', ({ isActive }) => {
     nativeStateRevision++;
     nativeAppActive = isActive;
+    if (isActive) refreshAppUpdates();
     analyticsNativeState(isActive);
     progressNativeState(isActive);
     downloadsNativeState(isActive);
@@ -142,6 +147,11 @@ function renderAuth(register = false) {
   const switchButton = document.querySelector('#switch-auth');
   switchButton.hidden = !register && !config.allowRegistration;
   switchButton.onclick = () => renderAuth(!register);
+  if (native) {
+    const updates = document.createElement('button'); updates.type = 'button'; updates.className = 'text-button'; updates.textContent = 'アプリの更新';
+    document.querySelector('.auth-form-wrap').append(updates);
+    updates.onclick = () => { try { setEndpoint(document.querySelector('#auth-form').elements.server.value.trim()); appUpdatesEndpointChanged(); openAppUpdates(dialog); } catch (error) { report(error); } };
+  }
   document.querySelector('#auth-form').onsubmit = async e => {
     e.preventDefault();
     const form = e.currentTarget;
@@ -150,7 +160,7 @@ function renderAuth(register = false) {
     submit.disabled = true;
     errorBox.hidden = true;
     try {
-      if (native) setEndpoint(form.elements.server.value.trim());
+      if (native) { setEndpoint(form.elements.server.value.trim()); appUpdatesEndpointChanged(); }
       const body = { email: form.elements.email.value.trim(), password: form.elements.password.value };
       if (register) body.name = form.elements.name.value.trim();
       setSession(await api(register ? '/auth/register' : '/auth/login', { method: 'POST', body }));
@@ -174,13 +184,14 @@ function renderShell() {
     <button id="nav-settings" class="nav-item settings-nav">${icon('settings')}<span>設定</span></button><a class="nav-item apk-nav" href="${esc(config.androidApkUrl || defaultApkUrl)}" target="_blank" rel="noopener noreferrer">${icon('download')}<span>Androidアプリ</span></a>
     <div class="profile"><span class="avatar">${esc(user.name.slice(0, 1))}</span><div><strong>${esc(user.name)}</strong><small>${esc(user.email)}</small></div><button id="logout" class="icon-button" aria-label="ログアウト">${icon('logout')}</button></div></aside>
     <main class="main-content"><header class="topbar"><div class="breadcrumb">ワークスペース <span>/</span> <strong id="breadcrumb-title">ライブラリ</strong></div><span class="topbar-label">YOUR PERSONAL COLLECTION</span><button id="mobile-settings" class="icon-button mobile-settings" aria-label="設定">${icon('settings')}</button><button id="mobile-logout" class="icon-button mobile-logout" aria-label="ログアウト">${icon('logout')}</button></header>
-    <div class="content-wrap"><section class="page-heading"><div><span class="eyebrow">THE LIBRARY, REIMAGINED</span><h1 id="page-title">あなたのライブラリ<span class="title-dot">.</span></h1><p id="page-description">動画も本も、ここに。お気に入りを集めた、あなたの場所。</p></div><div class="heading-actions"><button class="button secondary" id="manage-members" hidden>${icon('users')}共有設定</button><button class="button primary" id="open-upload">${icon('plus')}コンテンツを追加</button></div></section>
+    <div class="content-wrap"><section class="page-heading"><div><span class="eyebrow">THE LIBRARY, REIMAGINED</span><h1 id="page-title">あなたのライブラリ<span class="title-dot">.</span></h1><p id="page-description">動画も本も、ここに。お気に入りを集めた、あなたの場所。</p></div><div class="heading-actions"><button class="button secondary" id="manage-members" hidden>${icon('users')}共有設定</button><button class="button secondary" id="upload-jobs">アップロード処理</button><button class="button primary" id="open-upload">${icon('plus')}コンテンツを追加</button></div></section>
     <section class="library-overview" aria-label="ライブラリの概要"><div class="overview-message"><div class="overview-icon">${icon('shelf')}</div><div><span class="eyebrow">A LITTLE SPACE FOR BIG IDEAS</span><h2>好きな時間を、好きな本棚で。</h2><p>ひとりで楽しむ。みんなで分かち合う。</p></div></div><div class="stats"><div><strong id="stat-total">—</strong><span>コンテンツ</span></div><div><strong id="stat-book">—</strong><span>本</span></div><div><strong id="stat-video">—</strong><span>動画</span></div></div></section>
     <section class="collection"><div class="collection-toolbar"><div class="tabs" role="group" aria-label="種類で絞り込み"><button data-filter="all" class="tab active">すべて <span id="count-all">0</span></button><button data-filter="book" class="tab">${icon('book')}本 <span id="count-book">0</span></button><button data-filter="video" class="tab">${icon('video')}動画 <span id="count-video">0</span></button></div><div class="collection-tools"><label class="search-field">${icon('search')}<input id="search" type="search" placeholder="タイトルで検索" aria-label="タイトルで検索"></label><label class="sr-only" for="sort">並び順</label><select id="sort"><option value="recent">追加が新しい順</option><option value="name">タイトル順</option></select></div></div><div class="collection-caption"><h2 id="collection-title">すべてのコンテンツ</h2><span id="result-count"></span></div><div id="items" class="item-grid" aria-live="polite"><p class="loading-state">ライブラリを読み込んでいます…</p></div></section>
     <footer class="library-footer"><span>Mirea<span class="brand-dot">.</span></span><span>あなたの物語が、ここにある。</span></footer></div></main></div>`;
   document.querySelector('#add-shelf').onclick = openCreateShelf;
   document.querySelector('#nav-all').onclick = () => selectShelf(null);
   document.querySelector('#open-upload').onclick = openUpload;
+  document.querySelector('#upload-jobs').onclick = openUploadJobs;
   document.querySelector('#manage-members').onclick = openMembers;
   document.querySelector('#nav-settings').onclick = document.querySelector('#mobile-settings').onclick = showSettings;
   const seriesControls=document.createElement('section');seriesControls.className='series-controls';seriesControls.setAttribute('aria-label','シリーズ');
@@ -213,7 +224,7 @@ function renderShell() {
 function showSettings() {
   const actor=getSession(),server=getEndpoint();
   const current=()=>getSession()===actor && getEndpoint()===server;
-  openSettings({ dialog, api, esc, theme, apkUrl: config.androidApkUrl || defaultApkUrl, version: config.version || '0.2.0-beta', manageShelf: id => openMembers(id),
+  openSettings({ dialog, api, esc, theme, apkUrl: config.androidApkUrl || defaultApkUrl, version: config.version || '0.2.3-beta', manageShelf: id => openMembers(id), mountUpdates: native ? mountAppUpdates : null,
     onUpdated: async result => { if(!current())return;closeDownloads();setSession(result);await stopAnalytics().catch(()=>{});if(getSession()!==result || getEndpoint()!==server)return;await startAnalytics();if(getSession()!==result || getEndpoint()!==server)return;renderShell();await refresh();toast('アカウント情報を更新しました。他の端末では再ログインが必要です。'); },
     onDeleted: async () => { if(!current())return;const results=await Promise.allSettled([clearAccountDownloads(),clearAccountAnalytics(),clearAccountProgress()]);if(!current())return;const cacheError=results.some(r=>r.status==='rejected');clearThumbnails();setSession(null);loadGeneration++;shelves=[];items=[];activeShelf=null;renderAuth();toast(cacheError?'アカウントを削除しました。端末内データを消去できませんでした。ブラウザーのサイトデータを削除してください。':'アカウントと個人の記録、この端末のダウンロードを削除しました。'); }
   });
@@ -338,10 +349,10 @@ function openCreateShelf() {
 function openUpload() {
   const editable = shelves.filter(s => s.role !== 'viewer');
   if (!editable.length) return openCreateShelf();
-  const node = dialog('コンテンツを追加', `<form class="modal-body" id="upload-form"><label>追加する本棚<select name="shelf">${editable.map(s => `<option value="${s.id}" ${s.id === activeShelf ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label><label class="dropzone" id="dropzone"><input name="file" type="file" aria-label="アップロードするファイル" accept="application/epub+zip,.epub,application/pdf,video/mp4,video/webm,image/jpeg,image/png,image/webp,.pdf,.mp4,.webm,.jpg,.jpeg,.png,.webp" multiple required>${icon('upload')}<strong id="file-label">ファイルを選択、またはドロップ</strong><span>PDF / EPUB / 動画は1ファイル・画像は複数枚で1冊</span><small>JPEG / PNG / WebP（静止画）・合計 ${bytes(config.maxUploadBytes)}まで</small></label><div id="selected-files" hidden></div><label>タイトル<input name="title" maxlength="200" required placeholder="ライブラリに表示するタイトル"></label><p class="thumbnail-note">${icon('book')} 表紙はEPUBのカバー・PDFの1ページ目、動画のフレーム、画像の本の先頭ページから生成します。</p><div class="upload-progress" hidden><div><span id="upload-status">アップロード中…</span><span id="upload-percent">0%</span></div><progress max="100" value="0" aria-label="アップロードの進行状況"></progress></div><p class="form-error" role="alert" hidden></p><div class="modal-actions"><button class="button primary" type="submit">${icon('upload')}アップロードする</button></div></form>`);
+  const node = dialog('コンテンツを追加', `<form class="modal-body" id="upload-form"><label>追加する本棚<select name="shelf">${editable.map(s => `<option value="${s.id}" ${s.id === activeShelf ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label><label class="dropzone" id="dropzone"><input name="file" type="file" aria-label="アップロードするファイル" accept="application/epub+zip,.epub,application/pdf,video/*,image/jpeg,image/png,image/webp,.pdf,.mp4,.m4v,.mov,.mkv,.avi,.wmv,.asf,.mpeg,.mpg,.ts,.mts,.m2ts,.flv,.webm,.jpg,.jpeg,.png,.webp" multiple required>${icon('upload')}<strong id="file-label">ファイルを選択、またはドロップ</strong><span>PDF / EPUB / 動画は1ファイル・画像は複数枚で1冊</span><small>JPEG / PNG / WebP（静止画）・合計 ${bytes(config.maxUploadBytes)}まで</small></label><div id="selected-files" hidden></div><label>タイトル<input name="title" maxlength="200" required placeholder="ライブラリに表示するタイトル"></label><label class="retain-original"><input name="retainOriginal" type="checkbox">動画の原本を保持する</label><p class="retention-note">初期設定では、全画質の変換・配信データ・サムネイルの生成と検証が成功した後、動画の原本を削除します。元の画質・形式が必要な場合はチェックしてください。失敗時は原本を残します。本の原本は削除しません。</p><p class="thumbnail-note">${icon('book')} 表紙はEPUBのカバー・PDFの1ページ目、動画のフレーム、画像の本の先頭ページから生成します。</p><div class="upload-progress" hidden><div><span id="upload-status">アップロード中…</span><span id="upload-percent">0%</span></div><progress max="100" value="0" aria-label="アップロードの進行状況"></progress></div><p class="form-error" role="alert" hidden></p><div class="modal-actions"><button class="button primary" type="submit">${icon('upload')}アップロードする</button></div></form>`);
   const form = node.querySelector('form'), input = form.elements.file, zone = node.querySelector('#dropzone');
   const errorBox = form.querySelector('.form-error');
-  const mimeByExtension = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', pdf: 'application/pdf', epub: 'application/epub+zip', mp4: 'video/mp4', webm: 'video/webm' };
+  const mimeByExtension = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', pdf: 'application/pdf', epub: 'application/epub+zip', ...VIDEO_EXTENSIONS };
   const imageMime = file => ['image/jpeg', 'image/png', 'image/webp'].includes(file.type);
   let selectedFiles = [], activeUpload, lastDefaultTitle = '';
   const previewUrls = new Map();
@@ -371,7 +382,7 @@ function openUpload() {
   const selectFiles = incoming => {
     for (const url of previewUrls.values()) URL.revokeObjectURL(url);
     previewUrls.clear();
-    selectedFiles = Array.from(incoming).map(file => file.type && !(file.name.toLowerCase().endsWith('.epub') && file.type !== 'application/epub+zip') ? file : new File([file], file.name, { type: mimeByExtension[file.name.split('.').pop().toLowerCase()] || 'application/octet-stream', lastModified: file.lastModified }));
+    selectedFiles = Array.from(incoming).map(file => !mimeByExtension[file.name.split('.').pop().toLowerCase()] && file.type ? file : new File([file], file.name, { type: mimeByExtension[file.name.split('.').pop().toLowerCase()] || 'application/octet-stream', lastModified: file.lastModified }));
     if (selectedFiles.every(imageMime)) selectedFiles.sort((a, b) => a.name.localeCompare(b.name, 'ja', { numeric: true, sensitivity: 'base' }));
     if (selectedFiles.length && (!form.elements.title.value || form.elements.title.value === lastDefaultTitle)) {
       lastDefaultTitle = selectedFiles[0].name.replace(/\.[^.]+$/, '').slice(0, 200);
@@ -384,7 +395,7 @@ function openUpload() {
   zone.ondragover = e => { e.preventDefault(); zone.classList.add('dragover'); };
   zone.ondragleave = () => zone.classList.remove('dragover');
   zone.ondrop = e => { e.preventDefault(); zone.classList.remove('dragover'); if (activeUpload) return; if (e.dataTransfer.files.length) { input.files = e.dataTransfer.files; selectFiles(e.dataTransfer.files); } };
-  node.addEventListener('close', () => { activeUpload?.abort(); for (const url of previewUrls.values()) URL.revokeObjectURL(url); }, { once: true });
+  node.addEventListener('close', () => { if(activeUpload?.processing)activeUpload.detach();else activeUpload?.abort(); for (const url of previewUrls.values()) URL.revokeObjectURL(url); }, { once: true });
   form.onsubmit = async e => {
     e.preventDefault();
     const button = form.querySelector('[type="submit"]');
@@ -402,11 +413,11 @@ function openUpload() {
     form.querySelectorAll('input, select, [data-page-up], [data-page-down], [data-remove-file]').forEach(el => { el.disabled = true; });
     node.querySelector('.upload-progress').hidden = false;
     node.querySelector('#upload-status').textContent = '分割して送信しています。通信失敗後は同じファイルで再試行できます。';
-    activeUpload = upload(form.elements.shelf.value, selectedFiles, form.elements.title.value.trim(), percent => {
+    activeUpload = upload(form.elements.shelf.value, selectedFiles, form.elements.title.value.trim(), (percent,processing) => {
       node.querySelector('progress').value = percent;
       node.querySelector('#upload-percent').textContent = `${percent}%`;
-      if (percent === 100) node.querySelector('#upload-status').textContent = 'ページを確認し、サムネイルを生成しています…';
-    });
+      if (percent === 100) node.querySelector('#upload-status').textContent = processing ? processingLabel(processing)+'（画面を閉じても継続します）' : 'メディアを確認しています…';
+    },{retainOriginal:form.elements.retainOriginal.checked});
     try { await activeUpload.promise; activeUpload = null; node.close(); await refresh(); toast('コンテンツを追加しました。'); }
     catch (error) { if (node.isConnected) { errorBox.textContent = error.message; errorBox.hidden = false; } }
     finally { button.disabled = false; form.querySelectorAll('input, select').forEach(el => { el.disabled = false; }); if (node.isConnected) showSelection(); activeUpload = null; }
@@ -473,7 +484,10 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false}={}) {
   const isPdf = item.mimeType === 'application/pdf';
   document.querySelectorAll('.viewer-screen').forEach(screen=>screen.close());
   videoPreviews?.setPaused('viewer', true);
-  const node = createViewerScreen({title:item.title,kind:item.kind,onClose:()=>videoPreviews?.setPaused('viewer',false)});
+  const releaseUpdate = beginUpdateActivity();
+  let node;
+  try { node = createViewerScreen({title:item.title,kind:item.kind,onClose:()=>{releaseUpdate();videoPreviews?.setPaused('viewer',false);}}); }
+  catch (error) { releaseUpdate(); throw error; }
   const body = node.querySelector('.viewer-body');
   body.innerHTML='<p class="viewer-loading" role="status">読み込んでいます…</p>';
   const tracker = trackAsset(item.id);
@@ -532,13 +546,20 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false}={}) {
     } else {
       const ticket = downloaded?null:await api(`/items/${item.id}/playback-ticket`, { method: 'POST' });
       if (!node.isConnected) return;
-      const player=mountVideoPlayer(body,{onError,reconnect:async()=>{body.querySelector('.viewer-error')?.remove();return downloaded?await downloaded.reconnect():absoluteUrl((await api(`/items/${item.id}/playback-ticket`,{method:'POST'})).url);}});
+      const {attachVideoStream}=await import('./video-stream.js');
+      if(!node.isConnected)return;
+      let stream;
+      const renew=()=>api(`/items/${item.id}/playback-ticket`,{method:'POST'});
+      const player=mountVideoPlayer(body,{onError,reconnect:async()=>{body.querySelector('.viewer-error')?.remove();if(downloaded)return downloaded.reconnect();await stream.reconnect();return null;}});
       const video = player.video;
       const videoProgress=bindVideoProgress(video,progress);
-      cleanup=()=>{videoProgress();player.dispose();};cleanup.restart=()=>videoProgress.restart();
+      cleanup=()=>{videoProgress();stream?.dispose();player.dispose();};cleanup.restart=()=>videoProgress.restart();
       tracker?.video(video);
       seriesNavigation.bindVideo(video,{autoplay});
-      video.src = downloaded?downloaded.url(0):absoluteUrl(ticket.url);
+      if(downloaded){
+        video.src=downloaded.url(0);
+        tracker?.quality({selectedQuality:downloaded.manifest.files[0].quality??'download',actualQuality:downloaded.manifest.files[0].quality??'download',streamKind:'download'});
+      }else stream=attachVideoStream(video,{ticket,absoluteUrl,renew,onError,onQuality:value=>tracker?.quality(value),onOptions:options=>player.setQuality(options,value=>stream?.choose(value))});
       if(downloaded)video.setAttribute('controlsList','nodownload');
     }
     restart.disabled=false;
@@ -553,12 +574,22 @@ async function updateDownloadButtons(){
 }
 function openDownload(item){
   if(!item)return;
-  const node=dialog('端末へ暗号化ダウンロード',`<div class="modal-body"><h3>${esc(item.title)}</h3><p>本・動画のデータはAES-256-GCMで暗号化してアプリ／ブラウザー内に保存します。復号鍵は閲覧中のメモリーにだけ保持します。開くたびにオンラインでアクセス権を確認するため、完全オフラインでは開けません。</p><p>画面を閉じると取得を一時停止します。次回は受信済み部分から再開できます。</p><progress class="download-progress" max="100" value="0" aria-label="ダウンロードの進行状況"></progress><p class="download-status" role="status">${bytes(item.size)}・端末の空き容量が必要です。</p><div class="modal-actions"><button class="button primary start-download">保存を開始／再開</button></div></div>`);
+  const node=dialog('端末へ暗号化ダウンロード',`<div class="modal-body"><h3>${esc(item.title)}</h3><p>本・動画のデータはAES-256-GCMで暗号化してアプリ／ブラウザー内に保存します。復号鍵は閲覧中のメモリーにだけ保持します。開くたびにオンラインでアクセス権を確認するため、完全オフラインでは開けません。</p><p>画面を閉じると取得を一時停止します。次回は受信済み部分から再開できます。</p><div class="download-quality" hidden><label>保存する画質<select aria-label="ダウンロード画質"></select></label><small>1アセットにつき1画質を保存します。変更すると以前の保存データを置き換えます。</small></div><progress class="download-progress" max="100" value="0" aria-label="ダウンロードの進行状況"></progress><p class="download-status" role="status">${bytes(item.size)}・端末の空き容量が必要です。</p><div class="modal-actions"><button class="button primary start-download">保存を開始／再開</button></div></div>`);
   const controller=new AbortController(),status=node.querySelector('.download-status'),button=node.querySelector('.start-download');
   node.addEventListener('close',()=>{controller.abort();updateDownloadButtons();},{once:true});
+  if(item.kind==='video'){
+    button.disabled=true;
+    api(`/items/${item.id}/video`).then(info=>{
+      if(!node.isConnected)return;
+      const block=node.querySelector('.download-quality'),select=block.querySelector('select');
+      block.hidden=!info.renditions?.length;
+      select.innerHTML=(info.renditions??[]).map(q=>`<option value="${esc(q.quality)}">${esc(q.quality)} · ${bytes(q.size)}</option>`).join('');
+      button.disabled=false;
+    }).catch(error=>{if(node.isConnected)status.textContent=error.message;});
+  }
   button.onclick=async()=>{
     button.disabled=true;
-    try{await downloadToDevice(item,({received,total})=>{if(node.isConnected){node.querySelector('progress').value=received/total*100;status.textContent=`${bytes(received)} / ${bytes(total)}`;}},controller.signal);if(node.isConnected)status.textContent='暗号化して保存しました。開く際には毎回オンラインで権限を確認します。';await updateDownloadButtons();}
+    try{await downloadToDevice(item,({received,total})=>{if(node.isConnected){node.querySelector('progress').value=received/total*100;status.textContent=`${bytes(received)} / ${bytes(total)}`;}},controller.signal,node.querySelector('.download-quality select')?.value||undefined);if(node.isConnected)status.textContent='暗号化して保存しました。開く際には毎回オンラインで権限を確認します。';await updateDownloadButtons();}
     catch(error){if(node.isConnected)status.textContent=error.name==='QuotaExceededError'?'端末の保存容量が不足しています。不要なダウンロードを削除してください。':error.message;}
     finally{if(node.isConnected)button.disabled=false;}
   };
@@ -593,6 +624,8 @@ window.addEventListener('mirea:unauthorized', () => {
   renderAuth();
   toast('ログインの有効期限が切れました。もう一度ログインしてください。');
 });
+window.addEventListener('mirea:update-ready', event => toast(`アプリ ${event.detail} の更新を準備しました。「設定」またはログイン画面の「アプリの更新」で確認できます。`));
+initializeAppUpdates();
 await loadConfig();
 if (getSession()) {
   try { await api('/auth/me'); await startAnalytics(); renderShell(); await refresh(); }
@@ -602,3 +635,24 @@ window.addEventListener('mirea:analytics-status',event=>{
   const node=document.querySelector('#analytics-delivery');
   if(node)node.textContent=event.detail==='pending'?'閲覧記録は端末で送信待ちです。再接続時に再送します。':'閲覧記録の一部を保存・送信できませんでした。';
 });
+
+function processingLabel(value={}){
+  const names={probe:'動画を解析中',encode:'動画を変換中',validate:'配信データを検証中',thumbnail:'サムネイルを生成中',publish:'保存中',complete:'完了'};
+  return (names[value.stage]??'処理待ち')+(value.quality?' · '+value.quality:'')+(Number.isFinite(value.percent)?' · '+value.percent+'%':'');
+}
+function openUploadJobs(){
+  const node=dialog('アップロード処理','<div class="modal-body"><p>変換はサーバーで継続します。失敗した動画の原本は自動削除しません。再試行するか、不要なら原本ごと取り消してください。</p><div class="upload-jobs" role="status">読み込み中…</div></div>');
+  const actor=getSession()?.user.id,endpoint=getEndpoint();let timer;
+  const current=()=>node.isConnected&&getSession()?.user.id===actor&&getEndpoint()===endpoint;
+  async function reload(){
+    try{
+      const result=await api('/uploads');if(!current())return;
+      const list=node.querySelector('.upload-jobs');
+      list.innerHTML=result.uploads.length?result.uploads.map(job=>`<div class="upload-job"><strong>${esc(job.title)}</strong><p>${esc(job.state==='failed'?job.error:processingLabel(job.processing))}</p><small>${job.retainOriginal?'原本保持 ON':'原本保持 OFF（全処理成功後に削除）'}${job.sourceRetained?' · 失敗した原本を保持中':''}</small><div>${job.state==='failed'&&job.sourceRetained?`<button class="button secondary" data-job-retry="${job.id}">再試行</button>`:''}<button class="button secondary" data-job-cancel="${job.id}">取り消し・原本削除</button></div></div>`).join(''):'<p>処理中・失敗したアップロードはありません。</p>';
+      list.querySelectorAll('[data-job-retry]').forEach(button=>button.onclick=async()=>{button.disabled=true;try{await api(`/uploads/${button.dataset.jobRetry}/retry`,{method:'POST'});await reload();}catch(error){report(error);button.disabled=false;}});
+      list.querySelectorAll('[data-job-cancel]').forEach(button=>button.onclick=async()=>{if(!confirm('この処理を取り消し、アップロードした原本も削除しますか？'))return;button.disabled=true;try{await api(`/uploads/${button.dataset.jobCancel}`,{method:'DELETE'});await reload();}catch(error){report(error);button.disabled=false;}});
+    }catch(error){if(current())node.querySelector('.upload-jobs').textContent=error.message;}
+    if(current()){clearTimeout(timer);timer=setTimeout(reload,3000);}
+  }
+  node.addEventListener('close',()=>{clearTimeout(timer);refresh();},{once:true});reload();
+}

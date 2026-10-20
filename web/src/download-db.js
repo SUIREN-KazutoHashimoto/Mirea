@@ -33,7 +33,7 @@ export function createDownloadStore(db){
         if(r.result)erase(tx.objectStore('chunks'),r.result.manifest.id);
         // Explicit fields only: never persist an open response or CryptoKey.
         const {id,assetId,version,algorithm,chunkSize,title,kind,pageCount}=manifest;
-        const safe={id,assetId,version,algorithm,chunkSize,title,kind,pageCount,files:manifest.files.map(({index,number,size,mime,chunks,width,height})=>({index,number,size,mime,chunks,...(width?{width,height}:{})}))};
+        const safe={id,assetId,version,algorithm,chunkSize,title,kind,pageCount,files:manifest.files.map(({index,number,size,mime,chunks,width,height,quality})=>({index,number,size,mime,chunks,...(width?{width,height}:{}),...(quality?{quality}:{})}))};
         const record={key,partition,assetId,manifest:safe,state:'downloading',savedAt:Date.now()};packages.put(record);done(record);
       };
     }),

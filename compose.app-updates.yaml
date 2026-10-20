@@ -1,0 +1,11 @@
+# Optional PUBLIC distribution bundle. Signing keys must never be mounted here.
+# docker compose -f compose.yaml -f compose.app-updates.yaml up -d --build
+services:
+  mirea:
+    environment:
+      APP_UPDATES_DIR: /app-updates
+    volumes:
+      - type: bind
+        source: ${APP_UPDATES_HOST_DIR:?Set APP_UPDATES_HOST_DIR to the public signed APK bundle directory}
+        target: /app-updates
+        read_only: true

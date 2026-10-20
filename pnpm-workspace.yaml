@@ -3,3 +3,4 @@ saveExact: true
 allowBuilds:
   esbuild: true
   ffmpeg-static: true
+  '@derhuerst/ffprobe-static': true

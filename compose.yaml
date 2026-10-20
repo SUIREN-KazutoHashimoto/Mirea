@@ -13,6 +13,7 @@ services:
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
       ANALYTICS_ENABLED: ${ANALYTICS_ENABLED:-true}
       SERVER_ADMIN_USER_IDS: ${SERVER_ADMIN_USER_IDS:-}
+      APP_UPDATES_DIR: ${APP_UPDATES_DIR:-}
     volumes:
       - mirea-data:/data
     restart: unless-stopped

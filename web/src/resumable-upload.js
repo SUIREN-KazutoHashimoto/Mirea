@@ -3,10 +3,10 @@ const digest = async bytes => hex(await crypto.subtle.digest('SHA-256', bytes));
 const abortError = () => new Error('アップロードをキャンセルしました。');
 const transient = status => !status || [408, 409, 425, 429].includes(status) || status >= 500;
 
-export function createResumableUpload({ endpoint, token, userId, unauthorized }, shelfId, files, title, onProgress) {
+export function createResumableUpload({ endpoint, token, userId, unauthorized }, shelfId, files, title, onProgress, {retainOriginal=false}={}) {
   const controller = new AbortController();
   const { signal } = controller;
-  let xhr, uploadId, storageKey, cancelled = false;
+  let xhr, uploadId, storageKey, cancelled = false, processing = false;
   const headers = { Authorization: `Bearer ${token}` };
   const readSaved = () => { try { return JSON.parse(localStorage.getItem(storageKey)); } catch { return null; } };
   const save = value => { try { if (value) localStorage.setItem(storageKey, JSON.stringify(value)); else localStorage.removeItem(storageKey); } catch { /* private / full browser storage */ } };
@@ -72,7 +72,7 @@ export function createResumableUpload({ endpoint, token, userId, unauthorized },
       const sample = new Blob([file.slice(0, 65536), file.slice(Math.max(0, file.size - 65536))]);
       identities.push([file.name, file.type, file.size, file.lastModified, await digest(await sample.arrayBuffer())]);
     }
-    storageKey = `mirea.upload.${await digest(new TextEncoder().encode(JSON.stringify([endpoint, userId, shelfId, title, identities])))}`;
+    storageKey = `mirea.upload.${await digest(new TextEncoder().encode(JSON.stringify([endpoint, userId, shelfId, title, identities, retainOriginal])))}`;
     if (signal.aborted) throw abortError();
     let state;
     const saved = readSaved();
@@ -85,7 +85,7 @@ export function createResumableUpload({ endpoint, token, userId, unauthorized },
       // Do not automatically retry creation: a lost response must not allocate
       // several server sessions. Individual parts and completion are idempotent.
       state = await request(`/shelves/${shelfId}/uploads`, 'POST', {
-        title, files: files.map(file => ({ filename: file.name, mime: file.type, size: file.size }))
+        title, retainOriginal, files: files.map(file => ({ filename: file.name, mime: file.type, size: file.size }))
       });
       save({ id: state.id, expiresAt: state.expiresAt });
     }
@@ -118,10 +118,12 @@ export function createResumableUpload({ endpoint, token, userId, unauthorized },
       }
       state = await retry(() => request(`/uploads/${uploadId}/complete`, 'POST'));
     }
-    onProgress(100);
+    processing = state.state === 'processing';
+    onProgress(100,state.processing);
     while (state.state === 'processing') {
       await sleep(1500);
       state = await retry(() => request(`/uploads/${uploadId}`));
+      onProgress(100,state.processing);
     }
     if (state.state !== 'complete' || !state.item) { save(null); throw new Error(state.error || 'コンテンツを保存できませんでした。'); }
     save(null);
@@ -130,7 +132,7 @@ export function createResumableUpload({ endpoint, token, userId, unauthorized },
     if (cancelled) throw abortError();
     throw error;
   });
-  return { promise, abort() {
+  return { promise, get processing(){return processing;}, detach(){controller.abort();xhr?.abort();}, abort() {
     cancelled = true;
     controller.abort();
     xhr?.abort();

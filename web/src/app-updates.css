@@ -1,0 +1,6 @@
+.app-updates .confirm-row{display:flex;align-items:center;gap:.65rem;margin:.85rem 0}
+.app-updates input[type=checkbox]{width:1.1rem;height:1.1rem;flex:none;accent-color:var(--primary,#5364d9)}
+.update-actions{display:flex;flex-wrap:wrap;gap:.6rem;margin-top:1rem}
+.update-actions .button{white-space:normal}
+.update-progress{width:100%;height:.55rem;margin:.5rem 0;accent-color:var(--primary,#5364d9)}
+.update-status,.update-version{overflow-wrap:anywhere}

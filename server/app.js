@@ -8,6 +8,7 @@ import { mkdir, rename, unlink, access, stat } from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PROJECT_ROOT } from './runtime.js';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { openDatabase, transaction } from './database.js';
@@ -22,6 +23,10 @@ import { registerSeries, shelfSeries, shelfSeriesMembership } from './series.js'
 import { registerAccounts } from './accounts.js';
 import { EPUB_MIME, EPUB_BUNDLE_MIME, MAX_EPUB_BYTES } from './ebook-types.js';
 import packageInfo from '../package.json' with {type:'json'};
+import { VIDEO_TYPES, isVideo } from './video-types.js';
+import { createVideoTranscoder } from './video-transcode.js';
+import { registerVideoStreams, videoMetadata } from './video-stream.js';
+import { registerAppUpdates } from './app-updates.js';
 
 const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 const TICKET_MS = 60 * 60 * 1000;
@@ -44,9 +49,11 @@ export async function createApp(options = {}) {
   const stagingDir = join(uploadDir, 'staging');
   const booksDir = join(uploadDir, 'books');
   const thumbnailDir = join(dataDir, 'thumbnails');
-  await Promise.all([uploadDir, stagingDir, booksDir, thumbnailDir].map(path => mkdir(path, { recursive: true, mode: 0o700 })));
+  const videoDir=join(dataDir,'videos'),originalDir=join(dataDir,'originals'),previewDir=join(dataDir,'previews');
+  await Promise.all([uploadDir, stagingDir, booksDir, thumbnailDir, videoDir, originalDir, previewDir].map(path => mkdir(path, { recursive: true, mode: 0o700 })));
   const db = openDatabase(join(dataDir, 'mirea.sqlite'));
   const media = options.mediaProcessor ?? createMediaProcessor();
+  const videoTranscoder=options.videoTranscoder??createVideoTranscoder();
   const ensureThumbnail = createThumbnailStore(db, media, uploadDir, thumbnailDir);
   const maxUploadBytes = Number(options.maxUploadBytes ?? process.env.MAX_UPLOAD_BYTES ?? 2147483648);
   if (!Number.isSafeInteger(maxUploadBytes) || maxUploadBytes <= 0) throw new Error('Invalid MAX_UPLOAD_BYTES');
@@ -65,7 +72,7 @@ export async function createApp(options = {}) {
     maxAge: 600
   });
   await app.register(rateLimit, { global: false, max: 10, timeWindow: '1 minute' });
-  await app.register(multipart, { limits: { files: MAX_BOOK_PAGES, fields: 1, parts: MAX_BOOK_PAGES + 1, fileSize: maxUploadBytes, fieldSize: 800 } });
+  await app.register(multipart, { limits: { files: MAX_BOOK_PAGES, fields: 2, parts: MAX_BOOK_PAGES + 2, fileSize: maxUploadBytes, fieldSize: 800 } });
   const dummyHash = await hashPassword(newToken());
   db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(Date.now());
   db.prepare('DELETE FROM playback_tickets WHERE expires_at <= ?').run(Date.now());
@@ -81,7 +88,7 @@ export async function createApp(options = {}) {
     reply.header('Referrer-Policy', 'no-referrer');
     reply.header('X-Frame-Options', 'DENY');
     reply.header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
-    if (req.url.startsWith('/api/')) reply.header('Cache-Control', req.url.split('?')[0].endsWith('/content') ? 'private, no-store, no-transform' : 'no-store');
+    if (req.url.startsWith('/api/')) reply.header('Cache-Control', req.url.startsWith('/api/v1/app-updates/') ? 'no-store, no-transform' : req.url.split('?')[0].endsWith('/content') || req.url.includes('/hls/') ? 'private, no-store, no-transform' : 'no-store');
     return payload;
   });
   app.setErrorHandler((err, req, reply) => {
@@ -121,9 +128,11 @@ export async function createApp(options = {}) {
   const auth = { preHandler: async req => authenticate(req) };
   const authLimits = { config: { rateLimit: options.rateLimit === false ? false : { max: 10, timeWindow: '1 minute' } } };
   app.get('/api/health', async () => ({ status: 'ok',version:packageInfo.version }));
+  const updatesPath = options.appUpdatesDir ?? process.env.APP_UPDATES_DIR;
+  registerAppUpdates(app, { directory: updatesPath ? resolve(PROJECT_ROOT, updatesPath) : undefined });
   let analytics;
   app.get('/api/v1/config', async () => ({ allowRegistration, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadSessionHours: 24, analytics,
-    version: packageInfo.version, androidApkUrl: 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.2.0beta/mirea-0.2.0beta-android-debug.apk' }));
+    version: packageInfo.version, androidApkUrl: 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.2.3beta/mirea-0.2.3beta-android.apk' }));
   app.post('/api/v1/auth/register', { ...authLimits, schema: { body: object({ email, password, name: text(80) }) } }, async (req, reply) => {
     if (!allowRegistration) throw httpError(403, '新規登録は現在停止しています。');
     const normalizedEmail = req.body.email.trim().toLowerCase();
@@ -200,14 +209,16 @@ export async function createApp(options = {}) {
     return { shelf: { ...shelf, role }, series:shelfSeries(db,req.params.id), items: db.prepare('SELECT * FROM items WHERE shelf_id=? ORDER BY created_at DESC, id').all(req.params.id).map(item=>({...publicItem(item),series:series.get(item.id)??null,progress:progress.get(item.id)??null})) };
   });
   const uploads = await registerResumableUploads(app, {
-    db, media, uploadDir, stagingDir, booksDir, thumbnailDir, authenticate, membership, maxUploadBytes, chunkSize, publicItem
+    db, media, videoTranscoder, uploadDir, stagingDir, booksDir, thumbnailDir, videoDir, originalDir, previewDir, authenticate, membership, maxUploadBytes, chunkSize, publicItem
   });
+  app.addHook('onClose',async()=>videoTranscoder.close());
+  registerVideoStreams(app,{db,videoDir,authenticate,findItem});
   registerAccounts(app, { db, authenticate, membership, loginResult, cleanupUploads: uploads.cleanupUploads, rateLimit: options.rateLimit });
   const videoPreviews = await registerVideoPreviews(app, { db, media, dataDir, uploadDir, authenticate, findItem });
   analytics = await registerAnalytics(app, { db, authenticate, membership, findItem, options });
   registerProgress(app,{db,authenticate,findItem,options});
   registerSeries(app,{db,authenticate,membership,findItem,publicItem});
-  try{await registerDownloads(app,{db,dataDir,uploadDir,booksDir,authenticate,findItem,options});}catch(error){await app.close();throw error;}
+  try{await registerDownloads(app,{db,dataDir,uploadDir,booksDir,videoDir,authenticate,findItem,options});}catch(error){await app.close();throw error;}
   app.post('/api/v1/shelves/:id/items', auth, async (req, reply) => {
     membership(req.params.id, req.user.id, ['owner', 'editor']);
     const id = randomUUID();
@@ -217,18 +228,19 @@ export async function createApp(options = {}) {
     const finalThumbnail = join(thumbnailDir, `${id}.jpg`);
     const pages = [];
     const files = [];
-    let title = '';
+    let title = '', retainOriginal=false;
     let receivedBytes = 0, size = 0;
     let isImageBook = false;
     try {
       for await (const part of req.parts()) {
         if (part.type === 'field') {
+          if(part.fieldname==='retainOriginal'&&!part.valueTruncated){if(!['true','false'].includes(String(part.value)))throw httpError(400,'原本保持の指定が不正です。');retainOriginal=String(part.value)==='true';continue;}
           if (part.fieldname !== 'title' || part.valueTruncated) throw httpError(400, 'タイトルが不正です。');
           title = String(part.value).trim();
           continue;
         }
         const isImage = IMAGE_TYPES.includes(part.mimetype);
-        if (part.fieldname !== 'file' || !['application/pdf', EPUB_MIME, 'video/mp4', 'video/webm', ...IMAGE_TYPES].includes(part.mimetype)) {
+        if (part.fieldname !== 'file' || !['application/pdf', EPUB_MIME, ...VIDEO_TYPES, ...IMAGE_TYPES].includes(part.mimetype)) {
           part.file.resume();
           throw httpError(415, 'PDF・EPUB・MP4・WebM、またはJPEG・PNG・WebP画像を選択してください。');
         }
@@ -255,6 +267,7 @@ export async function createApp(options = {}) {
         if (part.file.truncated) throw httpError(413, 'ファイルのサイズ上限を超えています。');
         if (!fileSize) throw httpError(400, '空のファイルは登録できません。');
         if (!matchesFileType(file.mime, head)) throw httpError(415, 'ファイルの内容と形式が一致しません。');
+        file.size=fileSize;
         files.push(file);
         if (isImage) {
           const result = await media.validateImage(rawPath);
@@ -268,6 +281,11 @@ export async function createApp(options = {}) {
       const uploaded = files[0];
       title = (title || uploaded.filename.replace(/\.[^.]+$/, '')).trim();
       if (!title || title.length > 200) throw httpError(400, 'タイトルは1〜200文字で入力してください。');
+      if(isVideo(uploaded.mime)){
+        authenticate(req);membership(req.params.id,req.user.id,['owner','editor']);
+        const item=await uploads.publishMultipartVideo({id,shelfId:req.params.id,userId:req.user.id,sessionId:req.session.id,title,file:uploaded,retainOriginal});
+        return reply.code(201).send({item});
+      }
       const thumbnail = await media.thumbnail(join(stage, isImageBook ? `1.${imageExtension(uploaded.mime)}` : 'raw-1'), uploaded.mime, join(stage, 'thumbnail.jpg'), uploaded.mime===EPUB_MIME?join(stage,'book.json'):undefined);
       // Uploads can take a long time; recheck revoked sessions and membership before publishing.
       authenticate(req);
@@ -303,6 +321,7 @@ export async function createApp(options = {}) {
       ...(item.mime_type===EPUB_MIME?[removeItemDirectory(booksDir,item.id)]:[]),
       unlink(join(thumbnailDir, `${item.id}.jpg`)),
       videoPreviews.remove(item.id)
+      ,removeItemDirectory(videoDir,item.id),unlink(join(originalDir,item.id))
     ]);
     for (const result of results) if (result.status === 'rejected' && result.reason.code !== 'ENOENT') req.log.error({ err: result.reason }, 'Orphan file requires cleanup');
     return reply.code(204).send();
@@ -349,7 +368,9 @@ export async function createApp(options = {}) {
     const token = newToken();
     const expiresAt = Math.min(Date.now() + TICKET_MS, req.session.expires_at);
     db.prepare('INSERT INTO playback_tickets VALUES (?, ?, ?, ?)').run(hashToken(token), req.session.id, req.params.id, expiresAt);
-    return { url: `/api/v1/items/${req.params.id}/content?ticket=${token}`, expiresAt };
+    const metadata=videoMetadata(db,item.id);
+    return { url: `/api/v1/items/${req.params.id}/content?ticket=${token}`, expiresAt,
+      ...(metadata?{hlsUrl:`/api/v1/items/${item.id}/hls/master.m3u8?ticket=${token}`,renditions:metadata.renditions.map(({quality,width,height,size})=>({quality,width,height,size}))}:{}) };
   });
   app.route({ method: ['GET', 'HEAD'], url: '/api/v1/items/:id/content', handler: async (req, reply) => {
     let userId;

@@ -4,6 +4,7 @@ RUN npm install --global pnpm@11.25.0
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 RUN pnpm install --frozen-lockfile
 COPY web ./web
+COPY server/video-types.js ./server/video-types.js
 COPY vite.config.js ./
 RUN pnpm build
 
@@ -14,7 +15,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 RUN pnpm install --prod --frozen-lockfile
 
 FROM node:24.19.0-bookworm-slim AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk && apt-get clean
+RUN apt-get update && apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk ffmpeg && apt-get clean
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/data
 WORKDIR /app
 COPY --from=dependencies --chown=node:node /app/node_modules ./node_modules

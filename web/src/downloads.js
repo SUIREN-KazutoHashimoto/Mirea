@@ -1,6 +1,7 @@
 import { getSession,getEndpoint,api } from './api.js';
 import { openDownloadDb } from './download-db.js';
 import { DOWNLOAD_PATH,validateManifest,importDownloadKey,ciphertextHash } from './download-core.js';
+import { beginUpdateActivity } from './update-busy.js';
 
 const grants=new Map(),tasks=new Set();let workerReady;
 const scriptPath=()=>import.meta.env.DEV?'/src/download-sw.js':'/download-sw.js';
@@ -53,12 +54,12 @@ const delay=(ms,signal)=>new Promise((resolve,reject)=>{
   const timer=setTimeout(()=>{signal.removeEventListener('abort',abort);resolve();},ms);
   signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();
 });
-export async function downloadToDevice(item,onProgress=()=>{},externalSignal){
-  const ctx=context(),controller=new AbortController();tasks.add(controller);
+export async function downloadToDevice(item,onProgress=()=>{},externalSignal,quality){
+  const ctx=context(),controller=new AbortController(),releaseUpdate=beginUpdateActivity();tasks.add(controller);
   const signal=externalSignal?AbortSignal.any([controller.signal,externalSignal]):controller.signal;
   try{
     await ensureDownloadWorker();signal.throwIfAborted();
-    const result=await api(`/items/${item.id}/download`,{method:'POST',signal});
+    const result=await api(`/items/${item.id}/download`,{method:'POST',signal,...(quality?{body:{quality}}:{})});
     if(!current(ctx))throw new Error('ログイン先が変更されました。');
     const manifest=validateManifest(result.manifest);
     if(manifest.assetId!==item.id)throw new Error('アセットが一致しません。');
@@ -89,7 +90,7 @@ export async function downloadToDevice(item,onProgress=()=>{},externalSignal){
       if(lastError)throw lastError;received+=length;onProgress({received,total});
     }
     signal.throwIfAborted();return await store.complete(key,manifest.id);
-  }finally{tasks.delete(controller);}
+  }finally{tasks.delete(controller);releaseUpdate();}
 }
 
 // This function always calls the server when a ready download is opened.

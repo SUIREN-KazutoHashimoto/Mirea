@@ -5,10 +5,11 @@ export function validateManifest(manifest){
   if(!Number.isSafeInteger(manifest.pageCount) || manifest.pageCount<1 || manifest.pageCount>1000000 || manifest.kind==='image-book' && manifest.files.length!==manifest.pageCount || manifest.kind!=='image-book' && manifest.files.length!==1)throw new Error('ページ情報が不正です。');
   let total=0;
   for(const [index,file] of manifest.files.entries()){
-    if(file.index!==index || !Number.isSafeInteger(file.size) || file.size<=0 || file.size>2147483648 || file.chunks!==Math.ceil(file.size/manifest.chunkSize) || !['video/mp4','video/webm','application/pdf','image/png','image/jpeg','image/webp','application/vnd.mirea.epub+json'].includes(file.mime) || (manifest.kind==='epub')!==(file.mime==='application/vnd.mirea.epub+json'))throw new Error('ダウンロード情報が不正です。');
+    if(file.quality!==undefined&&(manifest.kind!=='video'||typeof file.quality!=='string'||!/^\d{2,4}p$/.test(file.quality)))throw new Error('保存画質が不正です。');
+    if(file.index!==index || !Number.isSafeInteger(file.size) || file.size<=0 || file.size>8589934592 || file.chunks!==Math.ceil(file.size/manifest.chunkSize) || !['video/mp4','video/webm','application/pdf','image/png','image/jpeg','image/webp','application/vnd.mirea.epub+json'].includes(file.mime) || (manifest.kind==='epub')!==(file.mime==='application/vnd.mirea.epub+json'))throw new Error('ダウンロード情報が不正です。');
     total+=file.size;
   }
-  if(total>2147483648)throw new Error('ダウンロード容量の上限を超えています。');
+  if(total>8589934592)throw new Error('ダウンロード容量の上限を超えています。');
   return manifest;
 }
 export async function importDownloadKey(base64,cryptoApi=globalThis.crypto){

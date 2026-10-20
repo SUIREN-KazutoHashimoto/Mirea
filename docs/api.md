@@ -54,7 +54,7 @@
 
 ## 分割アップロード（Web／Androidの標準経路）
 
-1. `POST /shelves/:id/uploads` に `{title,files:[{filename,mime,size}]}` を送ります。PDF・動画は1件、画像本はページ順の画像だけを指定します。合計サイズ・形式・ページ数の上限は旧APIと同じです。
+1. `POST /shelves/:id/uploads` に `{title,retainOriginal:false,files:[{filename,mime,size}]}` を送ります。PDF・動画は1件、画像本はページ順の画像だけを指定します。合計サイズ・形式・ページ数の上限は旧APIと同じです。
 2. 応答は `{id,state:"uploading",chunkSize,expiresAt,receivedBytes,files}`。ファイルごとの `receivedParts` は受信済み番号、`receivedHashes` は番号をキーとするSHA-256です。分割サイズはセッションごとに固定されます。
 3. `file.slice(partIndex*chunkSize,(partIndex+1)*chunkSize)` をPUTします。Content-Typeは `application/octet-stream`、`X-Chunk-SHA256` はその分割全体の小文字16進64桁です。最後の分割を除き、長さは必ず `chunkSize` です。再送は同じハッシュ・長さなら204、内容が異なる場合は409、ハッシュ不一致は422です。
 4. `POST /uploads/:id/complete` は202で直ちに応答します。結合・画像検査・サムネイル生成は別ジョブで行います。`GET /uploads/:id` を1.5秒程度の間隔で確認します。`state` は uploading / processing / complete / failed / cancelled、失敗時は `error`、完成時は `item` が返ります。未受信がある場合のcompleteは409です。
@@ -109,3 +109,18 @@ PDF・動画の配信はファイルストリームを使い、全体をメモ�
 POST / GET `/items/:id/preview` の応答は `{state}` です。stateは `absent`（未生成）・`processing`（生成中）・`busy`（待機枠不足）・`ready`（完成）・`unavailable`（生成失敗）です。生成中・混雑時は `retryAfterMs`、完成時は `url,size,maxDuration` を含みます。初回はPOSTし、生成中はGETで確認、busy / absentになった場合は間隔を空けてPOSTします。readyの `url` はBearer認証で取得します。動画用の本編チケットは使いません。
 
 これは元動画のRangeを短く再生する方式ではなく、別の小さい無音クリップです。状態確認・取得ごとに本棚所属を検査し、生成要求も閲覧者が行えます。生成失敗は `unavailable` として返し、元の画像サムネイルを使用します。詳細は [動画プレビュー仕様](video-previews.md) を参照してください。
+
+
+## 動画変換／HLS（v11）
+
+- 新規動画の `retainOriginal` はセッション作成時のboolean、初期false。処理中に変更できません。動画以外には適用しません。
+- `GET /uploads`: 本人かつ本棚の編集権限が残る処理中／失敗ジョブの簡易一覧。転送パートのハッシュは含めません。
+- `GET /uploads/:id`: `processing:{stage,quality,percent,completed,total}`、`retainOriginal`、失敗動画には `sourceRetained:true`。処理中／失敗動画は24時間の転送期限の後も保持。
+- `POST /uploads/:id/retry`: 原本を残した失敗動画の再試行、202。本人の現在のセッション・編集権限を再検査。
+- `DELETE /uploads/:id`: 明示取消では原本・分割も削除。完了したアセットは削除しません。
+- `GET /items/:id/video`: 生成済み画質・寸法・容量・codec・原本保持状態。旧動画は `legacy:true`。
+- `POST /items/:id/playback-ticket`: 新規動画は従来の互換MP4の `url` に加えて `hlsUrl` と画質一覧を返します。
+- `GET / HEAD /items/:id/hls/:file`: マスター／各画質マニフェスト、初期化MP4、m4sセグメント。Bearerまたは同アセット限定チケット。生成済みbasenameのみ。各リクエストで現在のセッション・本棚所属を確認します。
+- `POST /items/:id/download`: 任意の `{quality:"720p"}`。生成済み画質のみ。省略時は最大画質。既存のボディなし呼出しも維持します。
+
+MIMEは `video/mp4, video/quicktime, video/x-matroska, video/webm, video/x-msvideo, video/x-ms-wmv, video/x-ms-asf, video/mpeg, video/mp2t, video/x-flv` を受信し、内容はFFprobeとデコードで検査します。[動画処理の制限](video-transcoding.md)
