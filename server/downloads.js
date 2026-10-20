@@ -5,7 +5,7 @@ import { httpError } from './security.js';
 import { IMAGE_BOOK_MIME,imageExtension } from './media.js';
 import { EPUB_MIME, EPUB_BUNDLE_MIME } from './ebook-types.js';
 import { isAudio } from './audio-types.js';
-import { videoMetadata } from './video-stream.js';
+import { videoMetadata,videoFolder } from './video-stream.js';
 
 const CHUNK=1024*1024;
 const aad=(id,file,part,length)=>Buffer.from(`mirea-download-v1|${id}|${file}|${part}|${length}`);
@@ -44,18 +44,20 @@ export async function registerDownloads(app,{db,dataDir,uploadDir,booksDir,video
   }
   function source(item,file){
     if(file.quality){
-      if(!videoMetadata(db,item.id)?.renditions.some(r=>r.quality===file.quality))throw httpError(409,'選択した画質のデータがありません。');
-      return join(videoDir,item.id,`${file.quality}.mp4`);
+      const metadata=videoMetadata(db,item.id,file.generation??'base');
+      if(!metadata?.renditions.some(r=>r.quality===file.quality))throw httpError(409,'選択した画質のデータがありません。');
+      return join(videoFolder(videoDir,item.id,metadata),`${file.quality}.mp4`);
     }
     return item.mime_type===EPUB_MIME?join(booksDir,item.id,'book.json'):item.mime_type===IMAGE_BOOK_MIME?join(booksDir,item.id,`${file.number}.${imageExtension(file.mime)}`):join(uploadDir,item.id);
   }
-  async function manifestFor(item,quality){
+  async function manifestFor(item,quality,generation){
     const files=item.mime_type===IMAGE_BOOK_MIME?db.prepare('SELECT page_number AS number,size,mime_type AS mime,width,height FROM image_pages WHERE item_id=? ORDER BY page_number').all(item.id):[{number:1,size:item.size,mime:item.mime_type}];
-    const video=videoMetadata(db,item.id);
+    const video=videoMetadata(db,item.id,generation);
     if(video){
       const rendition=quality?video.renditions.find(r=>r.quality===quality):video.renditions[0];
       if(!rendition)throw httpError(400,'生成済みの画質を選択してください。');
       Object.assign(files[0],{size:rendition.size,mime:'video/mp4',quality:rendition.quality});
+      if(video.generation)files[0].generation=video.generation;
     }else if(quality)throw httpError(400,'このアセットは画質を選択できません。');
     if(item.mime_type===EPUB_MIME){files[0].size=(await stat(source(item,files[0])).catch(()=>{throw httpError(404,'EPUBの閲覧データが見つかりません。');})).size;files[0].mime=EPUB_BUNDLE_MIME;}
     if(!files.length)throw httpError(404,'原本が見つかりません。');
@@ -68,7 +70,7 @@ export async function registerDownloads(app,{db,dataDir,uploadDir,booksDir,video
   }
   const publicManifest=(row,manifest)=>({...manifest,id:row.id,files:manifest.files.map(({stamp,...file})=>file)});
   async function validateSource(row,item){
-    const old=JSON.parse(row.manifest_json),current=await manifestFor(item,old.files[0].quality);
+    const old=JSON.parse(row.manifest_json),current=await manifestFor(item,old.files[0].quality,old.files[0].quality?(old.files[0].generation??'base'):undefined);
     if(JSON.stringify(old)!==JSON.stringify(current))throw httpError(409,'原本が変更されました。暗号化ダウンロードを作り直してください。');
     return old;
   }

@@ -79,7 +79,7 @@ export function openDatabase(filename) {
         UPDATE schema_version SET version = 2;
       `));
     } finally { db.exec('PRAGMA foreign_keys = ON'); }
-  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
+  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
   if (version < 10) {
     // v10 adds EPUB while retaining v9's nullable uploader attribution.
     // Account deletion removes attribution, not another member's shared assets.
@@ -299,7 +299,7 @@ export function openDatabase(filename) {
       metadata_json TEXT NOT NULL,
       original_retained INTEGER NOT NULL CHECK(original_retained IN (0,1))
     );
-    UPDATE schema_version SET version=12;
+    UPDATE schema_version SET version=13;
   `);
   // Multiple devices may save different qualities. Preserve every old manifest
   // ID/key binding while removing the former one-registration-per-asset limit.
@@ -316,6 +316,42 @@ export function openDatabase(filename) {
   const uploadColumns = db.prepare('PRAGMA table_info(upload_sessions)').all();
   if (!uploadColumns.some(column => column.name === 'retain_original')) db.exec('ALTER TABLE upload_sessions ADD COLUMN retain_original INTEGER NOT NULL DEFAULT 0 CHECK(retain_original IN (0,1))');
   if (!uploadColumns.some(column => column.name === 'processing_json')) db.exec("ALTER TABLE upload_sessions ADD COLUMN processing_json TEXT NOT NULL DEFAULT '{}'");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS user_access (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      server_role TEXT NOT NULL CHECK(server_role IN ('admin','user')),
+      disabled INTEGER NOT NULL DEFAULT 0 CHECK(disabled IN (0,1))
+    );
+    CREATE TABLE IF NOT EXISTS admin_jobs (
+      id TEXT PRIMARY KEY, kind TEXT NOT NULL,
+      asset_id TEXT REFERENCES items(id) ON DELETE SET NULL,
+      state TEXT NOT NULL CHECK(state IN ('queued','running','complete','failed')),
+      progress_json TEXT NOT NULL DEFAULT '{}', error TEXT,
+      requested_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      output_size INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS admin_asset_job ON admin_jobs(asset_id)
+      WHERE state IN ('queued','running') AND asset_id IS NOT NULL;
+    CREATE TABLE IF NOT EXISTS admin_audit (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT, action TEXT NOT NULL,
+      target_id TEXT, detail_json TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS video_generations (
+      item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+      generation TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at INTEGER NOT NULL,
+      PRIMARY KEY(item_id,generation)
+    );
+    CREATE TABLE IF NOT EXISTS playback_generations (
+      token_hash TEXT PRIMARY KEY REFERENCES playback_tickets(token_hash) ON DELETE CASCADE,
+      generation TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS admin_upload_retries (
+      upload_id TEXT PRIMARY KEY REFERENCES upload_sessions(id) ON DELETE CASCADE,
+      admin_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE
+    );
+  `);
   if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Database foreign key validation failed');
   return db;
 }

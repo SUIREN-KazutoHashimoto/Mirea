@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {packageServer} from '../scripts/package-server.mjs';
+import {verifyServerArchive} from '../scripts/verify-server-archive.mjs';
 
 test('server release package records its exact commit and includes only the fixed safe allowlist',async t=>{
   const folder=await mkdtemp(join(tmpdir(),'mirea-package-')),source=join(folder,'source'),output=join(folder,'output');
@@ -15,6 +16,7 @@ test('server release package records its exact commit and includes only the fixe
   await writeFile(join(source,'package.json'),JSON.stringify({name:'mirea',version:'0.1.0-beta'}));
   const commit='a'.repeat(40),result=await packageServer({projectRoot:source,outputDirectory:output,commit});
   assert.equal(result.sha256,createHash('sha256').update(await readFile(result.archive)).digest('hex'));
+  assert.equal((await verifyServerArchive(result.archive,'mirea-0.1.0beta-server')).safe,true,'actual package is accepted by the update agent verifier');
   const listing=execFileSync(process.platform==='win32'?join(process.env.SystemRoot,'System32','tar.exe'):'tar',['-tzf',result.archive],{encoding:'utf8',windowsHide:true});
   assert.match(listing,/release-manifest.json/);assert.match(listing,/dist\/test.txt/);
   assert.doesNotMatch(listing,/\/(?:data|node_modules|\.local)\//);assert.doesNotMatch(listing,/\/\.env\r?\n/);

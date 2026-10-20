@@ -26,11 +26,9 @@ const properties = {
 const canonical = event => JSON.stringify(Object.fromEntries(Object.keys(event).sort().map(key => [key, event[key]])));
 const kindOf = item => item.mime_type === IMAGE_BOOK_MIME ? 'image-book' : item.mime_type === EPUB_MIME ? 'epub' : item.mime_type === 'application/pdf' ? 'pdf' : isAudio(item.mime_type) ? 'audio' : 'video';
 
-export async function registerAnalytics(app, { db, authenticate, membership, findItem, options }) {
+export async function registerAnalytics(app, { db, authenticate, membership, findItem, options, adminAccess }) {
   const enabled = options.analyticsEnabled ?? process.env.ANALYTICS_ENABLED !== 'false';
-  const adminIds = options.serverAdminUserIds ?? (process.env.SERVER_ADMIN_USER_IDS ?? '').split(',').map(value => value.trim()).filter(Boolean);
-  if (adminIds.some(id => !new RegExp(uuid.pattern).test(id))) throw new Error('Invalid SERVER_ADMIN_USER_IDS');
-  const isAdmin = userId => adminIds.includes(userId);
+  const isAdmin = adminAccess.isAdmin;
   const config = { enabled, access: 'self-detail-admin-aggregate', retentionDays: 0, sampleIntervalMs: 1000, schemaVersion: 1, minimumAggregateViewers: 5 };
   const auth = { onRequest: async req => authenticate(req) };
   const normalize = event => ({ intervalMs: 0, visibleMs: 0, activeMs: 0, watchMs: 0, ...event });

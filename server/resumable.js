@@ -32,7 +32,10 @@ export async function registerResumableUploads(app, context) {
   }
   function authorizeJob(upload) {
     if (get(upload.id)?.state !== 'processing') throw httpError(409, 'アップロードをキャンセルしました。');
-    const session = db.prepare('SELECT 1 FROM sessions WHERE id=? AND user_id=? AND expires_at>?').get(upload.session_id, upload.user_id, Date.now());
+    const delegated=db.prepare('SELECT * FROM admin_upload_retries WHERE upload_id=?').get(upload.id);
+    if(delegated && !context.adminAccess.isAdmin(delegated.admin_id))throw httpError(403,'再試行を要求した管理者の権限が解除されました。');
+    if(!context.adminAccess.enabled(upload.user_id))throw httpError(403,'アップロード者のアカウントは停止中です。');
+    const session = db.prepare('SELECT 1 FROM sessions WHERE id=? AND user_id=? AND expires_at>?').get(delegated?.session_id??upload.session_id, delegated?.admin_id??upload.user_id, Date.now());
     if (!session) throw httpError(401, 'ログインの有効期限が切れました。');
     membership(upload.shelf_id, upload.user_id, ['owner', 'editor']);
   }
@@ -114,6 +117,7 @@ export async function registerResumableUploads(app, context) {
     return job;
   }
   async function sweep() {
+    if(context.maintenance.locked)return;
     for (const row of db.prepare("SELECT id,state,files_json FROM upload_sessions WHERE expires_at<=? AND state != 'processing'").all(Date.now())) {
       if(row.state==='failed'&&isTimedMime(JSON.parse(row.files_json)[0].mime))continue;
       if (jobs.has(row.id) || locked.has(row.id)) continue;
@@ -177,6 +181,7 @@ export async function registerResumableUploads(app, context) {
       const upload=owned(req);
       if(upload.state!=='failed'||!isTimedMime(JSON.parse(upload.files_json)[0].mime))throw httpError(409,'再試行できる動画・音声ではありません。');
       if(jobs.has(upload.id))throw httpError(409,'直前の処理を終了しています。少し待って再試行してください。');
+      db.prepare('DELETE FROM admin_upload_retries WHERE upload_id=?').run(upload.id);
       db.prepare("UPDATE upload_sessions SET state='processing',error=NULL,session_id=?,processing_json='{}' WHERE id=?").run(req.session.id,upload.id);
       schedule(upload.id);
     });
@@ -256,6 +261,18 @@ export async function registerResumableUploads(app, context) {
     return reply.code(204).send();
   });
   return {
+    async adminRetry(id,adminId,sessionId){
+      await exclusive(id,async()=>{
+        const upload=get(id);
+        if(!upload||upload.state!=='failed'||!isTimedMime(JSON.parse(upload.files_json)[0]?.mime))throw httpError(409,'再試行できる失敗した動画・音声ジョブではありません。');
+        if(jobs.has(id))throw httpError(409,'処理の終了を待ってください。');
+        if(!context.adminAccess.isAdmin(adminId)||!context.adminAccess.enabled(upload.user_id))throw httpError(403,'アカウントの権限を確認してください。');
+        membership(upload.shelf_id,upload.user_id,['owner','editor']);
+        db.prepare('INSERT INTO admin_upload_retries VALUES(?,?,?) ON CONFLICT(upload_id) DO UPDATE SET admin_id=excluded.admin_id,session_id=excluded.session_id').run(id,adminId,sessionId);
+        db.prepare("UPDATE upload_sessions SET state='processing',error=NULL,processing_json='{}' WHERE id=?").run(id);schedule(id);
+      });
+    },
+    get busy(){return jobs.size>0;},
     // Compatibility API: multipart clients enter the same durable, serialized
     // processing path as resumable uploads; they cannot bypass normalization.
     async publishMultipartMedia({id,shelfId,userId,sessionId,title,file,retainOriginal}) {

@@ -22,9 +22,11 @@ import { VIDEO_EXTENSIONS } from '../../server/video-types.js';
 import { beginUpdateActivity } from './update-busy.js';
 import { initializeAppUpdates, refreshAppUpdates, appUpdatesEndpointChanged, mountAppUpdates, openAppUpdates } from './app-updates.js';
 import './app-updates.css';
+import {openAdmin} from './admin.js';
+import './admin.css';
 
 const theme = createTheme();
-const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.2.3beta/mirea-0.2.3beta-android.apk';
+const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.3.0beta/mirea-0.3.0beta-android.apk';
 
 const root = document.querySelector('#app');
 const roleName = { owner: '管理者', editor: '編集者', viewer: '閲覧者' };
@@ -206,15 +208,16 @@ function renderShell() {
   document.querySelector('#series-filter').onchange=e=>{activeSeries=e.target.value;filter='all';search='';document.querySelector('#search').value='';renderItems();};
   const analyticsActions=document.createElement('div');
   analyticsActions.className='analytics-actions';
-  analyticsActions.innerHTML='<button class="button secondary" id="my-history">自分の閲覧記録</button><button class="button secondary" id="shelf-analytics" hidden>本棚の匿名集計</button><button class="button secondary" id="global-analytics" hidden>全体の匿名集計</button><small>閲覧位置・時間・操作履歴は無期限保存されます。個人の詳細は本人のみ閲覧できます。</small><small id="analytics-delivery" role="status"></small>';
+  analyticsActions.innerHTML='<button class="button secondary" id="recent-history">閲覧履歴</button><button class="button secondary" id="shelf-analytics" hidden>本棚の匿名集計</button><small id="analytics-delivery" role="status"></small>';
   document.querySelector('.page-heading').after(analyticsActions);
   const downloadsButton=document.createElement('button');downloadsButton.className='button secondary';downloadsButton.textContent='端末のダウンロード';downloadsButton.onclick=openDownloadManager;analyticsActions.prepend(downloadsButton);
-  analyticsActions.querySelector('#my-history').onclick=()=>openAnalytics({dialog,api,flush:flushAnalytics,esc});
+  analyticsActions.querySelector('#recent-history').onclick=openRecentHistory;
   analyticsActions.querySelector('#shelf-analytics').onclick=()=>openAnalytics({dialog,api,flush:flushAnalytics,esc,shelfId:activeShelf});
-  const globalButton=analyticsActions.querySelector('#global-analytics');
-  globalButton.onclick=()=>openAnalytics({dialog,api,flush:flushAnalytics,esc,global:true});
-  api('/analytics/access').then(access=>{if(globalButton.isConnected)globalButton.hidden=!access.canViewGlobal;}).catch(()=>{});
-  if (!config.analytics?.enabled) analyticsActions.querySelector('small').textContent='閲覧記録の収集はサーバー設定で停止しています。過去の記録は確認できます。';
+  const adminAnchor=document.querySelector('#nav-settings'),actor=getSession();
+  api('/admin/access').then(access=>{
+    if(!access.isServerAdmin||!adminAnchor.isConnected||getSession()!==actor)return;
+    const button=document.createElement('button');button.id='nav-admin';button.className='nav-item';button.innerHTML=icon('settings')+'<span>サーバー管理</span>';button.onclick=showAdmin;adminAnchor.before(button);
+  }).catch(()=>{});
   const logout = async () => {
     try { clearThumbnails(); document.querySelectorAll('dialog,.viewer-screen').forEach(node=>node.close()); await Promise.all([flushAnalytics(),flushProgress()]); await stopAnalytics(); await api('/auth/logout', { method: 'POST' }); setSession(null); loadGeneration++; shelves = []; items = []; activeShelf = null; renderAuth(); }
     catch (error) { report(error); }
@@ -229,10 +232,16 @@ function renderShell() {
 function showSettings() {
   const actor=getSession(),server=getEndpoint();
   const current=()=>getSession()===actor && getEndpoint()===server;
-  openSettings({ dialog, api, esc, theme, apkUrl: config.androidApkUrl || defaultApkUrl, version: config.version || '0.2.3-beta', manageShelf: id => openMembers(id), mountUpdates: native ? mountAppUpdates : null,
+  openSettings({ dialog, api, esc, theme, flush:flushAnalytics, apkUrl: config.androidApkUrl || defaultApkUrl, version: config.version || '0.3.0-beta', manageShelf: id => openMembers(id), mountUpdates: native ? mountAppUpdates : null,
     onUpdated: async result => { if(!current())return;closeDownloads();setSession(result);await stopAnalytics().catch(()=>{});if(getSession()!==result || getEndpoint()!==server)return;await startAnalytics();if(getSession()!==result || getEndpoint()!==server)return;renderShell();await refresh();toast('アカウント情報を更新しました。他の端末では再ログインが必要です。'); },
     onDeleted: async () => { if(!current())return;const results=await Promise.allSettled([clearAccountDownloads(),clearAccountAnalytics(),clearAccountProgress()]);if(!current())return;const cacheError=results.some(r=>r.status==='rejected');clearThumbnails();setSession(null);loadGeneration++;shelves=[];items=[];activeShelf=null;renderAuth();toast(cacheError?'アカウントを削除しました。端末内データを消去できませんでした。ブラウザーのサイトデータを削除してください。':'アカウントと個人の記録、この端末のダウンロードを削除しました。'); }
   });
+}
+
+function showAdmin(){openAdmin({dialog,api,esc,bytes,onStatistics:()=>openAnalytics({dialog,api,flush:flushAnalytics,esc,global:true})}).catch(report);}
+async function openRecentHistory(){
+  const node=dialog('閲覧履歴','<div class="modal-body"><p>最近開いた作品です。詳細な操作・閲覧ログは設定からダウンロードできます。現在アクセスできる作品だけを表示します。</p><div class="recent-history-list">読み込んでいます…</div></div>');
+  try{await flushAnalytics();const data=await api('/history');if(!node.isConnected)return;const list=node.querySelector('.recent-history-list');list.innerHTML=data.items.map(item=>`<div class="history-row"><div><strong>${esc(item.title)}</strong><small>${date(item.lastSeenAt)}</small></div><button class="button secondary" data-history-id="${esc(item.id)}">開く</button></div>`).join('')||'<p>履歴はまだありません。</p>';list.querySelectorAll('[data-history-id]').forEach(button=>button.onclick=()=>{const item=data.items.find(i=>i.id===button.dataset.historyId);node.close();openViewer(item).catch(report);});}catch(error){if(node.isConnected)node.querySelector('.recent-history-list').textContent=error.message;}
 }
 
 async function refresh() {
