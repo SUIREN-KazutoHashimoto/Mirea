@@ -14,7 +14,7 @@
 
 既存0.2.0betaのCIデバッグ署名と新しい専用鍵は別です。そのまま上書きできる保証はなく、旧版にはこの更新機能自体がありません。初回は手動インストールが必要です。署名違いの際にアプリを自動アンインストールする処理はありません。[署名と更新の要件](https://developer.android.com/studio/publish/app-signing#considerations)
 
-アンインストールすると端末内の暗号化ダウンロード・接続先設定・未送信の記録は失われます。移行前にオンラインで閲覧記録・続き位置を同期し、必要な作品は移行後に再ダウンロードしてください。サーバー上のアカウント・本棚・同期済みの記録は、アプリの入れ替えだけでは削除されません。新しい専用署名APKの公開までは、既存のAPKリンクを未公開URLに変更しません。
+アンインストールすると端末内の暗号化ダウンロード・接続先設定・未送信の記録は失われます。移行前にオンラインで閲覧記録・続き位置を同期し、必要な作品は移行後に再ダウンロードしてください。サーバー上のアカウント・本棚・同期済みの記録は、アプリの入れ替えだけでは削除されません。[0.2.3betaの専用署名APK](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.2.3beta)を初回導入に利用してください。
 
 ## 配信と検証
 
@@ -51,10 +51,10 @@ Windowsでは`gradlew.bat`を使用します。未設定時の開発ビルドに
 APK署名用PKCS12と、更新情報署名用の別のEC P-256秘密鍵を保管します。対応する公開鍵だけを`server/update-signing-public.pem`と`android/app/src/main/assets/update-signing-public.pem`に同じ内容で格納します。**秘密鍵、パスワード設定はGitHub、サーバーパッケージ、コンテナ、APP_UPDATES_DIRへ入れません。** 鍵・パスワードを暗号化した別媒体へバックアップしてください。ローカルのアクセス制限だけはオフホストのバックアップではありません。
 
 ```sh
-node scripts/sign-android-update.mjs --apk=/build/app-release.apk --apk-url=https://mirea.example/api/v1/app-updates/android/apk/3 --private-key=/secure/Mirea-Signing/metadata-private.pem --output=/distribution/mirea-updates --sdk=/android-sdk --java=/jdk/bin/java
+node scripts/sign-android-update.mjs --apk=/build/app-release.apk --apk-url=https://mirea.example/api/v1/app-updates/android/apk/4 --private-key=/secure/Mirea-Signing/metadata-private.pem --output=/distribution/mirea-updates --sdk=/android-sdk --java=/jdk/bin/java
 ```
 
-実APKをapksignerで検証し、aapt2から版・最小SDKを読み、デバッグ署名を拒否してから`manifest.json`と`mirea-android-3.apk`を生成します。公開鍵が対応しない秘密鍵を拒否します。versionCodeは更新のたびに単調増加させます。同一番号のAPKを差し替えず、有効期限の更新だけを同じコマンドで行います（最大168時間、`--validity-hours=`で短縮可）。署名用端末上の公開ファイル用ディレクトリへ生成した後、公開ファイルだけをサーバーへ転送し、APK→manifestの順で反映してください。GitHubへの公開・鍵のSecrets登録・自動転送はこのスクリプトでは行いません。
+実APKをapksignerで検証し、aapt2から版・最小SDKを読み、デバッグ署名を拒否してから`manifest.json`と`mirea-android-4.apk`を生成します。公開鍵が対応しない秘密鍵を拒否します。versionCodeは更新のたびに単調増加させます。同一番号のAPKを差し替えず、有効期限の更新だけを同じコマンドで行います（最大168時間、`--validity-hours=`で短縮可）。署名用端末上の公開ファイル用ディレクトリへ生成した後、公開ファイルだけをサーバーへ転送し、APK→manifestの順で反映してください。GitHubへの公開・鍵のSecrets登録・自動転送はこのスクリプトでは行いません。
 
 直接起動では`.env`の`APP_UPDATES_DIR`に公開ファイルだけのディレクトリを指定します。相対パスはインストール先基準です。未指定では更新APIは404です。Web／アセット閲覧は更新配信が未設定でも動作します。
 

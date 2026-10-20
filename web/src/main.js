@@ -20,7 +20,7 @@ import { initializeAppUpdates, refreshAppUpdates, appUpdatesEndpointChanged, mou
 import './app-updates.css';
 
 const theme = createTheme();
-const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.2.0beta/mirea-0.2.0beta-android-debug.apk';
+const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.2.3beta/mirea-0.2.3beta-android.apk';
 
 const root = document.querySelector('#app');
 const roleName = { owner: '管理者', editor: '編集者', viewer: '閲覧者' };

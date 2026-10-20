@@ -1,6 +1,6 @@
 # Mirea
 
-このソースは **0.2.3beta**（内部バージョン `0.2.3-beta`、Android versionCode 3）です。APKの公開リンクは引き続き旧0.2.0betaで、このソース更新だけでは新APKの公開・稼働サーバーの更新は行いません。[起動手順・ベータの制限](RELEASE.md)、[設定・アカウント・全画面ビューアー](docs/workspace.md) を参照してください。
+このソースは **0.2.3beta**（内部バージョン `0.2.3-beta`、Android配布版versionCode 4）です。[専用署名APK・サーバーパッケージ](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.2.3beta)、[起動手順・ベータの制限](RELEASE.md)、[設定・アカウント・全画面ビューアー](docs/workspace.md) を参照してください。旧デバッグ署名APKからの初回移行は手動です。
 
 動画・PDF・EPUB・複数画像の本を、本棚単位で共有できるクライアント・サーバー型メディアライブラリです。PCのWebブラウザとAndroidアプリが、同じAPI・アカウント・本棚を使います。
 
