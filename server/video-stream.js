@@ -1,19 +1,28 @@
 import { readFile, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { join } from 'node:path';
-import { hashToken, httpError } from './security.js';
+import { hashToken, httpError, parseRange } from './security.js';
 
-export function videoMetadata(db,id) {
+export function videoMetadata(db,id,generation) {
   const row=db.prepare('SELECT * FROM video_assets WHERE item_id=?').get(id);
-  return row?{...JSON.parse(row.metadata_json),originalRetained:Boolean(row.original_retained)}:null;
+  if(!row)return null;
+  const current=JSON.parse(row.metadata_json);
+  if(generation && generation!==(current.generation??'base')){
+    if(generation!=='base'&&!/^[0-9a-f-]{36}$/.test(generation))return null;
+    const older=db.prepare('SELECT metadata_json FROM video_generations WHERE item_id=? AND generation=?').get(id,generation);
+    return older?{...JSON.parse(older.metadata_json),originalRetained:Boolean(row.original_retained)}:null;
+  }
+  return {...current,originalRetained:Boolean(row.original_retained)};
 }
+export const videoFolder=(root,id,metadata)=>metadata?.generation?join(root,id,metadata.generation):join(root,id);
 export function registerVideoStreams(app,{db,videoDir,authenticate,findItem}) {
   const authorize=req=>{
     if(req.headers.authorization){authenticate(req);return findItem(req.params.id,req.user.id);}
     const token=typeof req.query.ticket==='string'&&/^[A-Za-z0-9_-]{43}$/.test(req.query.ticket)?req.query.ticket:'';
-    const ticket=token&&db.prepare(`SELECT s.user_id FROM playback_tickets t JOIN sessions s ON s.id=t.session_id
+    const ticket=token&&db.prepare(`SELECT s.user_id,g.generation FROM playback_tickets t JOIN sessions s ON s.id=t.session_id LEFT JOIN playback_generations g ON g.token_hash=t.token_hash
       WHERE t.token_hash=? AND t.item_id=? AND t.expires_at>? AND s.expires_at>?`).get(hashToken(token),req.params.id,Date.now(),Date.now());
     if(!ticket)throw httpError(401,'配信URLの期限が切れました。再接続してください。');
+    req.playbackGeneration=ticket.generation;
     return findItem(req.params.id,ticket.user_id);
   };
   app.get('/api/v1/items/:id/video',{onRequest:async req=>authenticate(req)},async req=>{
@@ -21,10 +30,24 @@ export function registerVideoStreams(app,{db,videoDir,authenticate,findItem}) {
     if(!item.mime_type.startsWith('video/'))throw httpError(400,'動画ではありません。');
     return metadata??{legacy:true,renditions:[],originalRetained:true};
   });
+  // Progressive rendition endpoint for native background players. Same ACL and
+  // byte-range validation as the canonical stream; no arbitrary storage paths.
+  app.route({method:['GET','HEAD'],url:'/api/v1/items/:id/renditions/:quality/content',handler:async(req,reply)=>{
+    const item=authorize(req),metadata=videoMetadata(db,item.id,req.query.generation??req.playbackGeneration),quality=req.params.quality;
+    const rendition=/^[0-9]{2,4}p$/.test(quality)&&metadata?.renditions.find(r=>r.quality===quality);
+    if(!rendition)throw httpError(404,'配信画質が見つかりません。');
+    const path=join(videoFolder(videoDir,item.id,metadata),quality+'.mp4'),info=await stat(path);authorize(req);
+    if(info.size!==rendition.size)throw httpError(409,'配信データが変更されました。');
+    let range;try{range=parseRange(req.headers.range,info.size);}catch(error){reply.header('Content-Range',`bytes */${info.size}`);throw error;}
+    reply.type('video/mp4').header('Cache-Control','private, no-store, no-transform').header('Accept-Ranges','bytes').header('Content-Length',range?range.end-range.start+1:info.size);
+    if(range)reply.code(206).header('Content-Range',`bytes ${range.start}-${range.end}/${info.size}`);
+    return req.method==='HEAD'?reply.send():reply.send(createReadStream(path,range??{}));
+  }});
   app.route({method:['GET','HEAD'],url:'/api/v1/items/:id/hls/:file',handler:async(req,reply)=>{
-    const item=authorize(req),metadata=videoMetadata(db,item.id),file=req.params.file;
+    const item=authorize(req),metadata=videoMetadata(db,item.id,req.query.generation??req.playbackGeneration),file=req.params.file;
     if(!metadata)throw httpError(404,'この動画にはHLS配信データがありません。');
-    const suffix=req.query.ticket?`?ticket=${encodeURIComponent(req.query.ticket)}`:'';
+    const parameters=new URLSearchParams({generation:metadata.generation??'base'});if(req.query.ticket)parameters.set('ticket',req.query.ticket);
+    const suffix='?'+parameters;
     const allowed=new Set(metadata.renditions.flatMap(r=>r.files));
     reply.header('Cache-Control','private, no-store, no-transform');
     if(file==='master.m3u8'){
@@ -33,7 +56,7 @@ export function registerVideoStreams(app,{db,videoDir,authenticate,findItem}) {
       authorize(req);return reply.type('application/vnd.apple.mpegurl').send(req.method==='HEAD'?undefined:body);
     }
     if(!/^[0-9]+p(?:\.m3u8|-(?:init\.mp4|\d{5}\.m4s))$/.test(file)||!allowed.has(file))throw httpError(404,'配信ファイルが見つかりません。');
-    const path=join(videoDir,item.id,file);
+    const path=join(videoFolder(videoDir,item.id,metadata),file);
     if(file.endsWith('.m3u8')){
       const playlist=await readFile(path,'utf8');
       // Only server-generated allowlisted basenames are ever returned. Tickets

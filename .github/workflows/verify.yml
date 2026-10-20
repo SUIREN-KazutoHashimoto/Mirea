@@ -30,7 +30,7 @@ jobs:
       - run: docker compose up -d --wait
       - run: curl --fail http://localhost:3000/api/health
       - run: curl --fail http://localhost:3000/
-      - name: Verify MPEG-TS conversion inside the read-only container
+      - name: Verify video and audio conversion inside the read-only container
         run: docker compose exec -T mirea node --input-type=module < scripts/check-media-runtime.mjs
       - run: docker compose -f compose.yaml -f compose.host-data.yaml config --quiet
       - if: always()

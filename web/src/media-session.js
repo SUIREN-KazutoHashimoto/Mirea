@@ -1,0 +1,32 @@
+// Browser-owned PiP/OS media controls. The tab must remain open; no fake keepalive.
+export function mountMediaSession(media,{title='',kind='video',artwork,previous,next,stop,onError=()=>{},navigator:nav=globalThis.navigator,document:doc=globalThis.document,MediaMetadata:Metadata=globalThis.MediaMetadata}={}){
+  const session=nav?.mediaSession,listeners=[],actions=[];let disposed=false;
+  const listen=(target,event,fn)=>{target?.addEventListener(event,fn);listeners.push(()=>target?.removeEventListener(event,fn));};
+  const play=()=>Promise.resolve(media.play()).catch(()=>onError(new Error('再生ボタンを押して再開してください。')));
+  const seek=position=>{if(Number.isFinite(media.duration))media.currentTime=Math.min(media.duration,Math.max(0,position));};
+  const set=(action,handler)=>{try{session?.setActionHandler(action,handler);actions.push(action);}catch{/* Optional browser capability. */}};
+  if(session){
+    if(Metadata)session.metadata=new Metadata({title,artist:'Mirea',...(artwork?{artwork:[{src:artwork}]}:{})});
+    set('play',play);set('pause',()=>media.pause());set('stop',()=>{media.pause();stop?.();});
+    set('seekbackward',details=>seek(media.currentTime-(details.seekOffset??10)));
+    set('seekforward',details=>seek(media.currentTime+(details.seekOffset??10)));
+    set('seekto',details=>{if(Number.isFinite(details.seekTime))seek(details.seekTime);});
+    if(previous)set('previoustrack',previous);if(next)set('nexttrack',next);
+    if(kind==='video')set('enterpictureinpicture',()=>pip().catch(onError));
+  }
+  function update(){
+    if(!session||disposed)return;
+    session.playbackState=media.paused?'paused':'playing';
+    try{if(Number.isFinite(media.duration)&&media.duration>0)session.setPositionState?.({duration:media.duration,position:Math.min(media.duration,Math.max(0,media.currentTime||0)),playbackRate:media.playbackRate||1});}catch{/* Unknown duration or unsupported position state. */}
+  }
+  const supportsPip=kind==='video'&&Boolean(doc?.pictureInPictureEnabled&&media.requestPictureInPicture || media.webkitSupportsPresentationMode?.('picture-in-picture'));
+  async function pip(){
+    if(!supportsPip)throw new Error('このブラウザーではPiPを利用できません。');
+    if(doc.pictureInPictureElement===media)return doc.exitPictureInPicture();
+    if(media.requestPictureInPicture)return media.requestPictureInPicture();
+    media.webkitSetPresentationMode('picture-in-picture');
+  }
+  for(const event of ['play','pause','ended','loadedmetadata','timeupdate','ratechange','seeked'])listen(media,event,update);
+  update();
+  return {supportsPip,pip,dispose(){disposed=true;listeners.forEach(remove=>remove());for(const action of actions){try{session?.setActionHandler(action,null);}catch{}}if(session){session.playbackState='none';session.metadata=null;try{session.setPositionState?.();}catch{}}if(doc?.pictureInPictureElement===media)doc.exitPictureInPicture?.().catch(()=>{});else if(media.webkitPresentationMode==='picture-in-picture')media.webkitSetPresentationMode?.('inline');}};
+}

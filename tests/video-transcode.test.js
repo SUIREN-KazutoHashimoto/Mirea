@@ -69,6 +69,10 @@ test('new upload validates full H264/AAC + all HLS variants before deleting orig
   assert.equal((await c.req('GET',`/items/${item.id}/hls/360p-00000.m4s`,c.outsider)).statusCode,404);
   assert.equal((await c.app.inject(ticket.hlsUrl.replace(item.id,randomUUID()))).statusCode,401);
   assert.equal((await c.req('GET',`/items/${item.id}/hls/thumbnail.jpg`,c.owner)).statusCode,404);
+  const progressive=await c.app.inject({url:`/api/v1/items/${item.id}/renditions/360p/content`,headers:{authorization:`Bearer ${c.viewer.token}`,range:'bytes=10-99'}});
+  assert.equal(progressive.statusCode,206);assert.equal(progressive.rawPayload.length,90);assert.equal(progressive.headers['cache-control'],'private, no-store, no-transform');
+  assert.equal((await c.req('GET',`/items/${item.id}/renditions/360p/content`,c.outsider)).statusCode,404);
+  assert.equal((await c.req('GET',`/items/${item.id}/renditions/2160p/content`,c.owner)).statusCode,404);
   const download=await c.req('POST',`/items/${item.id}/download`,c.viewer,{quality:'360p'});assert.equal(download.statusCode,200,download.body);
   const manifest=download.json().manifest;assert.equal(manifest.files[0].quality,'360p');assert.equal(download.json().key,undefined);
   const opened=await c.req('POST',`/downloads/${manifest.id}/open`,c.viewer),key=Buffer.from(opened.json().key,'base64');

@@ -6,10 +6,9 @@ const currentPassword = string(128, 1);
 const email = { ...string(254, 3), pattern: '^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$' };
 const object = (properties, required) => ({ type: 'object', additionalProperties: false, properties, required });
 
-export function registerAccounts(app, { db, authenticate, membership, loginResult, cleanupUploads, rateLimit }) {
+export function registerAccounts(app, { db, authenticate, membership, loginResult, cleanupUploads, rateLimit, adminAccess }) {
   const auth = { preHandler: async req => authenticate(req), config: { rateLimit: rateLimit === false ? false : { max: 10, timeWindow: '1 minute' } } };
-  const admins = () => (process.env.SERVER_ADMIN_USER_IDS ?? '').split(',').map(id => id.trim()).filter(Boolean);
-  const lastAdmin = id => admins().includes(id) && !admins().some(other => other !== id && db.prepare('SELECT 1 FROM users WHERE id=?').get(other));
+  const lastAdmin = adminAccess.lastAdmin;
   const owned = id => db.prepare(`SELECT s.id,s.name,
     (SELECT COUNT(*) FROM items i WHERE i.shelf_id=s.id) AS assetCount,
     (SELECT COUNT(*) FROM memberships n WHERE n.shelf_id=s.id) AS memberCount
@@ -46,7 +45,7 @@ export function registerAccounts(app, { db, authenticate, membership, loginResul
     const user = await reauthenticate(req);
     if (req.body.confirmEmail.trim().toLowerCase() !== user.email) throw httpError(400, '確認用メールアドレスが一致しません。');
     const uploads = transaction(db, () => {
-      if (lastAdmin(user.id)) throw httpError(409, '最後のサーバー管理者は削除できません。先に別の管理者をサーバー設定で指定してください。');
+      if (lastAdmin(user.id)) throw httpError(409, '最後のサーバー管理者は削除できません。先にサーバー管理メニューで別の管理者を指定してください。');
       const shelves = owned(user.id);
       if (shelves.some(shelf => shelf.assetCount > 0 || shelf.memberCount > 1)) throw httpError(409, '管理している本棚があります。先に管理を引き継ぐか、自分だけの本棚のアセットを削除してください。');
       if (activeUploads(user.id)) throw httpError(409, 'アップロード中です。完了またはキャンセルしてから削除してください。');

@@ -23,10 +23,18 @@ import { registerSeries, shelfSeries, shelfSeriesMembership } from './series.js'
 import { registerAccounts } from './accounts.js';
 import { EPUB_MIME, EPUB_BUNDLE_MIME, MAX_EPUB_BYTES } from './ebook-types.js';
 import packageInfo from '../package.json' with {type:'json'};
-import { VIDEO_TYPES, isVideo } from './video-types.js';
+import { VIDEO_TYPES } from './video-types.js';
 import { createVideoTranscoder } from './video-transcode.js';
 import { registerVideoStreams, videoMetadata } from './video-stream.js';
+import { AUDIO_TYPES, isAudio, isTimedMime } from './audio-types.js';
+import { createAudioTranscoder } from './audio-transcode.js';
 import { registerAppUpdates } from './app-updates.js';
+import {createAdminAccess} from './admin-access.js';
+import {registerAdmin} from './admin.js';
+import {registerAdminJobs} from './admin-jobs.js';
+import {createMaintenanceGate} from './maintenance-gate.js';
+import {registerAdminBackups} from './admin-backups.js';
+import {registerServerUpdates} from './server-updates.js';
 
 const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 const TICKET_MS = 60 * 60 * 1000;
@@ -39,7 +47,7 @@ const memberRole = { type: 'string', enum: ['editor', 'viewer'] };
 const publicUser = u => ({ id: u.id, email: u.email, name: u.name });
 const publicItem = i => ({
   id: i.id, shelfId: i.shelf_id, title: i.title, filename: i.filename, mimeType: i.mime_type,
-  kind: i.mime_type === IMAGE_BOOK_MIME ? 'image-book' : i.mime_type === EPUB_MIME ? 'epub' : i.mime_type === 'application/pdf' ? 'pdf' : 'video',
+  kind: i.mime_type === IMAGE_BOOK_MIME ? 'image-book' : i.mime_type === EPUB_MIME ? 'epub' : i.mime_type === 'application/pdf' ? 'pdf' : isAudio(i.mime_type) ? 'audio' : 'video',
   pageCount: i.page_count, thumbnailUrl: `/api/v1/items/${i.id}/thumbnail`, size: i.size, createdAt: i.created_at
 });
 
@@ -54,6 +62,7 @@ export async function createApp(options = {}) {
   const db = openDatabase(join(dataDir, 'mirea.sqlite'));
   const media = options.mediaProcessor ?? createMediaProcessor();
   const videoTranscoder=options.videoTranscoder??createVideoTranscoder();
+  const audioTranscoder=options.audioTranscoder??createAudioTranscoder();
   const ensureThumbnail = createThumbnailStore(db, media, uploadDir, thumbnailDir);
   const maxUploadBytes = Number(options.maxUploadBytes ?? process.env.MAX_UPLOAD_BYTES ?? 2147483648);
   if (!Number.isSafeInteger(maxUploadBytes) || maxUploadBytes <= 0) throw new Error('Invalid MAX_UPLOAD_BYTES');
@@ -64,6 +73,7 @@ export async function createApp(options = {}) {
   const app = Fastify({ logger: options.logger ? {
     serializers: { req: req => ({ method: req.method, url: req.url.split('?')[0], remoteAddress: req.ip }) }
   } : false, ...(options.https?{https:options.https}:{}), bodyLimit: 16384, requestTimeout: 30 * 60 * 1000, trustProxy: false });
+  const maintenance=createMaintenanceGate(app);
   await app.register(cors, {
     origin: (origin, cb) => cb(null, Boolean(origin && allowedOrigins.includes(origin))),
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
@@ -104,6 +114,7 @@ export async function createApp(options = {}) {
     const session = token && db.prepare(`SELECT s.*, u.email, u.name FROM sessions s JOIN users u ON u.id=s.user_id
       WHERE token_hash=? AND expires_at>?`).get(hashToken(token), Date.now());
     if (!session) throw httpError(401, 'ログインしてください。');
+    if(!adminAccess.enabled(session.user_id))throw httpError(401,'アカウントは停止中です。');
     req.session = session;
     req.user = { id: session.user_id, email: session.email, name: session.name };
   }
@@ -114,6 +125,7 @@ export async function createApp(options = {}) {
     return member.role;
   }
   function findItem(id, userId, roles) {
+    if(!adminAccess.enabled(userId))throw httpError(401,'アカウントは停止中です。');
     const item = db.prepare('SELECT * FROM items WHERE id=?').get(id);
     if (!item) throw httpError(404, 'コンテンツが見つかりません。');
     membership(item.shelf_id, userId, roles);
@@ -126,13 +138,14 @@ export async function createApp(options = {}) {
     return { user: publicUser(user), token, expiresAt };
   }
   const auth = { preHandler: async req => authenticate(req) };
+  const adminAccess=createAdminAccess(db,options,authenticate);
   const authLimits = { config: { rateLimit: options.rateLimit === false ? false : { max: 10, timeWindow: '1 minute' } } };
-  app.get('/api/health', async () => ({ status: 'ok',version:packageInfo.version }));
+  app.get('/api/health', async () => ({ status: 'ok',version:packageInfo.version,maintenanceLocked:maintenance.locked }));
   const updatesPath = options.appUpdatesDir ?? process.env.APP_UPDATES_DIR;
   registerAppUpdates(app, { directory: updatesPath ? resolve(PROJECT_ROOT, updatesPath) : undefined });
   let analytics;
   app.get('/api/v1/config', async () => ({ allowRegistration, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadSessionHours: 24, analytics,
-    version: packageInfo.version, androidApkUrl: 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.2.3beta/mirea-0.2.3beta-android.apk' }));
+    version: packageInfo.version, androidApkUrl: 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.3.0beta/mirea-0.3.0beta-android.apk' }));
   app.post('/api/v1/auth/register', { ...authLimits, schema: { body: object({ email, password, name: text(80) }) } }, async (req, reply) => {
     if (!allowRegistration) throw httpError(403, '新規登録は現在停止しています。');
     const normalizedEmail = req.body.email.trim().toLowerCase();
@@ -151,10 +164,11 @@ export async function createApp(options = {}) {
   app.post('/api/v1/auth/login', { ...authLimits, schema: { body: credentials } }, async req => {
     const user = db.prepare('SELECT * FROM users WHERE email=?').get(req.body.email.trim().toLowerCase());
     const valid = await verifyPassword(req.body.password, user?.password_hash ?? dummyHash);
-    if (!user || !valid) throw httpError(401, 'メールアドレスまたはパスワードが違います。');
+    if (!user || !valid || !adminAccess.enabled(user.id)) throw httpError(401, 'メールアドレスまたはパスワードが違います。');
     return loginResult(user);
   });
   app.get('/api/v1/auth/me', auth, async req => ({ user: req.user }));
+  app.get('/api/v1/history',auth,async req=>({items:db.prepare(`SELECT i.*,MAX(v.last_received_at) AS lastSeenAt FROM analytics_views v JOIN items i ON i.id=v.asset_id JOIN memberships m ON m.shelf_id=i.shelf_id AND m.user_id=? WHERE v.user_id=? AND v.context='viewer' AND v.counted=1 GROUP BY i.id ORDER BY lastSeenAt DESC,i.id LIMIT 100`).all(req.user.id,req.user.id).map(item=>({...publicItem(item),lastSeenAt:item.lastSeenAt}))}));
   app.post('/api/v1/auth/logout', auth, async (req, reply) => {
     db.prepare('DELETE FROM sessions WHERE id=?').run(req.session.id);
     return reply.code(204).send();
@@ -209,13 +223,20 @@ export async function createApp(options = {}) {
     return { shelf: { ...shelf, role }, series:shelfSeries(db,req.params.id), items: db.prepare('SELECT * FROM items WHERE shelf_id=? ORDER BY created_at DESC, id').all(req.params.id).map(item=>({...publicItem(item),series:series.get(item.id)??null,progress:progress.get(item.id)??null})) };
   });
   const uploads = await registerResumableUploads(app, {
-    db, media, videoTranscoder, uploadDir, stagingDir, booksDir, thumbnailDir, videoDir, originalDir, previewDir, authenticate, membership, maxUploadBytes, chunkSize, publicItem
+    db, media, videoTranscoder, audioTranscoder, uploadDir, stagingDir, booksDir, thumbnailDir, videoDir, originalDir, previewDir, authenticate, membership, maxUploadBytes, chunkSize, publicItem,adminAccess,maintenance
   });
-  app.addHook('onClose',async()=>videoTranscoder.close());
   registerVideoStreams(app,{db,videoDir,authenticate,findItem});
-  registerAccounts(app, { db, authenticate, membership, loginResult, cleanupUploads: uploads.cleanupUploads, rateLimit: options.rateLimit });
+  registerAccounts(app, { db, authenticate, membership, loginResult, cleanupUploads: uploads.cleanupUploads, rateLimit: options.rateLimit,adminAccess });
   const videoPreviews = await registerVideoPreviews(app, { db, media, dataDir, uploadDir, authenticate, findItem });
-  analytics = await registerAnalytics(app, { db, authenticate, membership, findItem, options });
+  const adminJobs=await registerAdminJobs(app,{db,adminAccess,media,videoTranscoder,uploadDir,booksDir,thumbnailDir,previewDir,videoDir,originalDir,dataDir,uploads,maintenance,videoPreviews,ensureThumbnail});
+  registerAdmin(app,{db,adminAccess,uploads,rateLimit:options.rateLimit});
+  maintenance.setBusy(()=>uploads.busy||adminJobs.busy||videoPreviews.busy||media.busy);
+  await registerAdminBackups(app,{db,dataDir,adminAccess,maintenance,options});
+  await registerServerUpdates(app,{adminAccess,maintenance,options});
+  // onClose runs in reverse order: stop encoders before waiting for either
+  // upload or admin queues, so running jobs can persist a resumable state.
+  app.addHook('onClose',async()=>{videoTranscoder.close();audioTranscoder.close();});
+  analytics = await registerAnalytics(app, { db, authenticate, membership, findItem, options,adminAccess });
   registerProgress(app,{db,authenticate,findItem,options});
   registerSeries(app,{db,authenticate,membership,findItem,publicItem});
   try{await registerDownloads(app,{db,dataDir,uploadDir,booksDir,videoDir,authenticate,findItem,options});}catch(error){await app.close();throw error;}
@@ -240,13 +261,13 @@ export async function createApp(options = {}) {
           continue;
         }
         const isImage = IMAGE_TYPES.includes(part.mimetype);
-        if (part.fieldname !== 'file' || !['application/pdf', EPUB_MIME, ...VIDEO_TYPES, ...IMAGE_TYPES].includes(part.mimetype)) {
+        if (part.fieldname !== 'file' || !['application/pdf', EPUB_MIME, ...VIDEO_TYPES, ...AUDIO_TYPES, ...IMAGE_TYPES].includes(part.mimetype)) {
           part.file.resume();
-          throw httpError(415, 'PDF・EPUB・MP4・WebM、またはJPEG・PNG・WebP画像を選択してください。');
+          throw httpError(415, 'PDF・EPUB・動画・音声、またはJPEG・PNG・WebP画像を選択してください。');
         }
         if (files.length && (!isImage || !isImageBook)) {
           part.file.resume();
-          throw httpError(400, 'PDF・EPUB・動画は1ファイルずつ、画像の本は画像だけを選択してください。');
+          throw httpError(400, 'PDF・EPUB・動画・音声は1ファイルずつ、画像の本は画像だけを選択してください。');
         }
         isImageBook = isImage;
         const number = files.length + 1;
@@ -281,9 +302,9 @@ export async function createApp(options = {}) {
       const uploaded = files[0];
       title = (title || uploaded.filename.replace(/\.[^.]+$/, '')).trim();
       if (!title || title.length > 200) throw httpError(400, 'タイトルは1〜200文字で入力してください。');
-      if(isVideo(uploaded.mime)){
+      if(isTimedMime(uploaded.mime)){
         authenticate(req);membership(req.params.id,req.user.id,['owner','editor']);
-        const item=await uploads.publishMultipartVideo({id,shelfId:req.params.id,userId:req.user.id,sessionId:req.session.id,title,file:uploaded,retainOriginal});
+        const item=await uploads.publishMultipartMedia({id,shelfId:req.params.id,userId:req.user.id,sessionId:req.session.id,title,file:uploaded,retainOriginal});
         return reply.code(201).send({item});
       }
       const thumbnail = await media.thumbnail(join(stage, isImageBook ? `1.${imageExtension(uploaded.mime)}` : 'raw-1'), uploaded.mime, join(stage, 'thumbnail.jpg'), uploaded.mime===EPUB_MIME?join(stage,'book.json'):undefined);
@@ -369,6 +390,7 @@ export async function createApp(options = {}) {
     const expiresAt = Math.min(Date.now() + TICKET_MS, req.session.expires_at);
     db.prepare('INSERT INTO playback_tickets VALUES (?, ?, ?, ?)').run(hashToken(token), req.session.id, req.params.id, expiresAt);
     const metadata=videoMetadata(db,item.id);
+    if(metadata)db.prepare('INSERT INTO playback_generations VALUES(?,?)').run(hashToken(token),metadata.generation??'base');
     return { url: `/api/v1/items/${req.params.id}/content?ticket=${token}`, expiresAt,
       ...(metadata?{hlsUrl:`/api/v1/items/${item.id}/hls/master.m3u8?ticket=${token}`,renditions:metadata.renditions.map(({quality,width,height,size})=>({quality,width,height,size}))}:{}) };
   });

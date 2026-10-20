@@ -88,6 +88,8 @@ export async function registerVideoPreviews(app, { db, media, dataDir, uploadDir
   } });
   app.addHook('onClose', async () => { closing = true; await Promise.allSettled([...pending.values()]); });
   return {
+    get busy(){return pending.size>0;},
+    inspect(){return [...pending.keys()].map(id=>({assetId:id,state:'running',kind:'preview'})).concat([...failed.keys()].filter(id=>(failed.get(id)??0)>Date.now()).map(id=>({assetId:id,state:'failed',kind:'preview'})));},
     async remove(id) {
       failed.delete(id);
       // In-flight conversions check item existence and clean themselves up.

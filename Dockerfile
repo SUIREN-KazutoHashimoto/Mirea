@@ -5,6 +5,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 RUN pnpm install --frozen-lockfile
 COPY web ./web
 COPY server/video-types.js ./server/video-types.js
+COPY server/audio-types.js ./server/audio-types.js
 COPY vite.config.js ./
 RUN pnpm build
 

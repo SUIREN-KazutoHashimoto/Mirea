@@ -8,7 +8,7 @@ export function createViewRecorder({ view, emit, snapshot, clock = () => perform
     emit(view, { id: uuid(), seq: ++seq, type, at: wallClock(), elapsedMs: elapsed(), ...data });
   }
   function count(state) {
-    if (!counted && state.visible && state.focused && !state.idle && (state.page || state.playing && !state.buffering && !state.seeking)) {
+    if (!counted && !state.idle && (state.page && state.visible && state.focused || state.playing && !state.buffering && !state.seeking && (state.visible && state.focused || state.backgroundPlayback || state.pictureInPicture))) {
       counted = true; event('view_start', state);
     }
   }
@@ -21,12 +21,14 @@ export function createViewRecorder({ view, emit, snapshot, clock = () => perform
     if (intervalMs) {
       const visibleMs = previous.visible ? intervalMs : 0;
       const activeMs = visibleMs && previous.focused && !previous.idle ? intervalMs : 0;
-      const data = { ...previous, elapsedMs: end, intervalMs, visibleMs, activeMs, watchMs: 0, gapMs: raw - intervalMs, reason: 'heartbeat' };
+      const data = { ...previous, elapsedMs: end, intervalMs, visibleMs, activeMs, watchMs: 0, backgroundMs: 0, pipMs: 0, gapMs: raw - intervalMs, reason: 'heartbeat' };
       if (previous.toMs !== undefined) {
         data.fromMs = previous.toMs; data.toMs = current.toMs ?? previous.toMs;
         const delta = data.toMs - data.fromMs;
-        if (activeMs && previous.playing && !previous.seeking && !previous.buffering && !current.seeking && delta > 0 && delta <= intervalMs * (previous.rate ?? 1) * 1.5 + 300 && raw <= 2000) {
-          data.watchMs = Math.min(activeMs, Math.round(delta / (previous.rate ?? 1)));
+        if ((activeMs || previous.backgroundPlayback || previous.pictureInPicture) && previous.playing && !previous.seeking && !previous.buffering && !current.seeking && delta > 0 && delta <= intervalMs * (previous.rate ?? 1) * 1.5 + 300 && raw <= 2000) {
+          data.watchMs = Math.min(intervalMs, Math.round(delta / (previous.rate ?? 1)));
+          if(previous.pictureInPicture)data.pipMs=data.watchMs;
+          else if(previous.backgroundPlayback&&!previous.visible)data.backgroundMs=data.watchMs;
         }
         if (delta < 0) event('loop', current);
       }

@@ -6,6 +6,8 @@ import { join, resolve, sep } from 'node:path';
 import bundledFfmpeg from 'ffmpeg-static';
 import { httpError } from './security.js';
 import { EPUB_MIME } from './ebook-types.js';
+import { isAudio } from './audio-types.js';
+import { audioPlaceholder } from './audio-art.js';
 import { mediaBinary } from './media-binary.js';
 
 export const IMAGE_BOOK_MIME = 'application/vnd.mirea.image-book';
@@ -86,17 +88,21 @@ function workerOperation(data) {
 // Serialize decoding to avoid allocating one large canvas per concurrent upload.
 export function createMediaProcessor() {
   let tail = Promise.resolve();
-  const enqueue = job => {
-    const current = tail.then(job);
+  let sequence=0;const activity=new Map();
+  const enqueue = (kind,job) => {
+    const id='media-'+(++sequence),row={id,kind,state:'queued'};activity.set(id,row);
+    const current = tail.then(async()=>{row.state='running';try{return await job();}finally{activity.delete(id);}});
     tail = current.catch(() => {});
     return current;
   };
   return {
+    get busy(){return activity.size>0;},
+    inspect(){return [...activity.values()].map(row=>({...row}));},
     validateImage(source) {
-      return enqueue(() => workerOperation({ source, mode: 'validate-image' }));
+      return enqueue('validate-image',() => workerOperation({ source, mode: 'validate-image' }));
     },
     preview(source, destination, mime) {
-      return enqueue(async () => {
+      return enqueue('preview',async () => {
         await convertVideo(source, destination, mime, [
           '-t', String(PREVIEW_SECONDS), '-map', '0:v:0', '-an', '-sn', '-dn', '-map_metadata', '-1', '-map_chapters', '-1',
           '-vf', 'setpts=PTS-STARTPTS,fps=12:eof_action=pass,scale=480:480:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1',
@@ -106,7 +112,8 @@ export function createMediaProcessor() {
       });
     },
     thumbnail(source, mime, destination, bundlePath) {
-      return enqueue(async () => {
+      return enqueue('thumbnail',async () => {
+        if (isAudio(mime)) { await audioPlaceholder(destination); return { pageCount: 1 }; }
         if (mime.startsWith('video/')) {
           // Sample at most 30 frames from the opening 2.5 seconds. At EOF,
           // thumbnail uses the available batch, even for a single-frame clip;
@@ -126,7 +133,7 @@ export function createMediaProcessor() {
 
 export function createThumbnailStore(db, media, uploadDir, thumbnailDir) {
   const pending = new Map();
-  return async function ensureThumbnail(item) {
+  const ensureThumbnail=async function(item) {
     const destination = join(thumbnailDir, `${item.id}.jpg`);
     try { await access(destination); return destination; } catch { /* create missing or legacy thumbnails */ }
     if (!pending.has(item.id)) {
@@ -147,6 +154,8 @@ export function createThumbnailStore(db, media, uploadDir, thumbnailDir) {
     }
     return pending.get(item.id);
   };
+  ensureThumbnail.inspect=()=>[...pending.keys()].map(id=>({assetId:id,state:'running',kind:'thumbnail'}));
+  return ensureThumbnail;
 }
 
 // Only remove a validated UUID child of a designated storage directory.

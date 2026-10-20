@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { transaction } from './database.js';
 import { httpError } from './security.js';
 import { IMAGE_BOOK_MIME } from './media.js';
+import { isAudio, isTimedKind } from './audio-types.js';
 import { EPUB_MIME } from './ebook-types.js';
 
 const DAY = 86400000, MAX_SESSION = 7 * DAY, BIN_MS = 10000;
@@ -11,9 +12,9 @@ const number = maximum => ({ type: 'number', minimum: 0, maximum });
 const types = ['open','view_start','interval','ready','play','pause','seeking','seeked','ended','rate_change','buffering','page_enter','page_loading','zoom','viewport','visibility','focus','idle','close','error','loop','quality_change'];
 const properties = {
   id: uuid, seq: { ...int(2147483647), minimum: 1 }, type: { enum: types }, at: int(8640000000000000), elapsedMs: int(MAX_SESSION),
-  intervalMs: int(5000), visibleMs: int(5000), activeMs: int(5000), watchMs: int(5000), gapMs: int(MAX_SESSION),
+  intervalMs: int(5000), visibleMs: int(5000), activeMs: int(5000), watchMs: int(5000), backgroundMs:int(5000), pipMs:int(5000), gapMs: int(MAX_SESSION),
   fromMs: number(31 * DAY), toMs: number(31 * DAY), durationMs: number(31 * DAY), page: { ...int(1000000), minimum: 1 }, previousPage: { ...int(1000000), minimum: 1 },
-  visible: { type: 'boolean' }, focused: { type: 'boolean' }, idle: { type: 'boolean' }, playing: { type: 'boolean' }, seeking: { type: 'boolean' }, buffering: { type: 'boolean' },
+  backgroundPlayback:{type:'boolean'}, pictureInPicture:{type:'boolean'}, visible: { type: 'boolean' }, focused: { type: 'boolean' }, idle: { type: 'boolean' }, playing: { type: 'boolean' }, seeking: { type: 'boolean' }, buffering: { type: 'boolean' },
   rate: { type: 'number', minimum: 0.1, maximum: 16 }, muted: { type: 'boolean' }, volume: number(1), fullscreen: { type: 'boolean' },
   x: number(1), y: number(1), width: number(1), height: number(1), visibleRatio: number(1), zoom: number(20),
   viewportWidth: int(32768), viewportHeight: int(32768), droppedFrames: int(2147483647),
@@ -23,38 +24,37 @@ const properties = {
   errorCode: { enum: ['network','decode','render','load','unknown'] }
 };
 const canonical = event => JSON.stringify(Object.fromEntries(Object.keys(event).sort().map(key => [key, event[key]])));
-const kindOf = item => item.mime_type === IMAGE_BOOK_MIME ? 'image-book' : item.mime_type === EPUB_MIME ? 'epub' : item.mime_type === 'application/pdf' ? 'pdf' : 'video';
+const kindOf = item => item.mime_type === IMAGE_BOOK_MIME ? 'image-book' : item.mime_type === EPUB_MIME ? 'epub' : item.mime_type === 'application/pdf' ? 'pdf' : isAudio(item.mime_type) ? 'audio' : 'video';
 
-export async function registerAnalytics(app, { db, authenticate, membership, findItem, options }) {
+export async function registerAnalytics(app, { db, authenticate, membership, findItem, options, adminAccess }) {
   const enabled = options.analyticsEnabled ?? process.env.ANALYTICS_ENABLED !== 'false';
-  const adminIds = options.serverAdminUserIds ?? (process.env.SERVER_ADMIN_USER_IDS ?? '').split(',').map(value => value.trim()).filter(Boolean);
-  if (adminIds.some(id => !new RegExp(uuid.pattern).test(id))) throw new Error('Invalid SERVER_ADMIN_USER_IDS');
-  const isAdmin = userId => adminIds.includes(userId);
+  const isAdmin = adminAccess.isAdmin;
   const config = { enabled, access: 'self-detail-admin-aggregate', retentionDays: 0, sampleIntervalMs: 1000, schemaVersion: 1, minimumAggregateViewers: 5 };
   const auth = { onRequest: async req => authenticate(req) };
   const normalize = event => ({ intervalMs: 0, visibleMs: 0, activeMs: 0, watchMs: 0, ...event });
   function validate(event, view) {
-    const { intervalMs, visibleMs, activeMs, watchMs } = event;
-    if (event.elapsedMs < intervalMs || activeMs > visibleMs || visibleMs > intervalMs || watchMs > activeMs) throw httpError(422, '閲覧時間の関係が不正です。');
-    if (event.type !== 'interval' && (intervalMs || visibleMs || activeMs || watchMs)) throw httpError(422, '区間以外のイベントに時間は指定できません。');
+    const { intervalMs, visibleMs, activeMs, watchMs,backgroundMs=0,pipMs=0 } = event;
+    if(backgroundMs+pipMs>watchMs || backgroundMs && (!event.backgroundPlayback||event.visible) || pipMs && !event.pictureInPicture || event.backgroundPlayback&&event.pictureInPicture || (backgroundMs||pipMs||event.backgroundPlayback||event.pictureInPicture)&&(!isTimedKind(view.asset_kind)||view.context!=='viewer'))throw httpError(422,'バックグラウンド・PiPの再生状態が不正です。');
+    if (event.elapsedMs < intervalMs || activeMs > visibleMs || visibleMs > intervalMs || watchMs > intervalMs || watchMs > activeMs+backgroundMs+pipMs) throw httpError(422, '閲覧時間の関係が不正です。');
+    if (event.type !== 'interval' && (intervalMs || visibleMs || activeMs || watchMs || backgroundMs || pipMs)) throw httpError(422, '区間以外のイベントに時間は指定できません。');
     if (event.type === 'interval' && !intervalMs) throw httpError(422, '区間の長さが必要です。');
-    if (event.page !== undefined && (view.asset_kind === 'video' || event.page > view.page_count)) throw httpError(422, 'ページ番号が不正です。');
+    if (event.page !== undefined && (isTimedKind(view.asset_kind) || event.page > view.page_count)) throw httpError(422, 'ページ番号が不正です。');
     if (visibleMs && !event.visible || activeMs && (!event.focused || event.idle)) throw httpError(422, '非表示・非アクティブな時間は加算できません。');
-    if (view.asset_kind !== 'video') {
-      if (watchMs || event.fromMs !== undefined || event.toMs !== undefined || event.durationMs !== undefined) throw httpError(422, '本に動画の再生位置は指定できません。');
+    if (!isTimedKind(view.asset_kind)) {
+      if (watchMs || event.fromMs !== undefined || event.toMs !== undefined || event.durationMs !== undefined) throw httpError(422, '本に動画・音声の再生位置は指定できません。');
       if ((visibleMs || event.type === 'page_enter' || event.type === 'view_start') && !event.page) throw httpError(422, '表示したページが必要です。');
     }
     if (watchMs) {
       const delta = event.toMs - event.fromMs;
       if (!event.playing || event.seeking || event.buffering || !Number.isFinite(delta) || delta <= 0 || delta > intervalMs * (event.rate ?? 1) * 1.5 + 300) throw httpError(422, 'シーク・停止中の区間を視聴時間には加算できません。');
     }
-    if (event.type === 'view_start' && (!event.visible || !event.focused || (view.asset_kind === 'video' && (!event.playing || event.buffering || event.seeking)))) throw httpError(422, '実際に表示・再生した状態が必要です。');
+    if (event.type === 'view_start' && ((!event.visible || !event.focused) && !(isTimedKind(view.asset_kind)&&view.context==='viewer'&&(event.backgroundPlayback||event.pictureInPicture)) || (isTimedKind(view.asset_kind) && (!event.playing || event.buffering || event.seeking)))) throw httpError(422, '実際に表示・再生した状態が必要です。');
   }
   const insert = db.prepare(`INSERT INTO analytics_events(event_id,view_id,seq,event_type,client_at,received_at,elapsed_ms,interval_ms,visible_ms,active_ms,watch_ms,from_ms,to_ms,page_number,payload_json,payload_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   function materialize(view, event, receivedAt) {
     db.prepare(`UPDATE analytics_views SET last_received_at=?,counted=MAX(counted,?),ended=MAX(ended,?),visible_ms=visible_ms+?,active_ms=active_ms+?,watch_ms=watch_ms+? WHERE id=?`)
       .run(receivedAt, event.type === 'view_start' ? 1 : 0, event.type === 'ended' ? 1 : 0, event.visibleMs, event.activeMs, event.watchMs, view.id);
-    if (view.asset_kind !== 'video' && event.page && (event.type === 'page_enter' || event.type === 'interval')) {
+    if (!isTimedKind(view.asset_kind) && event.page && (event.type === 'page_enter' || event.type === 'interval')) {
       db.prepare(`INSERT INTO analytics_pages VALUES(?,?,?,?,?) ON CONFLICT(view_id,page_number) DO UPDATE SET visits=visits+excluded.visits,visible_ms=visible_ms+excluded.visible_ms,active_ms=active_ms+excluded.active_ms`)
         .run(view.id, event.page, event.type === 'page_enter' ? 1 : 0, event.visibleMs, event.activeMs);
     }

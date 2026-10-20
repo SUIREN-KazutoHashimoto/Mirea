@@ -1,3 +1,4 @@
+import { invalidateNativePlayback } from './native-player-bridge.js';
 import { Capacitor } from '@capacitor/core';
 import { createResumableUpload } from './resumable-upload.js';
 import { beginUpdateActivity } from './update-busy.js';
@@ -14,10 +15,12 @@ export function setEndpoint(value) {
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
     throw new Error('HTTPSのサーバーURLを入力してください（例：https://mirea.example.com）。');
   }
+  invalidateNativePlayback();
   endpoint = url.origin;
   localStorage.setItem('mirea.server', endpoint);
 }
 export function setSession(value) {
+  invalidateNativePlayback();
   session = value;
   if (value) sessionStorage.setItem('mirea.session', JSON.stringify(value));
   else sessionStorage.removeItem('mirea.session');
