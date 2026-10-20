@@ -6,6 +6,7 @@ import { join, resolve, sep } from 'node:path';
 import bundledFfmpeg from 'ffmpeg-static';
 import { httpError } from './security.js';
 import { EPUB_MIME } from './ebook-types.js';
+import { mediaBinary } from './media-binary.js';
 
 export const IMAGE_BOOK_MIME = 'application/vnd.mirea.image-book';
 export const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
@@ -15,7 +16,7 @@ export const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 export const PREVIEW_SECONDS = 6;
 export const MAX_PREVIEW_BYTES = 2 * 1024 * 1024;
 const runFile = promisify(execFile);
-export const ffmpegPath = () => process.env.FFMPEG_PATH || bundledFfmpeg;
+export const ffmpegPath = () => mediaBinary('ffmpeg', bundledFfmpeg);
 
 const VIDEO_TIMEOUT_MS = 30_000;
 const removeOutput = destination => unlink(destination).catch(error => { if (error.code !== 'ENOENT') throw error; });

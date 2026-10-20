@@ -9,6 +9,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install Linux media runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
       - uses: actions/setup-node@v4
         with:
           node-version: 24.19.0
@@ -26,6 +30,8 @@ jobs:
       - run: docker compose up -d --wait
       - run: curl --fail http://localhost:3000/api/health
       - run: curl --fail http://localhost:3000/
+      - name: Verify MPEG-TS conversion inside the read-only container
+        run: docker compose exec -T mirea node --input-type=module < scripts/check-media-runtime.mjs
       - run: docker compose -f compose.yaml -f compose.host-data.yaml config --quiet
       - if: always()
         run: docker compose down

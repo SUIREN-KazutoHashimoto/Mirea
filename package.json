@@ -11,7 +11,7 @@
     "dev": "vite --host 127.0.0.1",
     "start": "node server/index.js",
     "build": "vite build",
-    "test": "node --test --test-concurrency=1 tests/api.test.js tests/accounts.test.js tests/security.test.js tests/database.test.js tests/media.test.js tests/uploads.test.js tests/upload-client.test.js tests/video-stream-client.test.js tests/video-transcode.test.js tests/video-previews.test.js tests/preview-controller.test.js tests/analytics.test.js tests/analytics-client.test.js tests/progress.test.js tests/progress-client.test.js tests/downloads.test.js tests/download-client.test.js tests/download-store.test.js tests/series.test.js tests/series-continuation.test.js tests/workspace.test.js tests/epub.test.js tests/app-updates.test.js",
+    "test": "node --test --test-concurrency=1 tests/api.test.js tests/accounts.test.js tests/security.test.js tests/database.test.js tests/media.test.js tests/uploads.test.js tests/upload-client.test.js tests/video-stream-client.test.js tests/video-transcode.test.js tests/video-previews.test.js tests/preview-controller.test.js tests/analytics.test.js tests/analytics-client.test.js tests/progress.test.js tests/progress-client.test.js tests/downloads.test.js tests/download-client.test.js tests/download-store.test.js tests/series.test.js tests/series-continuation.test.js tests/workspace.test.js tests/epub.test.js tests/app-updates.test.js tests/media-binary.test.js",
     "test:startup": "node --test --test-concurrency=1 tests/runtime.test.js",
     "test:updates": "node --test tests/app-updates.test.js",
     "package:server": "node scripts/package-server.mjs",

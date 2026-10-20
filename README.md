@@ -87,7 +87,7 @@ pnpm start
 
 直接起動ではインストール先の `.env` を読み、相対 `DATA_DIR` もインストール先を基準にします。OS側の環境変数が優先されます。停止は `Ctrl+C` です。Dockerではデータを引き続きnamed volumeへ保持し、任意でホストディレクトリ方式に切り替えられます。同じ保存先の直接起動とコンテナを同時に動かさないでください。
 
-動画変換用FFmpegとFFprobeは依存のインストール時に取得します。ネットワーク制限などで取得できない環境では、別途用意したFFmpegの絶対パスを `FFMPEG_PATH`／`FFPROBE_PATH` に指定してください。PDFのサムネイルには同梱PDF.js・Canvas、画像にはsharpを使います。
+Linuxの直接起動ではOSの`ffmpeg`パッケージを導入してください（Debian／Ubuntu例：`sudo apt-get install ffmpeg`）。標準の`/usr/bin/ffmpeg`と`/usr/bin/ffprobe`を使い、コンテナには両方を導入済みです。同梱Linux静的版のTS入力での異常終了を避けるため、Linuxでは同梱版へ自動フォールバックしません。Windows／macOSでは依存のインストール時に同梱版を取得します。別途用意したバイナリは `FFMPEG_PATH`／`FFPROBE_PATH` で指定できます。更新された信頼できるビルドを使ってください。PDFのサムネイルには同梱PDF.js・Canvas、画像にはsharpを使います。
 
 Web画面の開発では、APIを `pnpm start` で起動し、別のターミナルで `pnpm dev` を実行します。Viteの開発サーバーが `/api` をポート3000に転送します。
 

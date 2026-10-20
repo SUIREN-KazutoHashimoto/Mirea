@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import bundledFfprobe from '@derhuerst/ffprobe-static';
 import { ffmpegPath } from './media.js';
 import { httpError } from './security.js';
+import { mediaBinary } from './media-binary.js';
 
 const exec = promisify(execFile);
 const FORMATS = 'mov,matroska,webm,avi,asf,mpeg,mpegts,flv';
@@ -13,7 +14,7 @@ const MAX_SECONDS = 6 * 60 * 60;
 const MAX_FILE = 8 * 1024 ** 3;
 const MAX_OUTPUT = 32 * 1024 ** 3;
 const closingError=()=>Object.assign(new Error('Video processing paused for server shutdown'),{code:'SERVER_CLOSING'});
-export const ffprobePath = () => process.env.FFPROBE_PATH || bundledFfprobe;
+export const ffprobePath = () => mediaBinary('ffprobe', bundledFfprobe);
 
 export async function probeVideo(source) {
   try {
