@@ -15,6 +15,9 @@ import { openSettings } from './settings.js';
 import { createViewerScreen } from './viewer-shell.js';
 import { mountVideoPlayer } from './video-player.js';
 import { VIDEO_EXTENSIONS } from '../../server/video-types.js';
+import { beginUpdateActivity } from './update-busy.js';
+import { initializeAppUpdates, refreshAppUpdates, appUpdatesEndpointChanged, mountAppUpdates, openAppUpdates } from './app-updates.js';
+import './app-updates.css';
 
 const theme = createTheme();
 const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.2.0beta/mirea-0.2.0beta-android-debug.apk';
@@ -52,6 +55,7 @@ if (native) {
   App.addListener('appStateChange', ({ isActive }) => {
     nativeStateRevision++;
     nativeAppActive = isActive;
+    if (isActive) refreshAppUpdates();
     analyticsNativeState(isActive);
     progressNativeState(isActive);
     downloadsNativeState(isActive);
@@ -143,6 +147,11 @@ function renderAuth(register = false) {
   const switchButton = document.querySelector('#switch-auth');
   switchButton.hidden = !register && !config.allowRegistration;
   switchButton.onclick = () => renderAuth(!register);
+  if (native) {
+    const updates = document.createElement('button'); updates.type = 'button'; updates.className = 'text-button'; updates.textContent = 'アプリの更新';
+    document.querySelector('.auth-form-wrap').append(updates);
+    updates.onclick = () => { try { setEndpoint(document.querySelector('#auth-form').elements.server.value.trim()); appUpdatesEndpointChanged(); openAppUpdates(dialog); } catch (error) { report(error); } };
+  }
   document.querySelector('#auth-form').onsubmit = async e => {
     e.preventDefault();
     const form = e.currentTarget;
@@ -151,7 +160,7 @@ function renderAuth(register = false) {
     submit.disabled = true;
     errorBox.hidden = true;
     try {
-      if (native) setEndpoint(form.elements.server.value.trim());
+      if (native) { setEndpoint(form.elements.server.value.trim()); appUpdatesEndpointChanged(); }
       const body = { email: form.elements.email.value.trim(), password: form.elements.password.value };
       if (register) body.name = form.elements.name.value.trim();
       setSession(await api(register ? '/auth/register' : '/auth/login', { method: 'POST', body }));
@@ -215,7 +224,7 @@ function renderShell() {
 function showSettings() {
   const actor=getSession(),server=getEndpoint();
   const current=()=>getSession()===actor && getEndpoint()===server;
-  openSettings({ dialog, api, esc, theme, apkUrl: config.androidApkUrl || defaultApkUrl, version: config.version || '0.2.0-beta', manageShelf: id => openMembers(id),
+  openSettings({ dialog, api, esc, theme, apkUrl: config.androidApkUrl || defaultApkUrl, version: config.version || '0.2.3-beta', manageShelf: id => openMembers(id), mountUpdates: native ? mountAppUpdates : null,
     onUpdated: async result => { if(!current())return;closeDownloads();setSession(result);await stopAnalytics().catch(()=>{});if(getSession()!==result || getEndpoint()!==server)return;await startAnalytics();if(getSession()!==result || getEndpoint()!==server)return;renderShell();await refresh();toast('アカウント情報を更新しました。他の端末では再ログインが必要です。'); },
     onDeleted: async () => { if(!current())return;const results=await Promise.allSettled([clearAccountDownloads(),clearAccountAnalytics(),clearAccountProgress()]);if(!current())return;const cacheError=results.some(r=>r.status==='rejected');clearThumbnails();setSession(null);loadGeneration++;shelves=[];items=[];activeShelf=null;renderAuth();toast(cacheError?'アカウントを削除しました。端末内データを消去できませんでした。ブラウザーのサイトデータを削除してください。':'アカウントと個人の記録、この端末のダウンロードを削除しました。'); }
   });
@@ -475,7 +484,10 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false}={}) {
   const isPdf = item.mimeType === 'application/pdf';
   document.querySelectorAll('.viewer-screen').forEach(screen=>screen.close());
   videoPreviews?.setPaused('viewer', true);
-  const node = createViewerScreen({title:item.title,kind:item.kind,onClose:()=>videoPreviews?.setPaused('viewer',false)});
+  const releaseUpdate = beginUpdateActivity();
+  let node;
+  try { node = createViewerScreen({title:item.title,kind:item.kind,onClose:()=>{releaseUpdate();videoPreviews?.setPaused('viewer',false);}}); }
+  catch (error) { releaseUpdate(); throw error; }
   const body = node.querySelector('.viewer-body');
   body.innerHTML='<p class="viewer-loading" role="status">読み込んでいます…</p>';
   const tracker = trackAsset(item.id);
@@ -612,6 +624,8 @@ window.addEventListener('mirea:unauthorized', () => {
   renderAuth();
   toast('ログインの有効期限が切れました。もう一度ログインしてください。');
 });
+window.addEventListener('mirea:update-ready', event => toast(`アプリ ${event.detail} の更新を準備しました。「設定」またはログイン画面の「アプリの更新」で確認できます。`));
+initializeAppUpdates();
 await loadConfig();
 if (getSession()) {
   try { await api('/auth/me'); await startAnalytics(); renderShell(); await refresh(); }

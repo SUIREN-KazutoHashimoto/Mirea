@@ -8,6 +8,7 @@ import { mkdir, rename, unlink, access, stat } from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PROJECT_ROOT } from './runtime.js';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { openDatabase, transaction } from './database.js';
@@ -25,6 +26,7 @@ import packageInfo from '../package.json' with {type:'json'};
 import { VIDEO_TYPES, isVideo } from './video-types.js';
 import { createVideoTranscoder } from './video-transcode.js';
 import { registerVideoStreams, videoMetadata } from './video-stream.js';
+import { registerAppUpdates } from './app-updates.js';
 
 const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 const TICKET_MS = 60 * 60 * 1000;
@@ -86,7 +88,7 @@ export async function createApp(options = {}) {
     reply.header('Referrer-Policy', 'no-referrer');
     reply.header('X-Frame-Options', 'DENY');
     reply.header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
-    if (req.url.startsWith('/api/')) reply.header('Cache-Control', req.url.split('?')[0].endsWith('/content') || req.url.includes('/hls/') ? 'private, no-store, no-transform' : 'no-store');
+    if (req.url.startsWith('/api/')) reply.header('Cache-Control', req.url.startsWith('/api/v1/app-updates/') ? 'no-store, no-transform' : req.url.split('?')[0].endsWith('/content') || req.url.includes('/hls/') ? 'private, no-store, no-transform' : 'no-store');
     return payload;
   });
   app.setErrorHandler((err, req, reply) => {
@@ -126,6 +128,8 @@ export async function createApp(options = {}) {
   const auth = { preHandler: async req => authenticate(req) };
   const authLimits = { config: { rateLimit: options.rateLimit === false ? false : { max: 10, timeWindow: '1 minute' } } };
   app.get('/api/health', async () => ({ status: 'ok',version:packageInfo.version }));
+  const updatesPath = options.appUpdatesDir ?? process.env.APP_UPDATES_DIR;
+  registerAppUpdates(app, { directory: updatesPath ? resolve(PROJECT_ROOT, updatesPath) : undefined });
   let analytics;
   app.get('/api/v1/config', async () => ({ allowRegistration, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadSessionHours: 24, analytics,
     version: packageInfo.version, androidApkUrl: 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.2.0beta/mirea-0.2.0beta-android-debug.apk' }));

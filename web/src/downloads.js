@@ -1,6 +1,7 @@
 import { getSession,getEndpoint,api } from './api.js';
 import { openDownloadDb } from './download-db.js';
 import { DOWNLOAD_PATH,validateManifest,importDownloadKey,ciphertextHash } from './download-core.js';
+import { beginUpdateActivity } from './update-busy.js';
 
 const grants=new Map(),tasks=new Set();let workerReady;
 const scriptPath=()=>import.meta.env.DEV?'/src/download-sw.js':'/download-sw.js';
@@ -54,7 +55,7 @@ const delay=(ms,signal)=>new Promise((resolve,reject)=>{
   signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();
 });
 export async function downloadToDevice(item,onProgress=()=>{},externalSignal,quality){
-  const ctx=context(),controller=new AbortController();tasks.add(controller);
+  const ctx=context(),controller=new AbortController(),releaseUpdate=beginUpdateActivity();tasks.add(controller);
   const signal=externalSignal?AbortSignal.any([controller.signal,externalSignal]):controller.signal;
   try{
     await ensureDownloadWorker();signal.throwIfAborted();
@@ -89,7 +90,7 @@ export async function downloadToDevice(item,onProgress=()=>{},externalSignal,qua
       if(lastError)throw lastError;received+=length;onProgress({received,total});
     }
     signal.throwIfAborted();return await store.complete(key,manifest.id);
-  }finally{tasks.delete(controller);}
+  }finally{tasks.delete(controller);releaseUpdate();}
 }
 
 // This function always calls the server when a ready download is opened.

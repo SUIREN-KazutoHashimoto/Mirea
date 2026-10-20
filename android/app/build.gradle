@@ -1,5 +1,11 @@
 apply plugin: 'com.android.application'
 
+// The optional file lives OUTSIDE the repository. Never put signing secrets in
+// gradle.properties, CI logs, the server, source archives or update manifests.
+def mireaSigning = new Properties()
+def mireaSigningPath = providers.gradleProperty('mireaSigningPropertiesFile').orNull
+if (mireaSigningPath != null) { new File(mireaSigningPath).withInputStream { mireaSigning.load(it) } }
+
 android {
     namespace = "com.suiren.mirea"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,8 +13,8 @@ android {
         applicationId "com.suiren.mirea"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 2
-        versionName "0.2.0beta"
+        versionCode 3
+        versionName "0.2.3beta"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,8 +22,20 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (!mireaSigning.isEmpty()) {
+            mireaRelease {
+                storeFile file(mireaSigning['storeFile'])
+                storeType mireaSigning.getProperty('storeType', 'PKCS12')
+                storePassword mireaSigning['storePassword']
+                keyAlias mireaSigning['keyAlias']
+                keyPassword mireaSigning['keyPassword']
+            }
+        }
+    }
     buildTypes {
         release {
+            if (!mireaSigning.isEmpty()) { signingConfig signingConfigs.mireaRelease }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
@@ -37,6 +55,7 @@ dependencies {
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
     testImplementation "junit:junit:$junitVersion"
+    testImplementation 'org.json:json:20250517'
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')

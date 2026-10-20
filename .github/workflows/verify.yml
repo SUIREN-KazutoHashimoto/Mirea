@@ -47,7 +47,7 @@ jobs:
       - run: npm install --global pnpm@11.25.0
       - run: pnpm install --frozen-lockfile
       - run: pnpm android:sync
-      - run: bash ./gradlew assembleDebug
+      - run: bash ./gradlew testDebugUnitTest lintDebug assembleDebug
         working-directory: android
       - uses: actions/upload-artifact@v4
         with:

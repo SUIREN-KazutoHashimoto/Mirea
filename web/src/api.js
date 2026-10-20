@@ -1,5 +1,6 @@
 import { Capacitor } from '@capacitor/core';
 import { createResumableUpload } from './resumable-upload.js';
+import { beginUpdateActivity } from './update-busy.js';
 
 export const native = Capacitor.isNativePlatform();
 let endpoint = native ? (localStorage.getItem('mirea.server') || import.meta.env.VITE_API_URL || '') : '';
@@ -64,9 +65,14 @@ export async function authenticatedBlob(path, signal) {
 
 export function upload(shelfId, files, title, onProgress, options) {
   const token = session?.token;
-  return createResumableUpload({ endpoint, token, userId: session?.user?.id, unauthorized: () => {
+  const release = beginUpdateActivity();
+  let task;
+  try { task = createResumableUpload({ endpoint, token, userId: session?.user?.id, unauthorized: () => {
     if (session?.token !== token) return;
     setSession(null);
     window.dispatchEvent(new Event('mirea:unauthorized'));
-  } }, shelfId, files, title, onProgress, options);
+  } }, shelfId, files, title, onProgress, options); }
+  catch (error) { release(); throw error; }
+  task.promise = task.promise.finally(release);
+  return task;
 }
