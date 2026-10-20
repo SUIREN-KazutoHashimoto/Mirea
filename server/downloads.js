@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { httpError } from './security.js';
 import { IMAGE_BOOK_MIME,imageExtension } from './media.js';
 import { EPUB_MIME, EPUB_BUNDLE_MIME } from './ebook-types.js';
+import { isAudio } from './audio-types.js';
 import { videoMetadata } from './video-stream.js';
 
 const CHUNK=1024*1024;
@@ -63,7 +64,7 @@ export async function registerDownloads(app,{db,dataDir,uploadDir,booksDir,video
       if(!info.isFile() || info.size!==file.size)throw httpError(409,'原本のサイズが変更されています。');
       Object.assign(file,{index,chunks:Math.ceil(file.size/CHUNK),stamp:info.mtimeMs});
     }
-    return {version:1,algorithm:'AES-256-GCM',chunkSize:CHUNK,assetId:item.id,title:item.title,kind:item.mime_type===IMAGE_BOOK_MIME?'image-book':item.mime_type===EPUB_MIME?'epub':item.mime_type==='application/pdf'?'pdf':'video',pageCount:item.page_count,files};
+    return {version:1,algorithm:'AES-256-GCM',chunkSize:CHUNK,assetId:item.id,title:item.title,kind:item.mime_type===IMAGE_BOOK_MIME?'image-book':item.mime_type===EPUB_MIME?'epub':item.mime_type==='application/pdf'?'pdf':isAudio(item.mime_type)?'audio':'video',pageCount:item.page_count,files};
   }
   const publicManifest=(row,manifest)=>({...manifest,id:row.id,files:manifest.files.map(({stamp,...file})=>file)});
   async function validateSource(row,item){

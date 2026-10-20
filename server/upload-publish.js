@@ -5,6 +5,8 @@ import { httpError, matchesFileType } from './security.js';
 import { IMAGE_TYPES, IMAGE_BOOK_MIME, imageExtension, removeItemDirectory } from './media.js';
 import { EPUB_MIME } from './ebook-types.js';
 import { isVideo } from './video-types.js';
+import { isAudio } from './audio-types.js';
+import { publishAudio } from './audio-publish.js';
 import { publishVideo } from './video-publish.js';
 
 // Only fully verified media is published. An upload ID also becomes its item ID,
@@ -19,6 +21,7 @@ export async function publishStagedUpload(context, upload, authorize) {
   const existing = db.prepare('SELECT * FROM items WHERE id=?').get(id);
   if (existing) return publicItem(existing);
   if (isVideo(files[0].mime)) return publishVideo(context, upload, authorize);
+  if (isAudio(files[0].mime)) return publishAudio(context, upload, authorize);
   const isBook = IMAGE_TYPES.includes(files[0].mime);
   const isEpub = files[0].mime === EPUB_MIME;
   const pages = [];

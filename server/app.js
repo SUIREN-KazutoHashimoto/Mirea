@@ -23,9 +23,11 @@ import { registerSeries, shelfSeries, shelfSeriesMembership } from './series.js'
 import { registerAccounts } from './accounts.js';
 import { EPUB_MIME, EPUB_BUNDLE_MIME, MAX_EPUB_BYTES } from './ebook-types.js';
 import packageInfo from '../package.json' with {type:'json'};
-import { VIDEO_TYPES, isVideo } from './video-types.js';
+import { VIDEO_TYPES } from './video-types.js';
 import { createVideoTranscoder } from './video-transcode.js';
 import { registerVideoStreams, videoMetadata } from './video-stream.js';
+import { AUDIO_TYPES, isAudio, isTimedMime } from './audio-types.js';
+import { createAudioTranscoder } from './audio-transcode.js';
 import { registerAppUpdates } from './app-updates.js';
 
 const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -39,7 +41,7 @@ const memberRole = { type: 'string', enum: ['editor', 'viewer'] };
 const publicUser = u => ({ id: u.id, email: u.email, name: u.name });
 const publicItem = i => ({
   id: i.id, shelfId: i.shelf_id, title: i.title, filename: i.filename, mimeType: i.mime_type,
-  kind: i.mime_type === IMAGE_BOOK_MIME ? 'image-book' : i.mime_type === EPUB_MIME ? 'epub' : i.mime_type === 'application/pdf' ? 'pdf' : 'video',
+  kind: i.mime_type === IMAGE_BOOK_MIME ? 'image-book' : i.mime_type === EPUB_MIME ? 'epub' : i.mime_type === 'application/pdf' ? 'pdf' : isAudio(i.mime_type) ? 'audio' : 'video',
   pageCount: i.page_count, thumbnailUrl: `/api/v1/items/${i.id}/thumbnail`, size: i.size, createdAt: i.created_at
 });
 
@@ -54,6 +56,7 @@ export async function createApp(options = {}) {
   const db = openDatabase(join(dataDir, 'mirea.sqlite'));
   const media = options.mediaProcessor ?? createMediaProcessor();
   const videoTranscoder=options.videoTranscoder??createVideoTranscoder();
+  const audioTranscoder=options.audioTranscoder??createAudioTranscoder();
   const ensureThumbnail = createThumbnailStore(db, media, uploadDir, thumbnailDir);
   const maxUploadBytes = Number(options.maxUploadBytes ?? process.env.MAX_UPLOAD_BYTES ?? 2147483648);
   if (!Number.isSafeInteger(maxUploadBytes) || maxUploadBytes <= 0) throw new Error('Invalid MAX_UPLOAD_BYTES');
@@ -209,9 +212,9 @@ export async function createApp(options = {}) {
     return { shelf: { ...shelf, role }, series:shelfSeries(db,req.params.id), items: db.prepare('SELECT * FROM items WHERE shelf_id=? ORDER BY created_at DESC, id').all(req.params.id).map(item=>({...publicItem(item),series:series.get(item.id)??null,progress:progress.get(item.id)??null})) };
   });
   const uploads = await registerResumableUploads(app, {
-    db, media, videoTranscoder, uploadDir, stagingDir, booksDir, thumbnailDir, videoDir, originalDir, previewDir, authenticate, membership, maxUploadBytes, chunkSize, publicItem
+    db, media, videoTranscoder, audioTranscoder, uploadDir, stagingDir, booksDir, thumbnailDir, videoDir, originalDir, previewDir, authenticate, membership, maxUploadBytes, chunkSize, publicItem
   });
-  app.addHook('onClose',async()=>videoTranscoder.close());
+  app.addHook('onClose',async()=>{videoTranscoder.close();audioTranscoder.close();});
   registerVideoStreams(app,{db,videoDir,authenticate,findItem});
   registerAccounts(app, { db, authenticate, membership, loginResult, cleanupUploads: uploads.cleanupUploads, rateLimit: options.rateLimit });
   const videoPreviews = await registerVideoPreviews(app, { db, media, dataDir, uploadDir, authenticate, findItem });
@@ -240,13 +243,13 @@ export async function createApp(options = {}) {
           continue;
         }
         const isImage = IMAGE_TYPES.includes(part.mimetype);
-        if (part.fieldname !== 'file' || !['application/pdf', EPUB_MIME, ...VIDEO_TYPES, ...IMAGE_TYPES].includes(part.mimetype)) {
+        if (part.fieldname !== 'file' || !['application/pdf', EPUB_MIME, ...VIDEO_TYPES, ...AUDIO_TYPES, ...IMAGE_TYPES].includes(part.mimetype)) {
           part.file.resume();
-          throw httpError(415, 'PDF・EPUB・MP4・WebM、またはJPEG・PNG・WebP画像を選択してください。');
+          throw httpError(415, 'PDF・EPUB・動画・音声、またはJPEG・PNG・WebP画像を選択してください。');
         }
         if (files.length && (!isImage || !isImageBook)) {
           part.file.resume();
-          throw httpError(400, 'PDF・EPUB・動画は1ファイルずつ、画像の本は画像だけを選択してください。');
+          throw httpError(400, 'PDF・EPUB・動画・音声は1ファイルずつ、画像の本は画像だけを選択してください。');
         }
         isImageBook = isImage;
         const number = files.length + 1;
@@ -281,9 +284,9 @@ export async function createApp(options = {}) {
       const uploaded = files[0];
       title = (title || uploaded.filename.replace(/\.[^.]+$/, '')).trim();
       if (!title || title.length > 200) throw httpError(400, 'タイトルは1〜200文字で入力してください。');
-      if(isVideo(uploaded.mime)){
+      if(isTimedMime(uploaded.mime)){
         authenticate(req);membership(req.params.id,req.user.id,['owner','editor']);
-        const item=await uploads.publishMultipartVideo({id,shelfId:req.params.id,userId:req.user.id,sessionId:req.session.id,title,file:uploaded,retainOriginal});
+        const item=await uploads.publishMultipartMedia({id,shelfId:req.params.id,userId:req.user.id,sessionId:req.session.id,title,file:uploaded,retainOriginal});
         return reply.code(201).send({item});
       }
       const thumbnail = await media.thumbnail(join(stage, isImageBook ? `1.${imageExtension(uploaded.mime)}` : 'raw-1'), uploaded.mime, join(stage, 'thumbnail.jpg'), uploaded.mime===EPUB_MIME?join(stage,'book.json'):undefined);

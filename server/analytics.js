@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { transaction } from './database.js';
 import { httpError } from './security.js';
 import { IMAGE_BOOK_MIME } from './media.js';
+import { isAudio, isTimedKind } from './audio-types.js';
 import { EPUB_MIME } from './ebook-types.js';
 
 const DAY = 86400000, MAX_SESSION = 7 * DAY, BIN_MS = 10000;
@@ -23,7 +24,7 @@ const properties = {
   errorCode: { enum: ['network','decode','render','load','unknown'] }
 };
 const canonical = event => JSON.stringify(Object.fromEntries(Object.keys(event).sort().map(key => [key, event[key]])));
-const kindOf = item => item.mime_type === IMAGE_BOOK_MIME ? 'image-book' : item.mime_type === EPUB_MIME ? 'epub' : item.mime_type === 'application/pdf' ? 'pdf' : 'video';
+const kindOf = item => item.mime_type === IMAGE_BOOK_MIME ? 'image-book' : item.mime_type === EPUB_MIME ? 'epub' : item.mime_type === 'application/pdf' ? 'pdf' : isAudio(item.mime_type) ? 'audio' : 'video';
 
 export async function registerAnalytics(app, { db, authenticate, membership, findItem, options }) {
   const enabled = options.analyticsEnabled ?? process.env.ANALYTICS_ENABLED !== 'false';
@@ -38,23 +39,23 @@ export async function registerAnalytics(app, { db, authenticate, membership, fin
     if (event.elapsedMs < intervalMs || activeMs > visibleMs || visibleMs > intervalMs || watchMs > activeMs) throw httpError(422, '閲覧時間の関係が不正です。');
     if (event.type !== 'interval' && (intervalMs || visibleMs || activeMs || watchMs)) throw httpError(422, '区間以外のイベントに時間は指定できません。');
     if (event.type === 'interval' && !intervalMs) throw httpError(422, '区間の長さが必要です。');
-    if (event.page !== undefined && (view.asset_kind === 'video' || event.page > view.page_count)) throw httpError(422, 'ページ番号が不正です。');
+    if (event.page !== undefined && (isTimedKind(view.asset_kind) || event.page > view.page_count)) throw httpError(422, 'ページ番号が不正です。');
     if (visibleMs && !event.visible || activeMs && (!event.focused || event.idle)) throw httpError(422, '非表示・非アクティブな時間は加算できません。');
-    if (view.asset_kind !== 'video') {
-      if (watchMs || event.fromMs !== undefined || event.toMs !== undefined || event.durationMs !== undefined) throw httpError(422, '本に動画の再生位置は指定できません。');
+    if (!isTimedKind(view.asset_kind)) {
+      if (watchMs || event.fromMs !== undefined || event.toMs !== undefined || event.durationMs !== undefined) throw httpError(422, '本に動画・音声の再生位置は指定できません。');
       if ((visibleMs || event.type === 'page_enter' || event.type === 'view_start') && !event.page) throw httpError(422, '表示したページが必要です。');
     }
     if (watchMs) {
       const delta = event.toMs - event.fromMs;
       if (!event.playing || event.seeking || event.buffering || !Number.isFinite(delta) || delta <= 0 || delta > intervalMs * (event.rate ?? 1) * 1.5 + 300) throw httpError(422, 'シーク・停止中の区間を視聴時間には加算できません。');
     }
-    if (event.type === 'view_start' && (!event.visible || !event.focused || (view.asset_kind === 'video' && (!event.playing || event.buffering || event.seeking)))) throw httpError(422, '実際に表示・再生した状態が必要です。');
+    if (event.type === 'view_start' && (!event.visible || !event.focused || (isTimedKind(view.asset_kind) && (!event.playing || event.buffering || event.seeking)))) throw httpError(422, '実際に表示・再生した状態が必要です。');
   }
   const insert = db.prepare(`INSERT INTO analytics_events(event_id,view_id,seq,event_type,client_at,received_at,elapsed_ms,interval_ms,visible_ms,active_ms,watch_ms,from_ms,to_ms,page_number,payload_json,payload_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   function materialize(view, event, receivedAt) {
     db.prepare(`UPDATE analytics_views SET last_received_at=?,counted=MAX(counted,?),ended=MAX(ended,?),visible_ms=visible_ms+?,active_ms=active_ms+?,watch_ms=watch_ms+? WHERE id=?`)
       .run(receivedAt, event.type === 'view_start' ? 1 : 0, event.type === 'ended' ? 1 : 0, event.visibleMs, event.activeMs, event.watchMs, view.id);
-    if (view.asset_kind !== 'video' && event.page && (event.type === 'page_enter' || event.type === 'interval')) {
+    if (!isTimedKind(view.asset_kind) && event.page && (event.type === 'page_enter' || event.type === 'interval')) {
       db.prepare(`INSERT INTO analytics_pages VALUES(?,?,?,?,?) ON CONFLICT(view_id,page_number) DO UPDATE SET visits=visits+excluded.visits,visible_ms=visible_ms+excluded.visible_ms,active_ms=active_ms+excluded.active_ms`)
         .run(view.id, event.page, event.type === 'page_enter' ? 1 : 0, event.visibleMs, event.activeMs);
     }

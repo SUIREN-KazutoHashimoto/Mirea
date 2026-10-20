@@ -151,7 +151,7 @@ export function mountSeriesNavigation({node,body,item,api,esc,open,isCurrent,isA
       videoCleanup?.();
       const ended=()=>{if(!core.state.context)pendingEnd=video;else core.videoEnded();};
       const cancel=()=>{pendingEnd=null;core.cancel();};
-      const failure=()=>core.cancel('動画のエラーにより連続再生を停止しました。');
+      const failure=()=>core.cancel('メディアのエラーにより連続再生を停止しました。');
       videoCleanup=bindContinuationVideo(video,{autoplay,canAutoplay:()=>active() && core.state.enabled,onEnded:ended,onReset:cancel,onError:failure,
         onBlocked:reason=>core.notify(reason==='policy'?'自動再生が制限されました。プレーヤーの再生ボタンを押してください。':'自動再生を停止しました。再生ボタンで開始してください。')});
     },

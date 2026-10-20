@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { transaction } from './database.js';
+import { isTimedMime } from './audio-types.js';
 import { httpError } from './security.js';
 
 const uuid={type:'string',pattern:'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'};
@@ -26,9 +27,9 @@ export function registerProgress(app,{db,authenticate,findItem,options}) {
     }}}
   },async req=>{
     const item=findItem(req.params.id,req.user.id),input=req.body;
-    const video=item.mime_type.startsWith('video/');
+    const video=isTimedMime(item.mime_type);
     if(video){
-      if(input.positionMs===undefined || input.durationMs===undefined || input.positionMs>input.durationMs || ['page','scrollX','scrollY','zoom'].some(key=>input[key]!==undefined)) throw httpError(422,'動画の再開位置が不正です。');
+      if(input.positionMs===undefined || input.durationMs===undefined || input.positionMs>input.durationMs || ['page','scrollX','scrollY','zoom'].some(key=>input[key]!==undefined)) throw httpError(422,'動画・音声の再開位置が不正です。');
     }else if(input.page===undefined || input.page>item.page_count || input.positionMs!==undefined || input.durationMs!==undefined) throw httpError(422,'本の再開位置が不正です。');
     const state=video?{positionMs:input.positionMs,durationMs:input.durationMs}:{page:input.page,scrollX:input.scrollX??0,scrollY:input.scrollY??0,zoom:input.zoom??'fit'};
     const hash=createHash('sha256').update(JSON.stringify({revision:input.revision,...state})).digest('hex');

@@ -88,8 +88,8 @@ export function trackAsset(assetId, context = 'viewer') {
     zoom(scale) { recorder.change('zoom',()=>{ zoom=scale; lastInput=performance.now(); },{ reason:'zoom' }); },
     viewport(reason='scroll') { recorder.change('viewport',()=>{ lastInput=performance.now(); },{ reason }); },
     error() { recorder.change('error',()=>{ rendered=false; },{ errorCode:'load', reason:'error' }); },
-    video(node) {
-      video=node; element=node;
+    video(node, surface = node) {
+      video=node; element=surface;
       for (const [name,type] of Object.entries({loadeddata:'ready',playing:'play',pause:'pause',seeking:'seeking',seeked:'seeked',ended:'ended',ratechange:'rate_change',waiting:'buffering',stalled:'buffering',volumechange:'viewport',emptied:'page_loading',error:'error'})) {
         listen(node,name,()=>recorder.change(type,()=>{
           if (name==='loadeddata') rendered=true;

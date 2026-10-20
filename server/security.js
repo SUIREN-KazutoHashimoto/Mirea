@@ -43,6 +43,15 @@ export function parseRange(header, size) {
 }
 
 export function matchesFileType(mime, head) {
+  if (['audio/mp4','audio/x-m4a'].includes(mime)) return matchesFileType('video/mp4',head);
+  if (['audio/mpeg','audio/mp3'].includes(mime)) return head.subarray(0,3).toString()==='ID3' || head.length>=2 && head[0]===0xff && (head[1]&0xe0)===0xe0 && (head[1]&0x06)!==0;
+  if (mime==='audio/aac') return head.length>=2 && head[0]===0xff && (head[1]&0xf6)===0xf0;
+  if (['audio/wav','audio/x-wav','audio/wave'].includes(mime)) return head.length>=12 && ['RIFF','RF64'].includes(head.subarray(0,4).toString()) && head.subarray(8,12).toString()==='WAVE';
+  if (['audio/flac','audio/x-flac'].includes(mime)) return head.subarray(0,4).toString()==='fLaC' || head.subarray(0,3).toString()==='ID3';
+  if (['audio/ogg','audio/opus'].includes(mime)) return head.subarray(0,4).toString()==='OggS';
+  if (['audio/aiff','audio/x-aiff'].includes(mime)) return head.length>=12 && head.subarray(0,4).toString()==='FORM' && ['AIFF','AIFC'].includes(head.subarray(8,12).toString());
+  if (mime==='audio/x-ms-wma') return matchesFileType('video/x-ms-asf',head);
+  if (mime==='audio/webm') return matchesFileType('video/webm',head);
   if (mime === 'application/epub+zip') return head.length >= 4 && head.subarray(0,4).equals(Buffer.from([0x50,0x4b,3,4]));
   if (mime === 'application/pdf') return head.subarray(0, 5).toString() === '%PDF-';
   if (mime === 'video/mp4') return head.length >= 12 && head.subarray(4, 8).toString() === 'ftyp';

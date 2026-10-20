@@ -8,10 +8,11 @@ import { httpError } from './security.js';
 import { IMAGE_TYPES, MAX_BOOK_PAGES, MAX_IMAGE_BYTES, removeItemDirectory } from './media.js';
 import { EPUB_MIME, MAX_EPUB_BYTES } from './ebook-types.js';
 import { publishStagedUpload } from './upload-publish.js';
-import { VIDEO_TYPES, isVideo } from './video-types.js';
+import { VIDEO_TYPES } from './video-types.js';
+import { AUDIO_TYPES, isTimedMime } from './audio-types.js';
 
 const UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
-const MIME_TYPES = ['application/pdf', EPUB_MIME, ...VIDEO_TYPES, ...IMAGE_TYPES];
+const MIME_TYPES = ['application/pdf', EPUB_MIME, ...VIDEO_TYPES, ...AUDIO_TYPES, ...IMAGE_TYPES];
 const integer = { type: 'integer', minimum: 0 };
 
 export async function registerResumableUploads(app, context) {
@@ -41,7 +42,7 @@ export async function registerResumableUploads(app, context) {
     return {
       id: upload.id, state: upload.state, chunkSize: upload.chunk_size, expiresAt: upload.expires_at,
       title: upload.title, retainOriginal: Boolean(upload.retain_original), processing: JSON.parse(upload.processing_json),
-      sourceRetained: upload.state === 'failed' && isVideo(JSON.parse(upload.files_json)[0].mime),
+      sourceRetained: upload.state === 'failed' && isTimedMime(JSON.parse(upload.files_json)[0].mime),
       receivedBytes: parts.reduce((sum, part) => sum + part.size, 0),
       files: detail?JSON.parse(upload.files_json).map((file, index) => {
         const received = parts.filter(part => part.file_index === index);
@@ -101,10 +102,10 @@ export async function registerResumableUploads(app, context) {
           error.statusCode ? error.message : 'メディアの保存に失敗しました。選択し直してください。', id);
         app.log.error({ err: error, uploadId: id }, 'Upload processing failed');
       } finally {
-        // A failed video remains retryable indefinitely. Never sweep its source
+        // A failed timed-media job remains retryable indefinitely. Never sweep its source
         // just because the 24-hour *transfer* deadline elapsed.
         const state=get(id)?.state;
-        if (!state || state==='complete' || state==='cancelled' || state==='failed'&&!isVideo(JSON.parse(upload.files_json)[0].mime)) await discard(id);
+        if (!state || state==='complete' || state==='cancelled' || state==='failed'&&!isTimedMime(JSON.parse(upload.files_json)[0].mime)) await discard(id);
       }
     }).catch(error => { app.log.error({ err: error, uploadId: id }, 'Upload cleanup failed'); });
     queue = job;
@@ -114,7 +115,7 @@ export async function registerResumableUploads(app, context) {
   }
   async function sweep() {
     for (const row of db.prepare("SELECT id,state,files_json FROM upload_sessions WHERE expires_at<=? AND state != 'processing'").all(Date.now())) {
-      if(row.state==='failed'&&isVideo(JSON.parse(row.files_json)[0].mime))continue;
+      if(row.state==='failed'&&isTimedMime(JSON.parse(row.files_json)[0].mime))continue;
       if (jobs.has(row.id) || locked.has(row.id)) continue;
       await exclusive(row.id, async () => {
         await discard(row.id);
@@ -150,7 +151,7 @@ export async function registerResumableUploads(app, context) {
     const title = req.body.title.trim(), files = req.body.files;
     if (files.some(file=>file.mime===EPUB_MIME && file.size>MAX_EPUB_BYTES)) throw httpError(413,'EPUBは64 MiB以下にしてください。');
     if (!title) throw httpError(400, 'タイトルを入力してください。');
-    if (files.length > 1 && !files.every(file => IMAGE_TYPES.includes(file.mime))) throw httpError(400, '画像の本は画像だけを選択してください。PDF・EPUB・動画は1ファイルずつ登録します。');
+    if (files.length > 1 && !files.every(file => IMAGE_TYPES.includes(file.mime))) throw httpError(400, '画像の本は画像だけを選択してください。PDF・EPUB・動画・音声は1ファイルずつ登録します。');
     if (files.some(file => IMAGE_TYPES.includes(file.mime) && file.size > MAX_IMAGE_BYTES) || files.reduce((sum, file) => sum + file.size, 0) > maxUploadBytes) {
       throw httpError(413, 'アップロードの合計、または画像1枚のサイズ上限を超えています。');
     }
@@ -162,7 +163,7 @@ export async function registerResumableUploads(app, context) {
       // requests cannot all pass the per-user active-upload limit.
       db.prepare(`INSERT INTO upload_sessions(id,shelf_id,user_id,session_id,title,files_json,chunk_size,state,created_at,expires_at,retain_original)
         VALUES(?,?,?,?,?,?,?,'uploading',?,?,?)`).run(id, req.params.id, req.user.id, req.session.id, title,
-        JSON.stringify(files.map(file => ({ ...file, filename: file.filename.replaceAll('\\', '/').split('/').pop() || 'file' }))), chunkSize, now, now + UPLOAD_TTL_MS, req.body.retainOriginal && isVideo(files[0].mime)?1:0);
+        JSON.stringify(files.map(file => ({ ...file, filename: file.filename.replaceAll('\\', '/').split('/').pop() || 'file' }))), chunkSize, now, now + UPLOAD_TTL_MS, req.body.retainOriginal && isTimedMime(files[0].mime)?1:0);
       await mkdir(join(transferDir, id), { mode: 0o700 });
       authenticate(req);
       membership(req.params.id, req.user.id, ['owner', 'editor']);
@@ -174,7 +175,7 @@ export async function registerResumableUploads(app, context) {
   app.post('/api/v1/uploads/:id/retry', auth, async(req,reply)=>{
     await exclusive(req.params.id,async()=>{
       const upload=owned(req);
-      if(upload.state!=='failed'||!isVideo(JSON.parse(upload.files_json)[0].mime))throw httpError(409,'再試行できる動画ではありません。');
+      if(upload.state!=='failed'||!isTimedMime(JSON.parse(upload.files_json)[0].mime))throw httpError(409,'再試行できる動画・音声ではありません。');
       if(jobs.has(upload.id))throw httpError(409,'直前の処理を終了しています。少し待って再試行してください。');
       db.prepare("UPDATE upload_sessions SET state='processing',error=NULL,session_id=?,processing_json='{}' WHERE id=?").run(req.session.id,upload.id);
       schedule(upload.id);
@@ -257,7 +258,7 @@ export async function registerResumableUploads(app, context) {
   return {
     // Compatibility API: multipart clients enter the same durable, serialized
     // processing path as resumable uploads; they cannot bypass normalization.
-    async publishMultipartVideo({id,shelfId,userId,sessionId,title,file,retainOriginal}) {
+    async publishMultipartMedia({id,shelfId,userId,sessionId,title,file,retainOriginal}) {
       const now=Date.now();
       db.prepare(`INSERT INTO upload_sessions(id,shelf_id,user_id,session_id,title,files_json,chunk_size,state,created_at,expires_at,retain_original)
         VALUES(?,?,?,?,?,?,?,'uploading',?,?,?)`).run(id,shelfId,userId,sessionId,title,JSON.stringify([file]),chunkSize,now,now+UPLOAD_TTL_MS,retainOriginal?1:0);
@@ -275,7 +276,7 @@ export async function registerResumableUploads(app, context) {
         db.prepare("UPDATE upload_sessions SET state='processing' WHERE id=?").run(id);
         await schedule(id);
         const state=get(id);
-        if(state.state!=='complete')throw httpError(422,`${state.error||'動画を変換できませんでした。'} 処理状況から再試行できます。`);
+        if(state.state!=='complete')throw httpError(422,`${state.error||'メディアを変換できませんでした。'} 処理状況から再試行できます。`);
         return publicItem(db.prepare('SELECT * FROM items WHERE id=?').get(id));
       }catch(error){if(get(id)?.state==='uploading'){await discard(id);db.prepare('DELETE FROM upload_sessions WHERE id=?').run(id);}throw error;}
     },

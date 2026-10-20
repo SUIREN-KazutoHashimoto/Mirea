@@ -79,7 +79,7 @@ export function openDatabase(filename) {
         UPDATE schema_version SET version = 2;
       `));
     } finally { db.exec('PRAGMA foreign_keys = ON'); }
-  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
+  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
   if (version < 10) {
     // v10 adds EPUB while retaining v9's nullable uploader attribution.
     // Account deletion removes attribution, not another member's shared assets.
@@ -106,6 +106,33 @@ export function openDatabase(filename) {
         ALTER TABLE items_v10 RENAME TO items;
         CREATE INDEX items_shelf ON items(shelf_id,created_at);
         UPDATE schema_version SET version=10;
+      `));
+    } finally { db.exec('PRAGMA foreign_keys = ON'); }
+  }
+
+  if (version < 12) {
+    // Replace only the MIME constraint; preserve all dependent IDs and rows.
+    db.exec('PRAGMA foreign_keys = OFF');
+    try {
+      transaction(db, () => db.exec(`
+        DROP TRIGGER IF EXISTS series_same_shelf_insert;
+        DROP TRIGGER IF EXISTS series_same_shelf_update;
+        DROP TRIGGER IF EXISTS series_asset_shelf_update;
+        DROP TRIGGER IF EXISTS series_shelf_update;
+        DROP TRIGGER IF EXISTS series_asset_removed;
+        CREATE TABLE items_v12 (
+          id TEXT PRIMARY KEY, shelf_id TEXT NOT NULL REFERENCES shelves(id) ON DELETE CASCADE,
+          title TEXT NOT NULL, filename TEXT NOT NULL,
+          mime_type TEXT NOT NULL CHECK(mime_type IN ('application/pdf','video/mp4','video/webm','application/vnd.mirea.image-book','application/epub+zip','audio/mp4')),
+          size INTEGER NOT NULL CHECK(size > 0), uploaded_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+          created_at INTEGER NOT NULL, page_count INTEGER NOT NULL DEFAULT 1 CHECK(page_count > 0),
+          thumbnail_ready INTEGER NOT NULL DEFAULT 0 CHECK(thumbnail_ready IN (0,1))
+        );
+        INSERT INTO items_v12 SELECT * FROM items;
+        DROP TABLE items;
+        ALTER TABLE items_v12 RENAME TO items;
+        CREATE INDEX items_shelf ON items(shelf_id,created_at);
+        UPDATE schema_version SET version=12;
       `));
     } finally { db.exec('PRAGMA foreign_keys = ON'); }
   }
@@ -267,7 +294,12 @@ export function openDatabase(filename) {
       metadata_json TEXT NOT NULL,
       original_retained INTEGER NOT NULL CHECK(original_retained IN (0,1))
     );
-    UPDATE schema_version SET version=11;
+    CREATE TABLE IF NOT EXISTS audio_assets (
+      item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+      metadata_json TEXT NOT NULL,
+      original_retained INTEGER NOT NULL CHECK(original_retained IN (0,1))
+    );
+    UPDATE schema_version SET version=12;
   `);
   // Multiple devices may save different qualities. Preserve every old manifest
   // ID/key binding while removing the former one-registration-per-asset limit.

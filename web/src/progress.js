@@ -1,3 +1,4 @@
+import { isTimedKind } from '../../server/audio-types.js';
 import { getSession,getEndpoint } from './api.js';
 import { createProgressSync,resumeVideoMs } from './progress-core.js';
 
@@ -58,7 +59,7 @@ export async function openProgress(item,{status=()=>{},saved=()=>{}}={}){
   // If an acknowledgement was lost, retain its exact request ID/revision.
   // A concurrent remote change will return 409 instead of rewinding progress.
   if(queued?.pending)revision=queued.pending.revision;
-  const lastValue=initial?(item.kind==='video'?{positionMs:initial.positionMs,durationMs:initial.durationMs}:{page:initial.page,scrollX:initial.scrollX,scrollY:initial.scrollY,zoom:initial.zoom}):null;
+  const lastValue=initial?(isTimedKind(item.kind)?{positionMs:initial.positionMs,durationMs:initial.durationMs}:{page:initial.page,scrollX:initial.scrollX,scrollY:initial.scrollY,zoom:initial.zoom}):null;
   const sync=createProgressSync({revision,pending:queued?.pending,desired:queued?.desired,lastValue,read,send,persist:cache.write,status,saved});
   let disposed=false,snapshot=()=>null;
   const listeners=[];

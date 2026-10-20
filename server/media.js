@@ -6,6 +6,8 @@ import { join, resolve, sep } from 'node:path';
 import bundledFfmpeg from 'ffmpeg-static';
 import { httpError } from './security.js';
 import { EPUB_MIME } from './ebook-types.js';
+import { isAudio } from './audio-types.js';
+import { audioPlaceholder } from './audio-art.js';
 import { mediaBinary } from './media-binary.js';
 
 export const IMAGE_BOOK_MIME = 'application/vnd.mirea.image-book';
@@ -107,6 +109,7 @@ export function createMediaProcessor() {
     },
     thumbnail(source, mime, destination, bundlePath) {
       return enqueue(async () => {
+        if (isAudio(mime)) { await audioPlaceholder(destination); return { pageCount: 1 }; }
         if (mime.startsWith('video/')) {
           // Sample at most 30 frames from the opening 2.5 seconds. At EOF,
           // thumbnail uses the available batch, even for a single-frame clip;

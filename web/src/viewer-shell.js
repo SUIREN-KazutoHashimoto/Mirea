@@ -1,10 +1,10 @@
 export function createViewerScreen({ title, kind, onClose, doc = document }) {
   const previousFocus = doc.activeElement, app = doc.querySelector('#app'), wasInert = app?.inert;
-  const node = doc.createElement('section'); node.className = `viewer-screen ${kind === 'video' ? 'video-screen' : 'book-screen'}`;
+  const node = doc.createElement('section'); node.className = `viewer-screen ${kind === 'audio' ? 'audio-screen' : kind === 'video' ? 'video-screen' : 'book-screen'}`;
   node.setAttribute('role', 'dialog'); node.setAttribute('aria-modal', 'true'); node.setAttribute('aria-label', title); node.tabIndex = -1;
   node.dataset.chrome = 'hidden';
   node.innerHTML = '<div class="viewer-top" data-viewer-chrome><header class="viewer-header"><button class="viewer-back" type="button" aria-label="ライブラリへ戻る">← <span>ライブラリ</span></button><div><small></small><h1></h1></div><button class="viewer-fullscreen icon-button" type="button" aria-label="全画面を切り替える">⛶</button></header><div class="viewer-meta"></div><div class="viewer-tools"></div></div><div class="viewer-body"></div><button class="viewer-chrome-toggle" type="button" aria-label="操作メニューを表示" aria-expanded="false">•••</button>';
-  node.querySelector('h1').textContent = title; node.querySelector('small').textContent = kind === 'video' ? 'MIREA / WATCH' : 'MIREA / READ';
+  node.querySelector('h1').textContent = title; node.querySelector('small').textContent = kind === 'audio' ? 'MIREA / LISTEN' : kind === 'video' ? 'MIREA / WATCH' : 'MIREA / READ';
   let closed = false; node.open = true;
   const previousOverflow = doc.body.style.overflow;
   const fullscreen = () => { const operation = doc.fullscreenElement ? doc.exitFullscreen?.() : node.requestFullscreen?.(); operation?.catch?.(() => {}); };

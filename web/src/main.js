@@ -1,6 +1,7 @@
 import './style.css';
 import './workspace.css';
 import './immersive.css';
+import './audio-player.css';
 import { api, native, getEndpoint, setEndpoint, getSession, setSession, upload, absoluteUrl, authenticatedBlob } from './api.js';
 import { openImageBook } from './image-reader.js';
 import { App } from '@capacitor/app';
@@ -14,6 +15,7 @@ import { createTheme } from './theme.js';
 import { openSettings } from './settings.js';
 import { createViewerScreen } from './viewer-shell.js';
 import { mountVideoPlayer } from './video-player.js';
+import { AUDIO_EXTENSIONS, isTimedKind } from '../../server/audio-types.js';
 import { VIDEO_EXTENSIONS } from '../../server/video-types.js';
 import { beginUpdateActivity } from './update-busy.js';
 import { initializeAppUpdates, refreshAppUpdates, appUpdatesEndpointChanged, mountAppUpdates, openAppUpdates } from './app-updates.js';
@@ -32,6 +34,7 @@ const icons = {
   upload: '<path d="M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5"/>',
   book: '<path d="M4 3h12l4 4v14H4zM16 3v5h4M8 12h8M8 16h6"/>',
   video: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="m10 8 6 4-6 4z"/>',
+  audio: '<path d="M9 18V5l11-2v13M9 8l11-2"/><ellipse cx="6" cy="18" rx="3" ry="2"/><ellipse cx="17" cy="16" rx="3" ry="2"/>',
   users: '<circle cx="9" cy="8" r="3"/><path d="M3 21v-2a6 6 0 0 1 12 0v2m1-16a3 3 0 0 1 0 6m2 4a5 5 0 0 1 3 5"/>',
   close: '<path d="m6 6 12 12M6 18 18 6"/>',
   logout: '<path d="M9 4H4v16h5m6-13 5 5-5 5M8 12h12"/>',
@@ -134,9 +137,9 @@ function renderAuth(register = false) {
   closeDownloads();
   clearThumbnails();
   root.innerHTML = `<main class="auth-layout"><section class="auth-story"><a class="brand" href="/" aria-label="Mirea ホーム"><span class="brand-mark">m</span>Mirea<span class="brand-dot">.</span></a>
-    <div class="auth-story-copy"><span class="eyebrow">YOUR SHARED MEDIA LIBRARY</span><h1>見たい。読みたい。<br>そのすべてを、<br><span>ひとつの本棚に。</span></h1><p>お気に入りの動画も、大切な一冊も。<br>あなただけの場所に集めて、必要な人と共有しよう。</p></div>
+    <div class="auth-story-copy"><span class="eyebrow">YOUR SHARED MEDIA LIBRARY</span><h1>見たい。読みたい。<br>そのすべてを、<br><span>ひとつの本棚に。</span></h1><p>お気に入りの動画も、大切な一冊も、好きな音楽も。<br>あなただけの場所に集めて、必要な人と共有しよう。</p></div>
     <div class="auth-art" aria-hidden="true"><div class="art-book">${icon('book')}<span>A space<br>for your stories.</span><small>MIREA / LIBRARY</small></div><div class="art-video">${icon('video')}<div class="art-horizon"></div><small>WATCH. READ. SHARE.</small></div><div class="art-chip">${icon('users')} ひとつの本棚を、一緒に。</div></div>
-    <span class="auth-footer">動画と本の、あなたらしい居場所。</span></section>
+    <span class="auth-footer">動画と本と音楽の、あなたらしい居場所。</span></section>
     <section class="auth-form-area"><div class="auth-form-wrap"><span class="mobile-brand">Mirea.</span><span class="eyebrow">WELCOME TO MIREA</span><h2>${register ? 'アカウントを作成' : 'おかえりなさい。'}</h2><p class="muted">${register ? 'あなたのライブラリを、ここから始めましょう。' : 'ログインして、あなたの本棚を開きましょう。'}</p>
     <form id="auth-form">${native ? `<label>サーバーURL<input name="server" type="url" placeholder="https://mirea.example.com" value="${esc(getEndpoint())}" required autocomplete="url"><small>利用するMireaサーバーのHTTPS URL</small></label>` : ''}
       ${register ? '<label>表示名<input name="name" autocomplete="name" maxlength="80" required placeholder="例：水蓮 太郎"></label>' : ''}
@@ -180,13 +183,13 @@ function renderShell() {
   root.innerHTML = `<div class="app-layout"><aside class="sidebar"><a class="brand" href="/" aria-label="Mirea ホーム"><span class="brand-mark">m</span>Mirea<span class="brand-dot">.</span></a>
     <div class="workspace-label">MY WORKSPACE <span>PRIVATE</span></div><nav aria-label="ライブラリ"><button id="nav-all" class="nav-item">${icon('library')}<span>すべてのコンテンツ</span><span class="nav-count"></span></button>
     <div class="sidebar-heading"><span>本棚</span><button id="add-shelf" class="icon-button" aria-label="本棚を作成">${icon('plus')}</button></div><div id="shelf-nav"></div></nav>
-    <div class="sidebar-hint">${icon('users')}<strong>好きなものを、共有しよう。</strong><p>本棚にメンバーを追加して、<br>動画や本を一緒に楽しめます。</p></div>
+    <div class="sidebar-hint">${icon('users')}<strong>好きなものを、共有しよう。</strong><p>本棚にメンバーを追加して、<br>動画・本・音楽を一緒に楽しめます。</p></div>
     <button id="nav-settings" class="nav-item settings-nav">${icon('settings')}<span>設定</span></button><a class="nav-item apk-nav" href="${esc(config.androidApkUrl || defaultApkUrl)}" target="_blank" rel="noopener noreferrer">${icon('download')}<span>Androidアプリ</span></a>
     <div class="profile"><span class="avatar">${esc(user.name.slice(0, 1))}</span><div><strong>${esc(user.name)}</strong><small>${esc(user.email)}</small></div><button id="logout" class="icon-button" aria-label="ログアウト">${icon('logout')}</button></div></aside>
     <main class="main-content"><header class="topbar"><div class="breadcrumb">ワークスペース <span>/</span> <strong id="breadcrumb-title">ライブラリ</strong></div><span class="topbar-label">YOUR PERSONAL COLLECTION</span><button id="mobile-settings" class="icon-button mobile-settings" aria-label="設定">${icon('settings')}</button><button id="mobile-logout" class="icon-button mobile-logout" aria-label="ログアウト">${icon('logout')}</button></header>
-    <div class="content-wrap"><section class="page-heading"><div><span class="eyebrow">THE LIBRARY, REIMAGINED</span><h1 id="page-title">あなたのライブラリ<span class="title-dot">.</span></h1><p id="page-description">動画も本も、ここに。お気に入りを集めた、あなたの場所。</p></div><div class="heading-actions"><button class="button secondary" id="manage-members" hidden>${icon('users')}共有設定</button><button class="button secondary" id="upload-jobs">アップロード処理</button><button class="button primary" id="open-upload">${icon('plus')}コンテンツを追加</button></div></section>
-    <section class="library-overview" aria-label="ライブラリの概要"><div class="overview-message"><div class="overview-icon">${icon('shelf')}</div><div><span class="eyebrow">A LITTLE SPACE FOR BIG IDEAS</span><h2>好きな時間を、好きな本棚で。</h2><p>ひとりで楽しむ。みんなで分かち合う。</p></div></div><div class="stats"><div><strong id="stat-total">—</strong><span>コンテンツ</span></div><div><strong id="stat-book">—</strong><span>本</span></div><div><strong id="stat-video">—</strong><span>動画</span></div></div></section>
-    <section class="collection"><div class="collection-toolbar"><div class="tabs" role="group" aria-label="種類で絞り込み"><button data-filter="all" class="tab active">すべて <span id="count-all">0</span></button><button data-filter="book" class="tab">${icon('book')}本 <span id="count-book">0</span></button><button data-filter="video" class="tab">${icon('video')}動画 <span id="count-video">0</span></button></div><div class="collection-tools"><label class="search-field">${icon('search')}<input id="search" type="search" placeholder="タイトルで検索" aria-label="タイトルで検索"></label><label class="sr-only" for="sort">並び順</label><select id="sort"><option value="recent">追加が新しい順</option><option value="name">タイトル順</option></select></div></div><div class="collection-caption"><h2 id="collection-title">すべてのコンテンツ</h2><span id="result-count"></span></div><div id="items" class="item-grid" aria-live="polite"><p class="loading-state">ライブラリを読み込んでいます…</p></div></section>
+    <div class="content-wrap"><section class="page-heading"><div><span class="eyebrow">THE LIBRARY, REIMAGINED</span><h1 id="page-title">あなたのライブラリ<span class="title-dot">.</span></h1><p id="page-description">動画も本も音楽も、ここに。お気に入りを集めた、あなたの場所。</p></div><div class="heading-actions"><button class="button secondary" id="manage-members" hidden>${icon('users')}共有設定</button><button class="button secondary" id="upload-jobs">アップロード処理</button><button class="button primary" id="open-upload">${icon('plus')}コンテンツを追加</button></div></section>
+    <section class="library-overview" aria-label="ライブラリの概要"><div class="overview-message"><div class="overview-icon">${icon('shelf')}</div><div><span class="eyebrow">A LITTLE SPACE FOR BIG IDEAS</span><h2>好きな時間を、好きな本棚で。</h2><p>ひとりで楽しむ。みんなで分かち合う。</p></div></div><div class="stats"><div><strong id="stat-total">—</strong><span>コンテンツ</span></div><div><strong id="stat-book">—</strong><span>本</span></div><div><strong id="stat-video">—</strong><span>動画</span></div><div><strong id="stat-audio">—</strong><span>音声・音楽</span></div></div></section>
+    <section class="collection"><div class="collection-toolbar"><div class="tabs" role="group" aria-label="種類で絞り込み"><button data-filter="all" class="tab active">すべて <span id="count-all">0</span></button><button data-filter="book" class="tab">${icon('book')}本 <span id="count-book">0</span></button><button data-filter="video" class="tab">${icon('video')}動画 <span id="count-video">0</span></button><button data-filter="audio" class="tab">${icon('audio')}音声 <span id="count-audio">0</span></button></div><div class="collection-tools"><label class="search-field">${icon('search')}<input id="search" type="search" placeholder="タイトルで検索" aria-label="タイトルで検索"></label><label class="sr-only" for="sort">並び順</label><select id="sort"><option value="recent">追加が新しい順</option><option value="name">タイトル順</option></select></div></div><div class="collection-caption"><h2 id="collection-title">すべてのコンテンツ</h2><span id="result-count"></span></div><div id="items" class="item-grid" aria-live="polite"><p class="loading-state">ライブラリを読み込んでいます…</p></div></section>
     <footer class="library-footer"><span>Mirea<span class="brand-dot">.</span></span><span>あなたの物語が、ここにある。</span></footer></div></main></div>`;
   document.querySelector('#add-shelf').onclick = openCreateShelf;
   document.querySelector('#nav-all').onclick = () => selectShelf(null);
@@ -270,7 +273,7 @@ function renderNav() {
   document.querySelectorAll('[data-shelf]').forEach(button => { button.onclick = () => selectShelf(button.dataset.shelf); });
   document.querySelector('#page-title').innerHTML = `${esc(current?.name ?? 'あなたのライブラリ')}<span class="title-dot">.</span>`;
   document.querySelector('#breadcrumb-title').textContent = current?.name ?? 'ライブラリ';
-  document.querySelector('#page-description').textContent = current ? current.description || `${roleName[current.role]}として参加している本棚です。` : '動画も本も、ここに。お気に入りを集めた、あなたの場所。';
+  document.querySelector('#page-description').textContent = current ? current.description || `${roleName[current.role]}として参加している本棚です。` : '動画も本も音楽も、ここに。お気に入りを集めた、あなたの場所。';
   document.querySelector('#manage-members').hidden = current?.role !== 'owner';
   document.querySelector('#shelf-analytics').hidden = current?.role !== 'owner';
   document.querySelector('#open-upload').hidden = Boolean(current && current.role === 'viewer');
@@ -279,37 +282,39 @@ function renderItems() {
   const node = document.querySelector('#items');
   if (!node) return;
   clearThumbnails();
-  const bookCount = items.filter(i => i.kind !== 'video').length;
-  const videoCount = items.length - bookCount;
-  for (const [name, value] of Object.entries({ total: items.length, book: bookCount, video: videoCount })) document.querySelector(`#stat-${name}`).textContent = value;
+  const bookCount = items.filter(i => !isTimedKind(i.kind)).length;
+  const videoCount = items.filter(i => i.kind === 'video').length;
+  const audioCount = items.filter(i => i.kind === 'audio').length;
+  for (const [name, value] of Object.entries({ total: items.length, book: bookCount, video: videoCount, audio: audioCount })) document.querySelector(`#stat-${name}`).textContent = value;
   document.querySelector('#count-all').textContent = items.length;
   document.querySelector('#count-book').textContent = bookCount;
   document.querySelector('#count-video').textContent = videoCount;
+  document.querySelector('#count-audio').textContent = audioCount;
   document.querySelectorAll('[data-filter]').forEach(button => { button.classList.toggle('active', button.dataset.filter === filter); button.setAttribute('aria-pressed', button.dataset.filter === filter); });
   const selectedSeries=series.find(s=>s.id===activeSeries);
   const seriesSelect=document.querySelector('#series-filter');
   seriesSelect.innerHTML='<option value="">すべてのシリーズ・単独作品</option><option value="ungrouped">シリーズ未所属</option>'+series.map(s=>`<option value="${s.id}">${esc(s.title)}${activeShelf?'':` · ${esc(s.shelfName)}`} (${s.assetCount}件)</option>`).join('');
   seriesSelect.value=activeSeries;
   const manage=document.querySelector('#manage-series');manage.hidden=!shelves.some(s=>s.role!=='viewer');manage.textContent=selectedSeries && selectedSeries.role!=='viewer'?'このシリーズを編集':'シリーズを管理';
-  document.querySelector('#series-description').textContent=selectedSeries?`${selectedSeries.description ? selectedSeries.description+' · ' : ''}巻・話の設定順に表示しています。`:'本・動画をシリーズにまとめて、順番に楽しめます。';
+  document.querySelector('#series-description').textContent=selectedSeries?`${selectedSeries.description ? selectedSeries.description+' · ' : ''}巻・話の設定順に表示しています。`:'本・動画・音声をシリーズにまとめて、順番に楽しめます。';
   const sortSelect=document.querySelector('#sort');sortSelect.disabled=Boolean(selectedSeries);
   if(!sortSelect.querySelector('[value="series"]'))sortSelect.insertAdjacentHTML('beforeend','<option value="series" disabled>シリーズの設定順</option>');
   sortSelect.value=selectedSeries?'series':sort;
-  const selected = items.filter(item => (!activeSeries || (activeSeries==='ungrouped'?!item.series:item.series?.id===activeSeries)) && (filter === 'all' || (filter === 'book') === (item.kind !== 'video')) && `${item.title} ${item.series?.title??''} ${item.series?.label??''}`.toLocaleLowerCase().includes(search.toLocaleLowerCase())).sort((a, b) => selectedSeries?a.series.position-b.series.position:sort === 'name' ? a.title.localeCompare(b.title, 'ja') : b.createdAt - a.createdAt);
-  document.querySelector('#collection-title').textContent = filter === 'book' ? '本（PDF・画像）' : filter === 'video' ? '動画' : 'すべてのコンテンツ';
+  const selected = items.filter(item => (!activeSeries || (activeSeries==='ungrouped'?!item.series:item.series?.id===activeSeries)) && (filter === 'all' || (filter === 'book' ? !isTimedKind(item.kind) : filter === item.kind)) && `${item.title} ${item.series?.title??''} ${item.series?.label??''}`.toLocaleLowerCase().includes(search.toLocaleLowerCase())).sort((a, b) => selectedSeries?a.series.position-b.series.position:sort === 'name' ? a.title.localeCompare(b.title, 'ja') : b.createdAt - a.createdAt);
+  document.querySelector('#collection-title').textContent = filter === 'book' ? '本（PDF・EPUB・画像）' : filter === 'audio' ? '音声・音楽' : filter === 'video' ? '動画' : 'すべてのコンテンツ';
   if(selectedSeries)document.querySelector('#collection-title').textContent=selectedSeries.title;
   document.querySelector('#result-count').textContent = `${selected.length} 件のコンテンツ`;
   if (!selected.length) {
     const hasFilter = Boolean(search || filter !== 'all' || activeSeries);
-    node.innerHTML = `<div class="empty-state"><div class="empty-icon">${icon(hasFilter ? 'search' : 'library')}</div><span class="eyebrow">${hasFilter ? 'FIND YOUR NEXT STORY' : 'MAKE YOURSELF AT HOME'}</span><h3>${hasFilter ? '該当するコンテンツがありません' : shelves.length ? '最初の一冊、最初の一本を。' : 'あなたの本棚を、つくろう。'}</h3><p>${hasFilter ? '検索キーワードや種類を変えてみてください。' : shelves.length ? 'PDFや動画を追加して、あなただけのライブラリを育てましょう。' : '本棚を作って動画やPDFを追加すると、ここに並びます。'}</p>${hasFilter ? '<button class="button secondary" id="empty-action">絞り込みを解除</button>' : !shelves.length || shelves.some(s => s.role !== 'viewer') ? `<button class="button primary" id="empty-action">${icon('plus')}${shelves.length ? 'コンテンツを追加' : '本棚を作成'}</button>` : '<p class="muted">管理者・編集者による追加をお待ちください。</p>'}</div>`;
+    node.innerHTML = `<div class="empty-state"><div class="empty-icon">${icon(hasFilter ? 'search' : 'library')}</div><span class="eyebrow">${hasFilter ? 'FIND YOUR NEXT STORY' : 'MAKE YOURSELF AT HOME'}</span><h3>${hasFilter ? '該当するコンテンツがありません' : shelves.length ? '最初の一冊、最初の一本を。' : 'あなたの本棚を、つくろう。'}</h3><p>${hasFilter ? '検索キーワードや種類を変えてみてください。' : shelves.length ? '本や動画・音声を追加して、あなただけのライブラリを育てましょう。' : '本棚を作って本・動画・音声を追加すると、ここに並びます。'}</p>${hasFilter ? '<button class="button secondary" id="empty-action">絞り込みを解除</button>' : !shelves.length || shelves.some(s => s.role !== 'viewer') ? `<button class="button primary" id="empty-action">${icon('plus')}${shelves.length ? 'コンテンツを追加' : '本棚を作成'}</button>` : '<p class="muted">管理者・編集者による追加をお待ちください。</p>'}</div>`;
     const action = node.querySelector('#empty-action');
     if (action) action.onclick = hasFilter ? () => { search = ''; filter = 'all'; activeSeries=''; document.querySelector('#search').value = ''; renderItems(); } : shelves.length ? openUpload : openCreateShelf;
     return;
   }
   node.innerHTML = selected.map(item => {
-    const isBook = item.kind !== 'video';
-    const label = item.kind === 'image-book' ? `画像・${item.pageCount}ページ` : item.kind === 'epub' ? 'EPUB' : item.kind === 'pdf' ? 'PDF' : item.mimeType === 'video/mp4' ? 'MP4' : 'WebM';
-    return `<article class="media-card"><button class="card-open" data-open="${item.id}" ${isBook ? '' : `data-preview-id="${item.id}"`} aria-label="${esc(item.title)}を${isBook ? '読む' : '再生する'}"><div class="card-art actual-cover ${isBook ? 'book-cover' : 'video-cover'}"><img data-thumbnail="${esc(item.thumbnailUrl)}" alt="${esc(item.title)}のサムネイル"><span class="cover-placeholder">${icon(isBook ? 'book' : 'video')}<span>表紙を読み込んでいます…</span></span><span class="media-type">${item.kind === 'image-book' ? 'IMAGE BOOK' : item.kind==='epub' ? 'EPUB' : isBook ? 'PDF' : 'VIDEO'}</span><span class="card-open-label">${isBook ? '本を開く' : '再生する'} ${icon('arrow')}</span></div><div class="card-content"><span class="card-shelf">${icon('shelf')}${esc(item.shelfName)}</span><h3>${esc(item.title)}</h3><div class="card-meta"><span>${label} <span class="meta-dot">·</span> ${bytes(item.size)}</span><span>${date(item.createdAt)}</span></div><div class="card-progress">${esc(progressLabel(item,item.progress))}</div></div></button>${item.role !== 'viewer' ? `<button class="card-delete icon-button" data-delete="${item.id}" aria-label="${esc(item.title)}を削除">${icon('trash')}</button>` : ''}</article>`;
+    const isBook = !isTimedKind(item.kind);
+    const label = item.kind === 'image-book' ? `画像・${item.pageCount}ページ` : item.kind === 'epub' ? 'EPUB' : item.kind === 'pdf' ? 'PDF' : item.kind === 'audio' ? 'AAC / M4A' : item.mimeType === 'video/mp4' ? 'MP4' : 'WebM';
+    return `<article class="media-card"><button class="card-open" data-open="${item.id}" ${item.kind==='video' ? `data-preview-id="${item.id}"` : ''} aria-label="${esc(item.title)}を${isBook ? '読む' : '再生する'}"><div class="card-art actual-cover ${isBook ? 'book-cover' : item.kind==='audio' ? 'audio-cover' : 'video-cover'}"><img data-thumbnail="${esc(item.thumbnailUrl)}" alt="${esc(item.title)}のサムネイル"><span class="cover-placeholder">${icon(isBook ? 'book' : item.kind==='audio' ? 'audio' : 'video')}<span>表紙を読み込んでいます…</span></span><span class="media-type">${item.kind === 'image-book' ? 'IMAGE BOOK' : item.kind==='epub' ? 'EPUB' : isBook ? 'PDF' : item.kind==='audio' ? 'AUDIO' : 'VIDEO'}</span><span class="card-open-label">${isBook ? '本を開く' : '再生する'} ${icon('arrow')}</span></div><div class="card-content"><span class="card-shelf">${icon('shelf')}${esc(item.shelfName)}</span><h3>${esc(item.title)}</h3><div class="card-meta"><span>${label} <span class="meta-dot">·</span> ${bytes(item.size)}</span><span>${date(item.createdAt)}</span></div><div class="card-progress">${esc(progressLabel(item,item.progress))}</div></div></button>${item.role !== 'viewer' ? `<button class="card-delete icon-button" data-delete="${item.id}" aria-label="${esc(item.title)}を削除">${icon('trash')}</button>` : ''}</article>`;
   }).join('');
   node.querySelectorAll('[data-open]').forEach(button => { button.onclick = () => openViewer(items.find(i => i.id === button.dataset.open)); });
   node.querySelectorAll('[data-delete]').forEach(button => { button.onclick = () => deleteItem(items.find(i => i.id === button.dataset.delete)); });
@@ -349,10 +354,10 @@ function openCreateShelf() {
 function openUpload() {
   const editable = shelves.filter(s => s.role !== 'viewer');
   if (!editable.length) return openCreateShelf();
-  const node = dialog('コンテンツを追加', `<form class="modal-body" id="upload-form"><label>追加する本棚<select name="shelf">${editable.map(s => `<option value="${s.id}" ${s.id === activeShelf ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label><label class="dropzone" id="dropzone"><input name="file" type="file" aria-label="アップロードするファイル" accept="application/epub+zip,.epub,application/pdf,video/*,image/jpeg,image/png,image/webp,.pdf,.mp4,.m4v,.mov,.mkv,.avi,.wmv,.asf,.mpeg,.mpg,.ts,.mts,.m2ts,.flv,.webm,.jpg,.jpeg,.png,.webp" multiple required>${icon('upload')}<strong id="file-label">ファイルを選択、またはドロップ</strong><span>PDF / EPUB / 動画は1ファイル・画像は複数枚で1冊</span><small>JPEG / PNG / WebP（静止画）・合計 ${bytes(config.maxUploadBytes)}まで</small></label><div id="selected-files" hidden></div><label>タイトル<input name="title" maxlength="200" required placeholder="ライブラリに表示するタイトル"></label><label class="retain-original"><input name="retainOriginal" type="checkbox">動画の原本を保持する</label><p class="retention-note">初期設定では、全画質の変換・配信データ・サムネイルの生成と検証が成功した後、動画の原本を削除します。元の画質・形式が必要な場合はチェックしてください。失敗時は原本を残します。本の原本は削除しません。</p><p class="thumbnail-note">${icon('book')} 表紙はEPUBのカバー・PDFの1ページ目、動画のフレーム、画像の本の先頭ページから生成します。</p><div class="upload-progress" hidden><div><span id="upload-status">アップロード中…</span><span id="upload-percent">0%</span></div><progress max="100" value="0" aria-label="アップロードの進行状況"></progress></div><p class="form-error" role="alert" hidden></p><div class="modal-actions"><button class="button primary" type="submit">${icon('upload')}アップロードする</button></div></form>`);
+  const node = dialog('コンテンツを追加', `<form class="modal-body" id="upload-form"><label>追加する本棚<select name="shelf">${editable.map(s => `<option value="${s.id}" ${s.id === activeShelf ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label><label class="dropzone" id="dropzone"><input name="file" type="file" aria-label="アップロードするファイル" accept="application/epub+zip,.epub,application/pdf,video/*,audio/*,image/jpeg,image/png,image/webp,.pdf,.mp4,.m4v,.mov,.mkv,.avi,.wmv,.asf,.mpeg,.mpg,.ts,.mts,.m2ts,.flv,.webm,.mp3,.m4a,.m4b,.aac,.wav,.flac,.ogg,.oga,.opus,.aif,.aiff,.wma,.weba,.jpg,.jpeg,.png,.webp" multiple required>${icon('upload')}<strong id="file-label">ファイルを選択、またはドロップ</strong><span>PDF / EPUB / 動画 / 音声は1ファイル・画像は複数枚で1冊</span><small>JPEG / PNG / WebP（静止画）・合計 ${bytes(config.maxUploadBytes)}まで</small></label><div id="selected-files" hidden></div><label>タイトル<input name="title" maxlength="200" required placeholder="ライブラリに表示するタイトル"></label><label class="retain-original"><input name="retainOriginal" type="checkbox">動画・音声の原本を保持する</label><p class="retention-note">初期設定では、配信用の変換データ（動画は全画質）・サムネイルの生成と検証が成功した後、動画・音声の原本を削除します。元の画質・音質・形式が必要な場合はチェックしてください。失敗時は原本を残します。本の原本は削除しません。</p><p class="thumbnail-note">${icon('book')} 表紙はEPUBのカバー・PDFの1ページ目、動画のフレーム、音声のジャケット（なければ専用表紙）、画像の本の先頭ページから生成します。</p><div class="upload-progress" hidden><div><span id="upload-status">アップロード中…</span><span id="upload-percent">0%</span></div><progress max="100" value="0" aria-label="アップロードの進行状況"></progress></div><p class="form-error" role="alert" hidden></p><div class="modal-actions"><button class="button primary" type="submit">${icon('upload')}アップロードする</button></div></form>`);
   const form = node.querySelector('form'), input = form.elements.file, zone = node.querySelector('#dropzone');
   const errorBox = form.querySelector('.form-error');
-  const mimeByExtension = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', pdf: 'application/pdf', epub: 'application/epub+zip', ...VIDEO_EXTENSIONS };
+  const mimeByExtension = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', pdf: 'application/pdf', epub: 'application/epub+zip', ...VIDEO_EXTENSIONS, ...AUDIO_EXTENSIONS };
   const imageMime = file => ['image/jpeg', 'image/png', 'image/webp'].includes(file.type);
   let selectedFiles = [], activeUpload, lastDefaultTitle = '';
   const previewUrls = new Map();
@@ -382,7 +387,13 @@ function openUpload() {
   const selectFiles = incoming => {
     for (const url of previewUrls.values()) URL.revokeObjectURL(url);
     previewUrls.clear();
-    selectedFiles = Array.from(incoming).map(file => !mimeByExtension[file.name.split('.').pop().toLowerCase()] && file.type ? file : new File([file], file.name, { type: mimeByExtension[file.name.split('.').pop().toLowerCase()] || 'application/octet-stream', lastModified: file.lastModified }));
+    selectedFiles = Array.from(incoming).map(file => {
+      const extension=file.name.split('.').pop().toLowerCase();
+      // WebM can contain audio only. Preserve an explicit audio MIME from the
+      // picker rather than forcing every .webm into the video processing path.
+      const mime=extension==='webm' && file.type==='audio/webm' ? 'audio/webm' : mimeByExtension[extension] || file.type || 'application/octet-stream';
+      return file.type===mime ? file : new File([file],file.name,{type:mime,lastModified:file.lastModified});
+    });
     if (selectedFiles.every(imageMime)) selectedFiles.sort((a, b) => a.name.localeCompare(b.name, 'ja', { numeric: true, sensitivity: 'base' }));
     if (selectedFiles.length && (!form.elements.title.value || form.elements.title.value === lastDefaultTitle)) {
       lastDefaultTitle = selectedFiles[0].name.replace(/\.[^.]+$/, '').slice(0, 200);
@@ -403,7 +414,7 @@ function openUpload() {
     let validation;
     const allImages = selectedFiles.every(imageMime);
     if (!selectedFiles.length) validation = 'ファイルを選択してください。';
-    else if (selectedFiles.length > 1 && !allImages) validation = 'PDF・EPUB・動画は1ファイルずつ、画像の本は画像だけを選択してください。';
+    else if (selectedFiles.length > 1 && !allImages) validation = 'PDF・EPUB・動画・音声は1ファイルずつ、画像の本は画像だけを選択してください。';
     else if (selectedFiles.length > config.maxBookPages) validation = `1冊は${config.maxBookPages}ページまでです。`;
     else if (allImages && selectedFiles.some(file => file.size > config.maxImageBytes)) validation = `画像は1枚${bytes(config.maxImageBytes)}以下にしてください。`;
     else if (selectedFiles.some(file => file.type==='application/epub+zip' && file.size>(config.maxEpubBytes??64*1024*1024))) validation = 'EPUBは64 MiB以下にしてください。';
@@ -494,7 +505,7 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false}={}) {
   let cleanup,progress,downloaded;
   const seriesNavigation=mountSeriesNavigation({node,body,item,api,esc,open:openViewer,enabled:seriesContinuous,onEnabled:value=>{seriesContinuous=value;},
     isCurrent:()=>getSession()?.user.id===progressActor && getEndpoint()===progressServer,isActive:()=>nativeAppActive && !document.hidden,beforeMove:()=>progress?.checkpoint()});
-  node.addEventListener('close', () => { seriesNavigation.dispose();progress?.dispose();tracker?.dispose();cleanup?.();const video=body.querySelector('video');video?.pause();downloaded?.dispose();if(downloaded && video){video.removeAttribute('src');video.load();} }, { once: true });
+  node.addEventListener('close', () => { seriesNavigation.dispose();progress?.dispose();tracker?.dispose();cleanup?.();const video=body.querySelector('video,audio');video?.pause();downloaded?.dispose();if(downloaded && video){video.removeAttribute('src');video.load();} }, { once: true });
   const progressBar=document.createElement('div');progressBar.className='resume-toolbar';
   progressBar.innerHTML='<span class="resume-status" role="status">続き位置を確認しています…</span><button class="text-button" type="button" disabled>最初から</button>';
   node.querySelector('.viewer-meta').append(progressBar);
@@ -550,11 +561,19 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false}={}) {
       if(!node.isConnected)return;
       let stream;
       const renew=()=>api(`/items/${item.id}/playback-ticket`,{method:'POST'});
-      const player=mountVideoPlayer(body,{onError,reconnect:async()=>{body.querySelector('.viewer-error')?.remove();if(downloaded)return downloaded.reconnect();await stream.reconnect();return null;}});
+      const player=mountVideoPlayer(body,{onError,kind:item.kind,title:item.title,reconnect:async()=>{body.querySelector('.viewer-error')?.remove();if(downloaded)return downloaded.reconnect();await stream.reconnect();return null;}});
+      let coverUrl;
+      if(item.kind==='audio'){
+        try{
+          coverUrl=URL.createObjectURL(await authenticatedBlob(item.thumbnailUrl??`/api/v1/items/${item.id}/thumbnail`));
+          if(!node.isConnected){URL.revokeObjectURL(coverUrl);player.dispose();return;}
+          player.surface.querySelector('img').src=coverUrl;player.surface.querySelector('img').hidden=false;
+        }catch{/* Audio remains usable when the cover request fails. */}
+      }
       const video = player.video;
       const videoProgress=bindVideoProgress(video,progress);
-      cleanup=()=>{videoProgress();stream?.dispose();player.dispose();};cleanup.restart=()=>videoProgress.restart();
-      tracker?.video(video);
+      cleanup=()=>{videoProgress();stream?.dispose();player.dispose();if(coverUrl)URL.revokeObjectURL(coverUrl);};cleanup.restart=()=>videoProgress.restart();
+      tracker?.video(video,player.surface);
       seriesNavigation.bindVideo(video,{autoplay});
       if(downloaded){
         video.src=downloaded.url(0);
@@ -574,7 +593,7 @@ async function updateDownloadButtons(){
 }
 function openDownload(item){
   if(!item)return;
-  const node=dialog('端末へ暗号化ダウンロード',`<div class="modal-body"><h3>${esc(item.title)}</h3><p>本・動画のデータはAES-256-GCMで暗号化してアプリ／ブラウザー内に保存します。復号鍵は閲覧中のメモリーにだけ保持します。開くたびにオンラインでアクセス権を確認するため、完全オフラインでは開けません。</p><p>画面を閉じると取得を一時停止します。次回は受信済み部分から再開できます。</p><div class="download-quality" hidden><label>保存する画質<select aria-label="ダウンロード画質"></select></label><small>1アセットにつき1画質を保存します。変更すると以前の保存データを置き換えます。</small></div><progress class="download-progress" max="100" value="0" aria-label="ダウンロードの進行状況"></progress><p class="download-status" role="status">${bytes(item.size)}・端末の空き容量が必要です。</p><div class="modal-actions"><button class="button primary start-download">保存を開始／再開</button></div></div>`);
+  const node=dialog('端末へ暗号化ダウンロード',`<div class="modal-body"><h3>${esc(item.title)}</h3><p>本・動画・音声のデータはAES-256-GCMで暗号化してアプリ／ブラウザー内に保存します。復号鍵は閲覧中のメモリーにだけ保持します。開くたびにオンラインでアクセス権を確認するため、完全オフラインでは開けません。</p><p>画面を閉じると取得を一時停止します。次回は受信済み部分から再開できます。</p><div class="download-quality" hidden><label>保存する画質<select aria-label="ダウンロード画質"></select></label><small>1アセットにつき1画質を保存します。変更すると以前の保存データを置き換えます。</small></div><progress class="download-progress" max="100" value="0" aria-label="ダウンロードの進行状況"></progress><p class="download-status" role="status">${bytes(item.size)}・端末の空き容量が必要です。</p><div class="modal-actions"><button class="button primary start-download">保存を開始／再開</button></div></div>`);
   const controller=new AbortController(),status=node.querySelector('.download-status'),button=node.querySelector('.start-download');
   node.addEventListener('close',()=>{controller.abort();updateDownloadButtons();},{once:true});
   if(item.kind==='video'){
@@ -608,7 +627,7 @@ function openDownloadManager(){
 }
 function progressLabel(item,position){
   if(!position)return '';
-  if(item.kind!=='video')return `続きから: ${position.page} / ${item.pageCount}${item.kind==='epub'?'章':'ページ'}`;
+  if(!isTimedKind(item.kind))return `続きから: ${position.page} / ${item.pageCount}${item.kind==='epub'?'章':'ページ'}`;
   const time=ms=>{const seconds=Math.floor((ms??0)/1000);return `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`;};
   return position.completed?'最後まで再生済み（次回は最初から）':`続きから: ${time(position.positionMs)} / ${time(position.durationMs)}`;
 }
@@ -637,7 +656,7 @@ window.addEventListener('mirea:analytics-status',event=>{
 });
 
 function processingLabel(value={}){
-  const names={probe:'動画を解析中',encode:'動画を変換中',validate:'配信データを検証中',thumbnail:'サムネイルを生成中',publish:'保存中',complete:'完了'};
+  const names={probe:'メディアを解析中',encode:'メディアを変換中',validate:'配信データを検証中',thumbnail:'サムネイルを生成中',publish:'保存中',complete:'完了'};
   return (names[value.stage]??'処理待ち')+(value.quality?' · '+value.quality:'')+(Number.isFinite(value.percent)?' · '+value.percent+'%':'');
 }
 function openUploadJobs(){
