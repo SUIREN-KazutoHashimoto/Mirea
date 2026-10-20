@@ -73,7 +73,7 @@ export async function openProgress(item,{status=()=>{},saved=()=>{}}={}){
       const done=sync.flush();finishing.add(done);done.finally(()=>finishing.delete(done));
     }
   };
-  const timer=setInterval(()=>{if(nativeActive && !document.hidden)manager.checkpoint();},5000);
+  const timer=setInterval(()=>{if(isTimedKind(item.kind) || nativeActive && !document.hidden)manager.checkpoint();},5000);
   listen(document,'visibilitychange',()=>{if(document.hidden)manager.checkpoint();});
   listen(window,'pagehide',()=>manager.checkpoint());
   active.add(manager);return manager;

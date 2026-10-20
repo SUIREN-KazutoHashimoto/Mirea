@@ -23,7 +23,7 @@ public final class UpdateEngine {
     public static final String EVENT="com.suiren.mirea.UPDATE_STATE";
     private static final int JOB_ID=1296650837;
     private static final AtomicBoolean RUNNING=new AtomicBoolean(false);
-    private static volatile boolean busy=false,foreground=false;
+    private static volatile boolean busy=false,foreground=false,playbackBusy=false;
     private final Context ctx;
     private final SharedPreferences prefs;
     private final File folder;
@@ -31,7 +31,8 @@ public final class UpdateEngine {
     public UpdateEngine(Context context){ctx=context.getApplicationContext();prefs=ctx.getSharedPreferences("mirea-updates-v1",Context.MODE_PRIVATE);folder=new File(ctx.getNoBackupFilesDir(),"app-updates");}
     public static void setForeground(boolean value){foreground=value;}
     public static void setBusy(boolean value){busy=value;}
-    public static boolean isBusy(){return busy;}
+    public static void setPlaybackBusy(boolean value){playbackBusy=value;}
+    public static boolean isBusy(){return busy||playbackBusy;}
     public void installNow() throws Exception {
         if(!RUNNING.compareAndSet(false,true))throw new Exception("更新の処理中です。");
         try{maybeInstall(true);}catch(Exception error){state("error",safeMessage(error));throw error;}finally{RUNNING.set(false);changed();}
@@ -83,7 +84,7 @@ public final class UpdateEngine {
         reconcileSession();
         PackageInfo installed=installed();
         JSONObject s=new JSONObject().put("supported",true).put("currentVersion",installed.versionName).put("currentCode",installed.getLongVersionCode())
-          .put("automatic",automatic()).put("unmeteredOnly",unmetered()).put("canInstall",canInstall()).put("busy",busy).put("working",RUNNING.get())
+          .put("automatic",automatic()).put("unmeteredOnly",unmetered()).put("canInstall",canInstall()).put("busy",isBusy()).put("working",RUNNING.get())
           .put("state",prefs.getString("state","idle")).put("message",prefs.getString("message","")).put("lastCheckedAt",prefs.getLong("lastCheckedAt",0))
           .put("received",part().isFile()?part().length():apk().isFile()?apk().length():0).put("sourceConfigured",!source().isEmpty());
         try{UpdateManifest m=cached();if(m!=null&&m.versionCode>installed.getLongVersionCode())s.put("nextVersion",m.versionName).put("nextCode",m.versionCode).put("total",m.size);}catch(Exception ignored){}
@@ -94,7 +95,7 @@ public final class UpdateEngine {
         if(!RUNNING.compareAndSet(false,true))return;
         try{
             if(source().isEmpty()||!userInitiated&&!automatic())return;
-            if(!userInitiated&&busy)throw new Pause("閲覧・転送中のため更新を保留しています。");
+            if(!userInitiated&&isBusy())throw new Pause("閲覧・転送中のため更新を保留しています。");
             UpdateManifest old=null;try{old=cached();}catch(Exception ignored){}
             if(!userInitiated&&System.currentTimeMillis()-prefs.getLong("lastCheckedAt",0)<60*60*1000L){if(download&&old!=null&&old.versionCode>installed().getLongVersionCode())download(old,false);return;}
             checkInterrupted();state("checking","更新を確認しています…");
@@ -136,7 +137,7 @@ public final class UpdateEngine {
         }finally{c.disconnect();}
     }
     private void download(UpdateManifest m,boolean userInitiated) throws Exception {
-        if(busy)throw new Pause("閲覧・転送が終わってから更新できます。");if(!networkAllowed())throw new Pause("Wi-Fi等の非従量制回線を待っています。");
+        if(isBusy())throw new Pause("閲覧・転送が終わってから更新できます。");if(!networkAllowed())throw new Pause("Wi-Fi等の非従量制回線を待っています。");
         if(!folder.isDirectory()&&!folder.mkdirs())throw new IOException("Update folder unavailable");
         if(apk().isFile()){verifyApk(apk(),m);state("ready","更新を適用できます。");maybeInstall(false);return;}
         long offset=part().length();if(offset>m.size){delete(part());offset=0;}
@@ -148,7 +149,7 @@ public final class UpdateEngine {
                 state("downloading","更新をダウンロードしています…");
                 try(InputStream in=c.getInputStream();FileOutputStream out=new FileOutputStream(part(),offset>0)){
                     byte[] bytes=new byte[65536];int n;long total=offset;
-                    while((n=in.read(bytes))!=-1){checkInterrupted();if(busy||!networkAllowed()||!userInitiated&&!automatic())throw new Pause("閲覧・転送または回線の状態により取得を一時停止しました。");if(System.currentTimeMillis()>deadline||total+n>m.size)throw new IOException("APK transfer limit");out.write(bytes,0,n);total+=n;}
+                    while((n=in.read(bytes))!=-1){checkInterrupted();if(isBusy()||!networkAllowed()||!userInitiated&&!automatic())throw new Pause("閲覧・転送または回線の状態により取得を一時停止しました。");if(System.currentTimeMillis()>deadline||total+n>m.size)throw new IOException("APK transfer limit");out.write(bytes,0,n);total+=n;}
                     out.getFD().sync();if(total!=m.size)throw new IOException("Incomplete APK");
                 }
             }finally{c.disconnect();}
@@ -166,7 +167,7 @@ public final class UpdateEngine {
     }
     public synchronized void maybeInstall(boolean userInitiated) throws Exception {
         reconcileSession();
-        if(busy){state("deferred","閲覧・転送が終わってから更新できます。");return;}
+        if(isBusy()){state("deferred","閲覧・転送が終わってから更新できます。");return;}
         // Foreground users are never surprised by a process-replacing install.
         if(!userInitiated&&(!automatic()||foreground||Build.VERSION.SDK_INT<31))return;
         if(!canInstall()){state("permission_required","Mireaからのアプリのインストールを許可してください。");return;}
@@ -177,7 +178,7 @@ public final class UpdateEngine {
         int id=installer.createSession(params);String nonce=UUID.randomUUID().toString();
         try(PackageInstaller.Session session=installer.openSession(id)){
             try(InputStream in=new FileInputStream(apk());OutputStream out=session.openWrite("base.apk",0,m.size)){byte[] bytes=new byte[65536];int n;while((n=in.read(bytes))!=-1){checkInterrupted();out.write(bytes,0,n);}session.fsync(out);}
-            if(busy||!userInitiated&&(!automatic()||foreground))throw new Pause("閲覧・転送やアプリ操作が終わってから更新できます。");
+            if(isBusy()||!userInitiated&&(!automatic()||foreground))throw new Pause("閲覧・転送やアプリ操作が終わってから更新できます。");
             prefs.edit().putInt("sessionId",id).putString("nonce",nonce).remove("confirmation").commit();
             Intent callback=new Intent(ctx,UpdateInstallReceiver.class).setAction("com.suiren.mirea.UPDATE_INSTALL").setData(Uri.parse("mirea-update://"+nonce));
             int flags=PendingIntent.FLAG_UPDATE_CURRENT|(Build.VERSION.SDK_INT>=31?PendingIntent.FLAG_MUTABLE:0);state("installing","更新を適用しています…");session.commit(PendingIntent.getBroadcast(ctx,id,callback,flags).getIntentSender());
@@ -186,7 +187,7 @@ public final class UpdateEngine {
     public Intent permissionIntent(){return new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,Uri.parse("package:"+ctx.getPackageName()));}
     public Intent confirmation() throws Exception {
         reconcileSession();
-        if(busy||RUNNING.get())throw new Exception("閲覧・転送または更新の処理中です。");
+        if(isBusy()||RUNNING.get())throw new Exception("閲覧・転送または更新の処理中です。");
         String value=prefs.getString("confirmation","");if(value.isEmpty())return null;
         UpdateManifest m=cached();if(m==null)throw new Exception("No verified update");
         Intent intent=Intent.parseUri(value,0);ResolveInfo resolved=ctx.getPackageManager().resolveActivity(intent,0);

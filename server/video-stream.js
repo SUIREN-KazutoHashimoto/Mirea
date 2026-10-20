@@ -1,7 +1,7 @@
 import { readFile, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { join } from 'node:path';
-import { hashToken, httpError } from './security.js';
+import { hashToken, httpError, parseRange } from './security.js';
 
 export function videoMetadata(db,id) {
   const row=db.prepare('SELECT * FROM video_assets WHERE item_id=?').get(id);
@@ -21,6 +21,19 @@ export function registerVideoStreams(app,{db,videoDir,authenticate,findItem}) {
     if(!item.mime_type.startsWith('video/'))throw httpError(400,'動画ではありません。');
     return metadata??{legacy:true,renditions:[],originalRetained:true};
   });
+  // Progressive rendition endpoint for native background players. Same ACL and
+  // byte-range validation as the canonical stream; no arbitrary storage paths.
+  app.route({method:['GET','HEAD'],url:'/api/v1/items/:id/renditions/:quality/content',handler:async(req,reply)=>{
+    const item=authorize(req),metadata=videoMetadata(db,item.id),quality=req.params.quality;
+    const rendition=/^[0-9]{2,4}p$/.test(quality)&&metadata?.renditions.find(r=>r.quality===quality);
+    if(!rendition)throw httpError(404,'配信画質が見つかりません。');
+    const path=join(videoDir,item.id,quality+'.mp4'),info=await stat(path);authorize(req);
+    if(info.size!==rendition.size)throw httpError(409,'配信データが変更されました。');
+    let range;try{range=parseRange(req.headers.range,info.size);}catch(error){reply.header('Content-Range',`bytes */${info.size}`);throw error;}
+    reply.type('video/mp4').header('Cache-Control','private, no-store, no-transform').header('Accept-Ranges','bytes').header('Content-Length',range?range.end-range.start+1:info.size);
+    if(range)reply.code(206).header('Content-Range',`bytes ${range.start}-${range.end}/${info.size}`);
+    return req.method==='HEAD'?reply.send():reply.send(createReadStream(path,range??{}));
+  }});
   app.route({method:['GET','HEAD'],url:'/api/v1/items/:id/hls/:file',handler:async(req,reply)=>{
     const item=authorize(req),metadata=videoMetadata(db,item.id),file=req.params.file;
     if(!metadata)throw httpError(404,'この動画にはHLS配信データがありません。');

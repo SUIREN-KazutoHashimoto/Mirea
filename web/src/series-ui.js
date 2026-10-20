@@ -78,13 +78,15 @@ export function mountSeriesNavigation({node,body,item,api,esc,open,isCurrent,isA
   const footer=document.createElement('div');footer.className='series-book-end';footer.hidden=true;
   const subscribers=new Set();let disposed=false,book=null,videoCleanup,signature='',pendingEnd;
   const alive=()=>!disposed && node.isConnected && node.open && isCurrent();
-  const active=()=>alive() && isActive() && !document.hidden;
+  const backgroundCapable=['video','audio'].includes(item.kind);
+  const active=()=>alive() && isActive() && (backgroundCapable || !document.hidden);
   const core=createSeriesContinuation({assetId:item.id,enabled,loadContext:()=>api(`/items/${item.id}/series`),isActive:active,changed:render,
     move:async(target,options,allowed)=>{
       await beforeMove();
       if(!active() || !allowed())return false;
       return new Promise(resolve=>{
-        node.addEventListener('close',()=>{if(isCurrent() && isActive() && !document.hidden)open(target,options);resolve();},{once:true});
+        const background=Boolean(node.isMinimized);
+        node.addEventListener('close',()=>{if(isCurrent() && isActive() && (backgroundCapable || !document.hidden))open(target,{...options,background:options.autoplay&&background});resolve();},{once:true});
         node.close();
       });
     }
@@ -130,7 +132,7 @@ export function mountSeriesNavigation({node,body,item,api,esc,open,isCurrent,isA
   }
   const suspend=()=>{pendingEnd=null;core.cancel('自動移動を停止しました。次へ進むには操作してください。');};
   const nativeState=active=>{if(active)render();else suspend();};
-  const visibility=()=>{if(document.hidden)suspend();else render();};
+  const visibility=()=>{if(document.hidden && !['video','audio'].includes(item.kind))suspend();else render();};
   document.addEventListener('visibilitychange',visibility);window.addEventListener('pagehide',suspend);activeNavigations.add(nativeState);
   const ready=(async()=>{
     try{

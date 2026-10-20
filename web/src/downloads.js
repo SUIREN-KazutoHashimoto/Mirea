@@ -1,6 +1,7 @@
 import { getSession,getEndpoint,api } from './api.js';
 import { openDownloadDb } from './download-db.js';
 import { DOWNLOAD_PATH,validateManifest,importDownloadKey,ciphertextHash } from './download-core.js';
+import { NativePlayer,nativePlayerAvailable } from './native-player-bridge.js';
 import { beginUpdateActivity } from './update-busy.js';
 
 const grants=new Map(),tasks=new Set();let workerReady;
@@ -47,8 +48,8 @@ export function ensureDownloadWorker(){
   })().catch(error=>{workerReady=null;throw error;});
 }
 export async function listDownloads(){const ctx=context(),store=await openDownloadDb();const rows=await store.list(ctx.partition);return current(ctx)?rows:[];}
-export async function clearAccountDownloads(){const ctx=context();closeDownloads();if(!globalThis.indexedDB)return;const store=await openDownloadDb();await store.removePartition(ctx.partition);}
-export async function removeDownload(assetId){const ctx=context(),store=await openDownloadDb();for(const [id,grant] of [...grants])if(grant.context.partition===ctx.partition && grant.manifest.assetId===assetId){lock(id);grant.onLock?.();}await store.remove(packageKey(ctx,assetId));}
+export async function clearAccountDownloads(){const ctx=context();closeDownloads();if(nativePlayerAvailable()){await NativePlayer.stop();await NativePlayer.cacheClear({partition:await ciphertextHash(new TextEncoder().encode(ctx.partition))});}if(!globalThis.indexedDB)return;const store=await openDownloadDb();await store.removePartition(ctx.partition);}
+export async function removeDownload(assetId){const ctx=context(),store=await openDownloadDb();for(const [id,grant] of [...grants])if(grant.context.partition===ctx.partition && grant.manifest.assetId===assetId){lock(id);grant.onLock?.();}const row=await store.getPackage(packageKey(ctx,assetId));if(nativePlayerAvailable()&&row){if((await NativePlayer.status()).item?.id===assetId)await NativePlayer.stop();await NativePlayer.cacheRemove({partition:await ciphertextHash(new TextEncoder().encode(ctx.partition)),id:row.manifest.id});}await store.remove(packageKey(ctx,assetId));}
 const delay=(ms,signal)=>new Promise((resolve,reject)=>{
   const abort=()=>{clearTimeout(timer);reject(new DOMException('中断しました。','AbortError'));};
   const timer=setTimeout(()=>{signal.removeEventListener('abort',abort);resolve();},ms);
@@ -119,4 +120,26 @@ export async function openDownloaded(item,onLock=()=>{}){
     async reconnect(){await authorize();return `${DOWNLOAD_PATH}${id}/0`;},
     dispose(){disposed=true;if(id)lock(id);}
   };
+}
+
+// Import ciphertext only. The native service independently obtains an online
+// open grant and never persists its key. No full plaintext media crosses the bridge.
+export async function prepareNativeDownload(item,valid=()=>true,onProgress=()=>{}){
+  const ctx=context();let store;try{store=await openDownloadDb();}catch{return null;}
+  const record=await store.getPackage(packageKey(ctx,item.id));if(record?.state!=='ready')return null;
+  const manifest=validateManifest(record.manifest);
+  const prepared=await NativePlayer.cacheBegin({origin:ctx.endpoint,token:ctx.token,userId:ctx.userId,manifest});
+  if(prepared.ready)return manifest;
+  let received=0;
+  for(const file of manifest.files)for(let part=0;part<file.chunks;part++){
+    if(!valid()||!current(ctx))throw new Error('再生準備を取り消しました。');
+    const cached=await store.getChunk(manifest.id,file.index,part);
+    if(!cached||await ciphertextHash(cached.bytes)!==cached.sha256)throw new Error('保存データを検証できません。再ダウンロードしてください。');
+    const bytes=new Uint8Array(cached.bytes),pieces=[];
+    for(let n=0;n<bytes.length;n+=8192)pieces.push(String.fromCharCode(...bytes.subarray(n,n+8192)));
+    await NativePlayer.cacheChunk({partition:prepared.partition,id:manifest.id,part,bytes:btoa(pieces.join('')),sha256:cached.sha256});
+    onProgress(++received,file.chunks);
+  }
+  if(!valid())throw new Error('再生準備を取り消しました。');
+  await NativePlayer.cacheComplete({partition:prepared.partition,id:manifest.id});return manifest;
 }

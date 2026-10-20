@@ -5,7 +5,7 @@ export function createViewerScreen({ title, kind, onClose, doc = document }) {
   node.dataset.chrome = 'hidden';
   node.innerHTML = '<div class="viewer-top" data-viewer-chrome><header class="viewer-header"><button class="viewer-back" type="button" aria-label="ライブラリへ戻る">← <span>ライブラリ</span></button><div><small></small><h1></h1></div><button class="viewer-fullscreen icon-button" type="button" aria-label="全画面を切り替える">⛶</button></header><div class="viewer-meta"></div><div class="viewer-tools"></div></div><div class="viewer-body"></div><button class="viewer-chrome-toggle" type="button" aria-label="操作メニューを表示" aria-expanded="false">•••</button>';
   node.querySelector('h1').textContent = title; node.querySelector('small').textContent = kind === 'audio' ? 'MIREA / LISTEN' : kind === 'video' ? 'MIREA / WATCH' : 'MIREA / READ';
-  let closed = false; node.open = true;
+  let closed = false, minimized=false,mini; node.open = true;
   const previousOverflow = doc.body.style.overflow;
   const fullscreen = () => { const operation = doc.fullscreenElement ? doc.exitFullscreen?.() : node.requestFullscreen?.(); operation?.catch?.(() => {}); };
   let chromeTimer;
@@ -34,7 +34,15 @@ export function createViewerScreen({ title, kind, onClose, doc = document }) {
     }, 2800); }
     else if (!node.querySelector('[data-viewer-chrome]:focus-within')) node.showChrome(false);
   });
+  node.minimize = () => {
+    if(closed||minimized)return;minimized=true;node.isMinimized=true;node.style.display='none';if(app)app.inert=wasInert;doc.body.style.overflow=previousOverflow;
+    if(doc.fullscreenElement===node)doc.exitFullscreen?.().catch(()=>{});
+    mini=doc.createElement('div');mini.className='native-now-playing';const label=doc.createElement('span');label.textContent='背景再生: '+title;
+    const restore=doc.createElement('button');restore.type='button';restore.textContent='プレーヤーを開く';restore.onclick=()=>{if(closed)return;minimized=false;node.isMinimized=false;node.style.display='';mini.remove();if(app)app.inert=true;doc.body.style.overflow='hidden';node.focus();};
+    const stop=doc.createElement('button');stop.type='button';stop.textContent='停止';stop.onclick=()=>node.close();mini.append(label,restore,stop);doc.body.append(mini);
+  };
   const keydown = event => {
+    if(minimized)return;
     if (event.key === 'Tab' && node.contains(doc.activeElement)) node.showChrome();
     if (event.key.toLowerCase() === 'i' && !['INPUT','SELECT','TEXTAREA'].includes(event.target.tagName)) { event.preventDefault(); toggle.click(); }
     if (event.key === 'Escape' && !doc.fullscreenElement && !doc.querySelector('dialog[open]')) { event.preventDefault(); node.close(); }
@@ -45,7 +53,7 @@ export function createViewerScreen({ title, kind, onClose, doc = document }) {
     chromeObserver.disconnect();
     if (doc.fullscreenElement === node) doc.exitFullscreen?.().catch(() => {});
     doc.removeEventListener('keydown', keydown);
-    node.remove();
+    mini?.remove();node.remove();
     if (app) app.inert = wasInert;
     doc.body.style.overflow = previousOverflow;
     onClose?.();

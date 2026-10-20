@@ -1,3 +1,5 @@
+import { NativePlayer,nativePlayerAvailable } from './native-player-bridge.js';
+import { ciphertextHash } from './download-core.js';
 import { getSession, getEndpoint, native } from './api.js';
 import { version } from '../../package.json';
 import { createViewRecorder, pageViewport } from './analytics-core.js';
@@ -37,6 +39,7 @@ export async function clearAccountAnalytics() {
   const user=getSession()?.user.id,endpoint=getEndpoint();
   await stopAnalytics();
   if(!user)return;
+  if(nativePlayerAvailable()){await NativePlayer.stop();await NativePlayer.clearHistory({partition:await ciphertextHash(new TextEncoder().encode(`${endpoint || location.origin}|${user}`))});}
   const store=await browserStore(`${endpoint || location.origin}|${user}`);
   try{await store.remove((await store.list()).map(row=>row.key));}finally{store.close?.();}
 }
@@ -55,13 +58,14 @@ export function trackAsset(assetId, context = 'viewer') {
       const clip = stage?.getBoundingClientRect() ?? { left:0,top:0,right:innerWidth,bottom:innerHeight };
       geometry = pageViewport(element.getBoundingClientRect(), { left:Math.max(0,clip.left),top:Math.max(0,clip.top),right:Math.min(innerWidth,clip.right),bottom:Math.min(innerHeight,clip.bottom) });
     }
-    const state = { visible: foreground && rendered && (geometry.visibleRatio ?? 0)>0, focused, idle: isIdle(),
+    const pip=Boolean(video&&(document.pictureInPictureElement===video||video.webkitPresentationMode==='picture-in-picture'));
+    const state = { visible: pip || foreground && rendered && (geometry.visibleRatio ?? 0)>0, focused, idle: isIdle(),
       ...geometry, viewportWidth: Math.min(32768,Math.round(innerWidth)), viewportHeight: Math.min(32768,Math.round(innerHeight)) };
     if (video) {
       Object.assign(state,quality);
       state.toMs = Math.max(0,video.currentTime*1000 || 0);
       if (Number.isFinite(video.duration)) state.durationMs = Math.max(0,video.duration*1000);
-      Object.assign(state, { playing: !video.paused && !video.ended, seeking: video.seeking, buffering, rate:Math.min(16,Math.max(0.1,video.playbackRate || 1)), muted:video.muted,volume:video.volume,fullscreen:Boolean(document.fullscreenElement?.contains(video)) });
+      Object.assign(state, { backgroundPlayback: context==='viewer' && !state.visible && !pip, pictureInPicture:pip, playing: !video.paused && !video.ended, seeking: video.seeking, buffering, rate:Math.min(16,Math.max(0.1,video.playbackRate || 1)), muted:video.muted,volume:video.volume,fullscreen:Boolean(document.fullscreenElement?.contains(video)) });
       const dropped = video.getVideoPlaybackQuality?.().droppedVideoFrames;
       if (Number.isInteger(dropped)) state.droppedFrames = dropped;
     } else if (page && rendered) Object.assign(state,{page,zoom});
@@ -99,6 +103,7 @@ export function trackAsset(assetId, context = 'viewer') {
         }, name==='error'?{errorCode:'decode',reason:'error'}:{}));
       }
       listen(document,'fullscreenchange',()=>recorder.change('viewport'));
+      for(const event of ['enterpictureinpicture','leavepictureinpicture','webkitpresentationmodechanged'])listen(node,event,()=>recorder.change('viewport'));
       return tracker;
     },
     dispose() {

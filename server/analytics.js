@@ -12,9 +12,9 @@ const number = maximum => ({ type: 'number', minimum: 0, maximum });
 const types = ['open','view_start','interval','ready','play','pause','seeking','seeked','ended','rate_change','buffering','page_enter','page_loading','zoom','viewport','visibility','focus','idle','close','error','loop','quality_change'];
 const properties = {
   id: uuid, seq: { ...int(2147483647), minimum: 1 }, type: { enum: types }, at: int(8640000000000000), elapsedMs: int(MAX_SESSION),
-  intervalMs: int(5000), visibleMs: int(5000), activeMs: int(5000), watchMs: int(5000), gapMs: int(MAX_SESSION),
+  intervalMs: int(5000), visibleMs: int(5000), activeMs: int(5000), watchMs: int(5000), backgroundMs:int(5000), pipMs:int(5000), gapMs: int(MAX_SESSION),
   fromMs: number(31 * DAY), toMs: number(31 * DAY), durationMs: number(31 * DAY), page: { ...int(1000000), minimum: 1 }, previousPage: { ...int(1000000), minimum: 1 },
-  visible: { type: 'boolean' }, focused: { type: 'boolean' }, idle: { type: 'boolean' }, playing: { type: 'boolean' }, seeking: { type: 'boolean' }, buffering: { type: 'boolean' },
+  backgroundPlayback:{type:'boolean'}, pictureInPicture:{type:'boolean'}, visible: { type: 'boolean' }, focused: { type: 'boolean' }, idle: { type: 'boolean' }, playing: { type: 'boolean' }, seeking: { type: 'boolean' }, buffering: { type: 'boolean' },
   rate: { type: 'number', minimum: 0.1, maximum: 16 }, muted: { type: 'boolean' }, volume: number(1), fullscreen: { type: 'boolean' },
   x: number(1), y: number(1), width: number(1), height: number(1), visibleRatio: number(1), zoom: number(20),
   viewportWidth: int(32768), viewportHeight: int(32768), droppedFrames: int(2147483647),
@@ -35,9 +35,10 @@ export async function registerAnalytics(app, { db, authenticate, membership, fin
   const auth = { onRequest: async req => authenticate(req) };
   const normalize = event => ({ intervalMs: 0, visibleMs: 0, activeMs: 0, watchMs: 0, ...event });
   function validate(event, view) {
-    const { intervalMs, visibleMs, activeMs, watchMs } = event;
-    if (event.elapsedMs < intervalMs || activeMs > visibleMs || visibleMs > intervalMs || watchMs > activeMs) throw httpError(422, '閲覧時間の関係が不正です。');
-    if (event.type !== 'interval' && (intervalMs || visibleMs || activeMs || watchMs)) throw httpError(422, '区間以外のイベントに時間は指定できません。');
+    const { intervalMs, visibleMs, activeMs, watchMs,backgroundMs=0,pipMs=0 } = event;
+    if(backgroundMs+pipMs>watchMs || backgroundMs && (!event.backgroundPlayback||event.visible) || pipMs && !event.pictureInPicture || event.backgroundPlayback&&event.pictureInPicture || (backgroundMs||pipMs||event.backgroundPlayback||event.pictureInPicture)&&(!isTimedKind(view.asset_kind)||view.context!=='viewer'))throw httpError(422,'バックグラウンド・PiPの再生状態が不正です。');
+    if (event.elapsedMs < intervalMs || activeMs > visibleMs || visibleMs > intervalMs || watchMs > intervalMs || watchMs > activeMs+backgroundMs+pipMs) throw httpError(422, '閲覧時間の関係が不正です。');
+    if (event.type !== 'interval' && (intervalMs || visibleMs || activeMs || watchMs || backgroundMs || pipMs)) throw httpError(422, '区間以外のイベントに時間は指定できません。');
     if (event.type === 'interval' && !intervalMs) throw httpError(422, '区間の長さが必要です。');
     if (event.page !== undefined && (isTimedKind(view.asset_kind) || event.page > view.page_count)) throw httpError(422, 'ページ番号が不正です。');
     if (visibleMs && !event.visible || activeMs && (!event.focused || event.idle)) throw httpError(422, '非表示・非アクティブな時間は加算できません。');
@@ -49,7 +50,7 @@ export async function registerAnalytics(app, { db, authenticate, membership, fin
       const delta = event.toMs - event.fromMs;
       if (!event.playing || event.seeking || event.buffering || !Number.isFinite(delta) || delta <= 0 || delta > intervalMs * (event.rate ?? 1) * 1.5 + 300) throw httpError(422, 'シーク・停止中の区間を視聴時間には加算できません。');
     }
-    if (event.type === 'view_start' && (!event.visible || !event.focused || (isTimedKind(view.asset_kind) && (!event.playing || event.buffering || event.seeking)))) throw httpError(422, '実際に表示・再生した状態が必要です。');
+    if (event.type === 'view_start' && ((!event.visible || !event.focused) && !(isTimedKind(view.asset_kind)&&view.context==='viewer'&&(event.backgroundPlayback||event.pictureInPicture)) || (isTimedKind(view.asset_kind) && (!event.playing || event.buffering || event.seeking)))) throw httpError(422, '実際に表示・再生した状態が必要です。');
   }
   const insert = db.prepare(`INSERT INTO analytics_events(event_id,view_id,seq,event_type,client_at,received_at,elapsed_ms,interval_ms,visible_ms,active_ms,watch_ms,from_ms,to_ms,page_number,payload_json,payload_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   function materialize(view, event, receivedAt) {

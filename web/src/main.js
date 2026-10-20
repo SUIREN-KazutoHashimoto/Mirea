@@ -14,6 +14,8 @@ import { openSeriesManager,mountSeriesNavigation,seriesNativeState } from './ser
 import { createTheme } from './theme.js';
 import { openSettings } from './settings.js';
 import { createViewerScreen } from './viewer-shell.js';
+import { initializeNativePlayback,openNativePlayback,refreshNativePlayback } from './native-playback.js';
+import { nativePlayerAvailable } from './native-player-bridge.js';
 import { mountVideoPlayer } from './video-player.js';
 import { AUDIO_EXTENSIONS, isTimedKind } from '../../server/audio-types.js';
 import { VIDEO_EXTENSIONS } from '../../server/video-types.js';
@@ -58,7 +60,7 @@ if (native) {
   App.addListener('appStateChange', ({ isActive }) => {
     nativeStateRevision++;
     nativeAppActive = isActive;
-    if (isActive) refreshAppUpdates();
+    if (isActive) {refreshAppUpdates();refreshNativePlayback().catch(()=>{});}
     analyticsNativeState(isActive);
     progressNativeState(isActive);
     downloadsNativeState(isActive);
@@ -490,7 +492,17 @@ function deleteItem(item) {
     catch (error) { const box = node.querySelector('.form-error'); box.textContent = error.message; box.hidden = false; node.querySelector('#confirm-delete').disabled = false; }
   };
 }
-async function openViewer(item,{startAtBeginning=false,autoplay=false}={}) {
+async function openViewer(item,{startAtBeginning=false,autoplay=false,background=false}={}) {
+  if(nativePlayerAvailable()&&isTimedKind(item.kind)){
+    document.querySelectorAll('.viewer-screen').forEach(screen=>screen.close());
+    const preparing=dialog('再生を準備しています','<div class="modal-body"><p class="native-playback-status" role="status">アクセス権・続き位置・端末の保存データを確認しています…</p></div>');
+    let cancelled=false;preparing.addEventListener('close',()=>{cancelled=true;},{once:true});
+    try{await flushProgress();await openNativePlayback(item,{restart:startAtBeginning,continuous:seriesContinuous,analytics:config.analytics?.enabled===true,version:config.version,
+      isCurrent:()=>!cancelled,progress:(received,total)=>{if(!cancelled)preparing.querySelector('.native-playback-status').textContent=`暗号化データをネイティブ再生用に準備しています… ${Math.floor(received/total*100)}%`;}});preparing.close();}
+    catch(error){if(!cancelled){preparing.querySelector('.native-playback-status').textContent=error.message;}}
+    return;
+  }
+  const backgroundContinuation=background || autoplay&&Boolean(document.querySelector('.viewer-screen')?.isMinimized);
   const progressActor=getSession()?.user.id,progressServer=getEndpoint();
   const isPdf = item.mimeType === 'application/pdf';
   document.querySelectorAll('.viewer-screen').forEach(screen=>screen.close());
@@ -499,12 +511,13 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false}={}) {
   let node;
   try { node = createViewerScreen({title:item.title,kind:item.kind,onClose:()=>{releaseUpdate();videoPreviews?.setPaused('viewer',false);}}); }
   catch (error) { releaseUpdate(); throw error; }
+  if(backgroundContinuation)node.minimize();
   const body = node.querySelector('.viewer-body');
   body.innerHTML='<p class="viewer-loading" role="status">読み込んでいます…</p>';
   const tracker = trackAsset(item.id);
   let cleanup,progress,downloaded;
   const seriesNavigation=mountSeriesNavigation({node,body,item,api,esc,open:openViewer,enabled:seriesContinuous,onEnabled:value=>{seriesContinuous=value;},
-    isCurrent:()=>getSession()?.user.id===progressActor && getEndpoint()===progressServer,isActive:()=>nativeAppActive && !document.hidden,beforeMove:()=>progress?.checkpoint()});
+    isCurrent:()=>getSession()?.user.id===progressActor && getEndpoint()===progressServer,isActive:()=>!native && isTimedKind(item.kind) || nativeAppActive && !document.hidden,beforeMove:()=>progress?.checkpoint()});
   node.addEventListener('close', () => { seriesNavigation.dispose();progress?.dispose();tracker?.dispose();cleanup?.();const video=body.querySelector('video,audio');video?.pause();downloaded?.dispose();if(downloaded && video){video.removeAttribute('src');video.load();} }, { once: true });
   const progressBar=document.createElement('div');progressBar.className='resume-toolbar';
   progressBar.innerHTML='<span class="resume-status" role="status">続き位置を確認しています…</span><button class="text-button" type="button" disabled>最初から</button>';
@@ -645,6 +658,7 @@ window.addEventListener('mirea:unauthorized', () => {
 });
 window.addEventListener('mirea:update-ready', event => toast(`アプリ ${event.detail} の更新を準備しました。「設定」またはログイン画面の「アプリの更新」で確認できます。`));
 initializeAppUpdates();
+initializeNativePlayback().catch(()=>{});
 await loadConfig();
 if (getSession()) {
   try { await api('/auth/me'); await startAnalytics(); renderShell(); await refresh(); }
