@@ -36,6 +36,8 @@ import {createMaintenanceGate} from './maintenance-gate.js';
 import {registerAdminBackups} from './admin-backups.js';
 import {registerServerUpdates} from './server-updates.js';
 import {registerAdminCleanup} from './admin-cleanup.js';
+import {pendingShelfUploads} from './pending-uploads.js';
+import {registerShelfManagement} from './shelf-management.js';
 
 const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 const TICKET_MS = 60 * 60 * 1000;
@@ -221,7 +223,7 @@ export async function createApp(options = {}) {
     const shelf = db.prepare('SELECT * FROM shelves WHERE id=?').get(req.params.id);
     const progress=new Map(db.prepare(`SELECT p.* FROM asset_progress p JOIN items i ON i.id=p.asset_id WHERE p.user_id=? AND i.shelf_id=?`).all(req.user.id,req.params.id).map(row=>[row.asset_id,publicProgress(row)]));
     const series=shelfSeriesMembership(db,req.params.id);
-    return { shelf: { ...shelf, role }, series:shelfSeries(db,req.params.id), items: db.prepare('SELECT * FROM items WHERE shelf_id=? ORDER BY created_at DESC, id').all(req.params.id).map(item=>({...publicItem(item),series:series.get(item.id)??null,progress:progress.get(item.id)??null})) };
+    return { shelf: { ...shelf, role }, pendingUploads:pendingShelfUploads(db,req.params.id), series:shelfSeries(db,req.params.id), items: db.prepare('SELECT * FROM items WHERE shelf_id=? ORDER BY created_at DESC, id').all(req.params.id).map(item=>({...publicItem(item),series:series.get(item.id)??null,progress:progress.get(item.id)??null})) };
   });
   const uploads = await registerResumableUploads(app, {
     db, media, videoTranscoder, audioTranscoder, uploadDir, stagingDir, booksDir, thumbnailDir, videoDir, originalDir, previewDir, authenticate, membership, maxUploadBytes, chunkSize, publicItem,adminAccess,maintenance
@@ -229,6 +231,12 @@ export async function createApp(options = {}) {
   registerVideoStreams(app,{db,videoDir,authenticate,findItem});
   registerAccounts(app, { db, authenticate, membership, loginResult, cleanupUploads: uploads.cleanupUploads, rateLimit: options.rateLimit,adminAccess });
   const videoPreviews = await registerVideoPreviews(app, { db, media, dataDir, uploadDir, authenticate, findItem });
+  async function removeAssetFiles(item){return Promise.allSettled([
+    item.mime_type===IMAGE_BOOK_MIME?removeItemDirectory(booksDir,item.id):unlink(join(uploadDir,item.id)),
+    ...(item.mime_type===EPUB_MIME?[removeItemDirectory(booksDir,item.id)]:[]),unlink(join(thumbnailDir,item.id+'.jpg')),
+    videoPreviews.remove(item.id),removeItemDirectory(videoDir,item.id),unlink(join(originalDir,item.id))
+  ]);}
+  registerShelfManagement(app,{db,authenticate,membership,maintenance,removeFiles:removeAssetFiles,cleanupUploads:uploads.cleanupUploads,adminAccess,rateLimit:options.rateLimit});
   const adminJobs=await registerAdminJobs(app,{db,adminAccess,media,videoTranscoder,uploadDir,booksDir,thumbnailDir,previewDir,videoDir,originalDir,dataDir,uploads,maintenance,videoPreviews,ensureThumbnail,rateLimit:options.rateLimit});
   registerAdmin(app,{db,adminAccess,uploads,rateLimit:options.rateLimit});
   maintenance.setBusy(()=>uploads.busy||adminJobs.busy||videoPreviews.busy||media.busy);

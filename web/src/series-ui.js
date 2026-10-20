@@ -4,7 +4,7 @@ import { createSeriesContinuation,bindContinuationVideo } from './series-continu
 export function openSeriesManager({dialog,api,esc,shelves,initialShelfId,initialSeriesId,onChanged,isCurrent}){
   const editable=shelves.filter(s=>s.role!=='viewer');
   if(!editable.length)return;
-  const node=dialog('シリーズを管理','<div class="modal-body series-manager"><p role="status">読み込んでいます…</p></div>','series-modal');
+  const node=dialog(initialSeriesId?'シリーズを編集':'シリーズを追加','<div class="modal-body series-manager"><p role="status">読み込んでいます…</p></div>','series-modal');
   const body=node.querySelector('.modal-body');
   let shelfId=initialShelfId??editable[0].id,generation=0;
   const alive=()=>node.isConnected && isCurrent();
@@ -14,11 +14,9 @@ export function openSeriesManager({dialog,api,esc,shelves,initialShelfId,initial
     const revision=++generation;
     body.innerHTML='<p role="status">シリーズを読み込んでいます…</p>';
     try{
-      const result=await api(`/shelves/${shelfId}/series`);
       if(!alive() || revision!==generation)return;
-      body.innerHTML=`<label>本棚<select class="series-shelf">${editable.map(s=>`<option value="${s.id}" ${s.id===shelfId?'selected':''}>${esc(s.name)}</option>`).join('')}</select></label><p class="muted">1つのアセットは1シリーズに所属できます。PDF・EPUB・画像本・動画を混在させられます。</p><div class="series-list">${result.series.map(s=>`<button class="button secondary" data-edit-series="${s.id}">${esc(s.title)} · ${s.assetCount}件</button>`).join('')||'<p>まだシリーズはありません。</p>'}</div><form class="series-create"><label>新しいシリーズ名<input name="title" maxlength="200" required placeholder="例：旅の記録・第1シーズン"></label><button class="button primary" type="submit">シリーズを作成</button></form><p class="form-error" role="alert" hidden></p>`;
+      body.innerHTML=`<label>本棚<select class="series-shelf">${editable.map(s=>`<option value="${s.id}" ${s.id===shelfId?'selected':''}>${esc(s.name)}</option>`).join('')}</select></label><p class="muted">1つのアセットは1シリーズに所属できます。本・動画・音声を混在させられます。作成後に所属する作品と順番を設定します。</p><form class="series-create"><label>新しいシリーズ名<input name="title" maxlength="200" required placeholder="例：旅の記録・第1シーズン"></label><button class="button primary" type="submit">シリーズを作成</button></form><p class="form-error" role="alert" hidden></p>`;
       body.querySelector('.series-shelf').onchange=e=>{shelfId=e.target.value;list();};
-      body.querySelectorAll('[data-edit-series]').forEach(button=>{button.onclick=()=>edit(button.dataset.editSeries);});
       body.querySelector('form').onsubmit=async e=>{
         e.preventDefault();const form=e.currentTarget,button=form.querySelector('button');button.disabled=true;
         try{const created=await api(`/shelves/${shelfId}/series`,{method:'POST',body:{title:form.elements.title.value.trim()}});if(alive())edit(created.series.id);}
@@ -43,11 +41,12 @@ export function openSeriesManager({dialog,api,esc,shelves,initialShelfId,initial
         order.querySelectorAll('[data-label]').forEach(input=>{input.oninput=()=>{entries[Number(input.dataset.label)].label=input.value;};});
         order.querySelectorAll('[data-up],[data-down]').forEach(button=>{button.onclick=()=>{const index=Number(button.dataset.up??button.dataset.down),target=index+(button.dataset.up===undefined?1:-1);[entries[index],entries[target]]=[entries[target],entries[index]];renderOrder();};});
         order.querySelectorAll('[data-remove]').forEach(button=>{button.onclick=()=>{entries.splice(Number(button.dataset.remove),1);renderOrder();};});
-        const available=library.items.filter(item=>!entries.some(e=>e.assetId===item.id) && (!item.series || item.series.id===id));
+        const available=library.items.filter(item=>!item.pending&&!entries.some(e=>e.assetId===item.id) && (!item.series || item.series.id===id));
         candidate.innerHTML=available.map(item=>`<option value="${item.id}">${esc(item.title)} (${item.kind==='video'?'動画':'本'})</option>`).join('')||'<option value="">追加できるアセットがありません</option>';
         body.querySelector('#series-add').disabled=!available.length || entries.length>=1000;
       }
       renderOrder();
+      body.querySelector('.series-back').textContent='← シリーズを追加';
       body.querySelector('#series-add').onclick=()=>{if(candidate.value && entries.length<1000){entries.push({assetId:candidate.value,label:''});renderOrder();}};
       body.querySelector('.series-back').onclick=list;
       body.querySelector('.series-reload').onclick=()=>edit(id);

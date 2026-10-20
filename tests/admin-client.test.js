@@ -2,6 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
 import {createExportWriter} from '../web/src/file-export-core.js';
+import {partitionJobs,jobStateClass} from '../web/src/job-presentation.js';
+
+test('current jobs and immutable history are separated, with semantic success/failure styling',()=>{
+  const states=['queued','running','processing','uploading','complete','failed','cancelled'];
+  const split=partitionJobs(states.map(state=>({state})));assert.deepEqual(split.current.map(r=>r.state),states.slice(0,4));assert.deepEqual(split.history.map(r=>r.state),states.slice(4));assert.equal(jobStateClass('complete'),'job-complete');assert.equal(jobStateClass('failed'),'job-failed');assert.notEqual(jobStateClass('complete'),jobStateClass('failed'));
+});
 
 test('native exports preserve exact bytes in bounded 256KiB bridge chunks, close once and refuse writes after completion',async()=>{
   const source=randomBytes(1024*1024+79),chunks=[];let finished=0;

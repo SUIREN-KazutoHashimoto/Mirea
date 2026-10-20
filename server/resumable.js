@@ -175,7 +175,7 @@ export async function registerResumableUploads(app, context) {
     return reply.code(201).send(status(get(id)));
   });
   app.get('/api/v1/uploads/:id', auth, async req => status(owned(req)));
-  app.get('/api/v1/uploads', auth, async req => ({uploads:db.prepare("SELECT u.* FROM upload_sessions u JOIN memberships m ON m.shelf_id=u.shelf_id AND m.user_id=u.user_id WHERE u.user_id=? AND m.role IN ('owner','editor') AND u.state IN ('processing','failed') ORDER BY u.created_at DESC LIMIT 100").all(req.user.id).map(row=>status(row,false))}));
+  app.get('/api/v1/uploads', auth, async req => ({uploads:db.prepare("SELECT u.* FROM upload_sessions u JOIN memberships m ON m.shelf_id=u.shelf_id AND m.user_id=u.user_id WHERE u.user_id=? AND m.role IN ('owner','editor') AND (u.state IN ('processing','failed') OR u.state='uploading' AND u.expires_at>?) ORDER BY u.created_at DESC LIMIT 100").all(req.user.id,Date.now()).map(row=>status(row,false)),activeCount:db.prepare("SELECT COUNT(*) AS n FROM upload_sessions u JOIN memberships m ON m.shelf_id=u.shelf_id AND m.user_id=u.user_id WHERE u.user_id=? AND m.role IN ('owner','editor') AND (u.state='processing' OR u.state='uploading' AND u.expires_at>?)").get(req.user.id,Date.now()).n}));
   app.post('/api/v1/uploads/:id/retry', auth, async(req,reply)=>{
     await exclusive(req.params.id,async()=>{
       const upload=owned(req);

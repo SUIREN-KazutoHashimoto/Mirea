@@ -28,16 +28,17 @@ test('new resumable video/audio requests retain originals by default and still h
     for(const flag of [undefined,false,true]){const r=await c.req('POST',`/shelves/${c.shelf}/uploads`,c.reader,{title:'Policy',files:[{filename,mime,size:100}],...(flag===undefined?{}:{retainOriginal:flag})});assert.equal(r.statusCode,201,r.body);assert.equal(r.json().retainOriginal,flag!==false);assert.equal((await c.req('DELETE','/uploads/'+r.json().id,c.reader)).statusCode,204);}
   }
 });
-test('individual and bounded bulk reruns require enabled admin plus warning but no password; destructive and backup APIs remain protected',async t=>{
+test('individual and whole-asset regeneration require enabled admin plus warning but no password; history replay is retired',async t=>{
   const c=await setup(t),ids=[await c.asset(),await c.asset()];
   assert.equal((await c.req('POST',`/admin/assets/${ids[0]}/regenerate`,c.admin,{kind:'thumbnail'})).statusCode,400);
   assert.equal((await c.req('POST',`/admin/assets/${ids[0]}/regenerate`,c.reader,{kind:'thumbnail',acknowledgeCost:true})).statusCode,403);
   const old=[];
   for(const id of ids){const r=await c.req('POST',`/admin/assets/${id}/regenerate`,c.admin,{kind:'thumbnail',acknowledgeCost:true});assert.equal(r.statusCode,202,r.body);old.push(r.json().job);assert.equal((await c.wait(r.json().job.id)).state,'complete');}
-  let r=await c.req('POST','/admin/jobs/retry',c.admin,{jobs:old.map(j=>({type:'job',id:j.id})),acknowledgeCost:true});assert.equal(r.statusCode,202,r.body);assert(r.json().results.every(r=>r.accepted));for(const entry of r.json().results)assert.equal((await c.wait(entry.job.id)).state,'complete');
-  r=await c.req('POST','/admin/jobs/retry',c.admin,{jobs:[{type:'job',id:old[0].id},{type:'job',id:randomUUID()}],acknowledgeCost:true});assert.equal(r.statusCode,202);assert.equal(r.json().results[0].accepted,true);assert.equal(r.json().results[1].accepted,false);await c.wait(r.json().results[0].job.id);
+  let r=await c.req('POST','/admin/assets/regenerate-all',c.admin,{kind:'thumbnail',acknowledgeCost:true});assert.equal(r.statusCode,202,r.body);assert.equal(r.json().accepted,2);for(const entry of c.db.prepare("SELECT id FROM admin_jobs WHERE state IN ('queued','running')").all())assert.equal((await c.wait(entry.id)).state,'complete');
+  r=await c.req('POST','/admin/jobs/retry',c.admin,{jobs:[{type:'job',id:old[0].id}],acknowledgeCost:true});assert.equal(r.statusCode,410);
   assert.equal((await c.req('POST','/admin/jobs/retry',c.reader,{jobs:[{type:'job',id:old[0].id}],acknowledgeCost:true})).statusCode,403);
-  assert.equal((await c.req('POST','/admin/jobs/retry',c.admin,{jobs:Array.from({length:21},()=>({type:'job',id:randomUUID()})),acknowledgeCost:true})).statusCode,400);
+  assert.equal((await c.req('POST','/admin/assets/regenerate-all',c.reader,{kind:'thumbnail',acknowledgeCost:true})).statusCode,403);
+  assert.equal((await c.req('POST','/admin/assets/regenerate-all',c.admin,{kind:'thumbnail'})).statusCode,400);
   assert.equal((await c.req('POST','/admin/backups',c.admin,{mode:'metadata',backupPassword:'separate-backup-password',acknowledgeSensitive:true})).statusCode,400);
   assert.equal((await c.req('PATCH','/admin/users/'+c.reader.user.id,c.admin,{disabled:true})).statusCode,400);
 });
@@ -81,7 +82,53 @@ test('failed automatic previews expose a valid asset retry identity, support bul
   assert.equal((await c.req('POST',`/items/${id}/preview`,c.reader)).statusCode,202);
   let failed;for(let n=0;n<100;n++){const rows=(await c.req('GET','/admin/jobs',c.admin)).json().previews;failed=rows.find(row=>row.assetId===id&&row.state==='failed');if(failed)break;await new Promise(r=>setTimeout(r,20));}
   assert(failed);assert.equal(failed.id,id);assert.equal(failed.automatic,true);
-  assert.equal((await c.req('POST','/admin/jobs/retry',c.admin,{acknowledgeCost:true,jobs:[{id,type:'asset'}]})).statusCode,400);
-  const retried=await c.req('POST','/admin/jobs/retry',c.admin,{acknowledgeCost:true,jobs:[{id,type:'asset',kind:'preview'}]});assert.equal(retried.statusCode,202,retried.body);assert(retried.json().results[0].accepted);assert.equal((await c.wait(retried.json().results[0].job.id)).state,'complete');
+  assert.equal((await c.req('POST','/admin/jobs/retry',c.admin,{acknowledgeCost:true,jobs:[{id,type:'asset'}]})).statusCode,410);
+  const retried=await c.req('POST','/admin/assets/regenerate-all',c.admin,{acknowledgeCost:true,kind:'preview'});assert.equal(retried.statusCode,202,retried.body);assert.equal(retried.json().accepted,1);assert.equal((await c.wait(c.db.prepare("SELECT id FROM admin_jobs WHERE asset_id=? AND kind='preview' ORDER BY created_at DESC LIMIT 1").get(id).id)).state,'complete');
   assert(!(await c.req('GET','/admin/jobs',c.admin)).json().previews.some(row=>row.assetId===id&&row.state==='failed'));assert((await readFile(join(c.dataDir,'previews',id+'.mp4'))).length>100);
+});
+
+test('whole-asset regeneration includes assets with no history, drains more than twenty durable jobs and separates history from current work',async t=>{
+  const media=createMediaProcessor();let active=0,maximum=0;
+  media.thumbnail=async(source,mime,destination)=>{active++;maximum=Math.max(maximum,active);await new Promise(r=>setTimeout(r,5));await writeFile(destination,'synthetic thumbnail');active--;};media.validateImage=async()=>({width:1,height:1});
+  const c=await setup(t,{mediaProcessor:media});for(let n=0;n<25;n++)await c.asset();
+  const deleted=randomUUID();c.db.prepare("INSERT INTO admin_jobs(id,kind,state,created_at,updated_at) VALUES(?,'thumbnail','complete',0,0)").run(deleted);
+  const r=await c.req('POST','/admin/assets/regenerate-all',c.admin,{kind:'thumbnail',acknowledgeCost:true});assert.equal(r.statusCode,202,r.body);assert.equal(r.json().accepted,25);
+  const running=(await c.req('GET','/admin/jobs',c.admin)).json();assert.equal(running.currentCount,25);assert(running.currentJobs.every(j=>['queued','running'].includes(j.state)));assert(running.history.jobs.some(j=>j.id===deleted));
+  for(const job of c.db.prepare('SELECT id FROM admin_jobs WHERE asset_id IS NOT NULL').all())assert.equal((await c.wait(job.id)).state,'complete');assert.equal(maximum,1);
+  const finished=(await c.req('GET','/admin/jobs',c.admin)).json();assert.equal(finished.currentCount,0);assert.equal(finished.currentJobs.length,0);assert.equal(finished.history.jobs.length,26);
+  const videos=await c.req('POST','/admin/assets/regenerate-all',c.admin,{kind:'transcode',acknowledgeCost:true});assert.equal(videos.json().accepted,0);
+});
+
+test('processing uploads appear as ACL-scoped non-playable placeholders and disappear from pending results after publication',async t=>{
+  const c=await setup(t),session=c.db.prepare('SELECT id FROM sessions WHERE user_id=?').get(c.reader.user.id).id,id=randomUUID();
+  assert.equal((await c.req('POST',`/shelves/${c.shelf}/members`,c.reader,{email:'admin@example.test',role:'viewer'})).statusCode,201);
+  c.db.prepare("INSERT INTO upload_sessions(id,shelf_id,user_id,session_id,title,files_json,chunk_size,state,created_at,expires_at,processing_json) VALUES(?,?,?,?,?,?,1,'processing',?,?,?)").run(id,c.shelf,c.reader.user.id,session,'Processing video',JSON.stringify([{filename:'source.mkv',mime:'video/x-matroska',size:99}]),Date.now(),Date.now()+60000,JSON.stringify({stage:'transcode',percent:37}));
+  for(const user of [c.reader,c.admin]){const r=await c.req('GET',`/shelves/${c.shelf}/items`,user);assert.equal(r.statusCode,200);const row=r.json().pendingUploads.find(i=>i.id===id);assert(row.pending);assert.equal(row.processing.percent,37);assert.equal(row.kind,'video');assert(!('files_json' in row));assert(!('thumbnailUrl' in row));assert.equal((await c.req('POST',`/items/${id}/playback-ticket`,user)).statusCode,404);}
+  assert.equal((await c.req('GET','/uploads',c.reader)).json().activeCount,1);assert.equal((await c.req('GET','/uploads',c.admin)).json().activeCount,0);
+  const outsider=(await c.req('POST','/auth/register',null,{name:'outsider',email:'outsider@example.test',password})).json();assert.equal((await c.req('GET',`/shelves/${c.shelf}/items`,outsider)).statusCode,404);
+  c.db.prepare("UPDATE upload_sessions SET state='complete' WHERE id=?").run(id);assert.equal((await c.req('GET',`/shelves/${c.shelf}/items`,c.reader)).json().pendingUploads.length,0);
+});
+
+test('restart drains a persisted whole-asset queue beyond the twenty-job execution window',async t=>{
+  const c=await setup(t);for(let n=0;n<25;n++){const asset=await c.asset();c.db.prepare("INSERT INTO admin_jobs(id,kind,asset_id,state,requested_by,created_at,updated_at) VALUES(?,'thumbnail',?,'queued',?,0,0)").run(randomUUID(),asset,c.admin.user.id);}
+  await c.app.close();
+  const media=createMediaProcessor();media.thumbnail=async(source,mime,destination)=>writeFile(destination,'synthetic thumbnail');media.validateImage=async()=>({width:1,height:1});
+  const restarted=await createApp({dataDir:c.dataDir,rateLimit:false,serverAdminUserIds:[c.admin.user.id],mediaProcessor:media});
+  try{for(const row of c.db.prepare('SELECT id FROM admin_jobs').all())assert.equal((await c.wait(row.id)).state,'complete');assert.equal(c.db.prepare("SELECT COUNT(*) n FROM admin_jobs WHERE state='complete'").get().n,25);}finally{await restarted.close();}
+});
+
+test('only the current shelf owner can rename/delete; deletion confirms password/name and preserves other shelves, accounts and encryption keys',async t=>{
+  const c=await setup(t),item=await c.asset(),other=(await c.req('POST','/shelves',c.reader,{name:'Keep shelf'})).json().id;
+  const key=await readFile(join(c.dataDir,'keys','download-master.key'));
+  assert.equal((await c.req('PATCH',`/shelves/${c.shelf}`,c.admin,{name:'Forbidden'})).statusCode,404);
+  await c.req('POST',`/shelves/${c.shelf}/members`,c.reader,{email:'admin@example.test',role:'viewer'});
+  assert.equal((await c.req('PATCH',`/shelves/${c.shelf}`,c.admin,{name:'Forbidden'})).statusCode,403);
+  assert.equal((await c.req('PATCH',`/shelves/${c.shelf}`,c.reader,{name:'   '})).statusCode,400);
+  assert.equal((await c.req('PATCH',`/shelves/${c.shelf}`,c.reader,{name:'Renamed shelf'})).statusCode,200);
+  const body={currentPassword:password,confirmName:'Renamed shelf',acknowledgeDelete:true};
+  assert.equal((await c.req('DELETE',`/shelves/${c.shelf}`,c.admin,body)).statusCode,403);
+  assert.equal((await c.req('DELETE',`/shelves/${c.shelf}`,c.reader,{...body,currentPassword:'wrong'})).statusCode,403);
+  assert.equal((await c.req('DELETE',`/shelves/${c.shelf}`,c.reader,{...body,confirmName:'wrong'})).statusCode,400);await access(join(c.dataDir,'uploads',item));
+  assert.equal((await c.req('DELETE',`/shelves/${c.shelf}`,c.reader,body)).statusCode,200);await assert.rejects(access(join(c.dataDir,'uploads',item)),{code:'ENOENT'});
+  assert(c.db.prepare('SELECT id FROM shelves WHERE id=?').get(other));assert.equal(c.db.prepare('SELECT COUNT(*) AS n FROM users').get().n,2);assert.deepEqual(await readFile(join(c.dataDir,'keys','download-master.key')),key);
 });
