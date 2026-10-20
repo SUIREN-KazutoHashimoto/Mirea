@@ -1,4 +1,5 @@
-import { hashPassword, verifyPassword, httpError } from './security.js';
+import { hashPassword, verifyPassword, hashToken, httpError } from './security.js';
+import {readRememberToken,clearRememberCookie} from './remember-session.js';
 import { transaction } from './database.js';
 
 const string = (maxLength, minLength = 1) => ({ type: 'string', minLength, maxLength });
@@ -25,7 +26,7 @@ export function registerAccounts(app, { db, authenticate, membership, loginResul
   app.get('/api/v1/account', auth, async req => ({
     user: req.user, ownedShelves: owned(req.user.id), activeUploads: activeUploads(req.user.id), lastServerAdmin: lastAdmin(req.user.id)
   }));
-  app.patch('/api/v1/account', { ...auth, schema: { body: object({ currentPassword, name: string(80), email, newPassword: string(128, 12) }, ['currentPassword']) } }, async req => {
+  app.patch('/api/v1/account', { ...auth, schema: { body: object({ currentPassword, name: string(80), email, newPassword: string(128, 12) }, ['currentPassword']) } }, async (req,reply) => {
     const user = await reauthenticate(req);
     const name = (req.body.name ?? user.name).trim(), normalizedEmail = (req.body.email ?? user.email).trim().toLowerCase();
     if (!name) throw httpError(400, '表示名を入力してください。');
@@ -38,7 +39,8 @@ export function registerAccounts(app, { db, authenticate, membership, loginResul
       db.prepare('UPDATE users SET name=?,email=?,password_hash=? WHERE id=?').run(name, normalizedEmail, passwordHash, user.id);
       // Rotate the current session too: all old tickets and sessions become invalid.
       db.prepare('DELETE FROM sessions WHERE user_id=?').run(user.id);
-      return loginResult({ id: user.id, name, email: normalizedEmail });
+      const remembered=readRememberToken(req);
+      return loginResult({ id: user.id, name, email: normalizedEmail },reply,Boolean(remembered&&hashToken(remembered)===req.session.token_hash));
     });
   });
   app.delete('/api/v1/account', { ...auth, schema: { body: object({ currentPassword, confirmEmail: email }, ['currentPassword', 'confirmEmail']) } }, async (req, reply) => {
@@ -57,6 +59,7 @@ export function registerAccounts(app, { db, authenticate, membership, loginResul
       return uploads;
     });
     await cleanupUploads(uploads);
+    clearRememberCookie(reply);
     return reply.code(204).send();
   });
   app.put('/api/v1/shelves/:id/owner', { ...auth, schema: { body: object({ currentPassword, userId: string(36, 36) }, ['currentPassword', 'userId']) } }, async (req, reply) => {

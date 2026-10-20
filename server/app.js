@@ -38,6 +38,7 @@ import {registerServerUpdates} from './server-updates.js';
 import {registerAdminCleanup} from './admin-cleanup.js';
 import {pendingShelfUploads} from './pending-uploads.js';
 import {registerShelfManagement} from './shelf-management.js';
+import {registerRememberSessions,issueRememberCookie,clearRememberCookie} from './remember-session.js';
 
 const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 const TICKET_MS = 60 * 60 * 1000;
@@ -45,7 +46,7 @@ const text = (maxLength, minLength = 1) => ({ type: 'string', minLength, maxLeng
 const object = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
 const email = { type: 'string', minLength: 3, maxLength: 254, pattern: '^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$' };
 const password = text(128, 12);
-const credentials = object({ email, password });
+const credentials = object({ email, password,remember:{type:'boolean',default:true} },['email','password']);
 const memberRole = { type: 'string', enum: ['editor', 'viewer'] };
 const publicUser = u => ({ id: u.id, email: u.email, name: u.name });
 const publicItem = i => ({
@@ -134,14 +135,16 @@ export async function createApp(options = {}) {
     membership(item.shelf_id, userId, roles);
     return item;
   }
-  function loginResult(user) {
+  function loginResult(user,reply,remember=true) {
     const token = newToken();
     const expiresAt = Date.now() + SESSION_MS;
     db.prepare('INSERT INTO sessions (id, token_hash, user_id, expires_at) VALUES (?, ?, ?, ?)').run(randomUUID(), hashToken(token), user.id, expiresAt);
+    if(reply){if(remember)issueRememberCookie(reply,token,expiresAt);else clearRememberCookie(reply);}
     return { user: publicUser(user), token, expiresAt };
   }
   const auth = { preHandler: async req => authenticate(req) };
   const adminAccess=createAdminAccess(db,options,authenticate);
+  registerRememberSessions(app,{db,authenticate,enabled:adminAccess.enabled,rateLimit:options.rateLimit});
   const authLimits = { config: { rateLimit: options.rateLimit === false ? false : { max: 10, timeWindow: '1 minute' } } };
   app.get('/api/health', async () => ({ status: 'ok',version:packageInfo.version,maintenanceLocked:maintenance.locked }));
   const updatesPath = options.appUpdatesDir ?? process.env.APP_UPDATES_DIR;
@@ -149,7 +152,7 @@ export async function createApp(options = {}) {
   let analytics;
   app.get('/api/v1/config', async () => ({ allowRegistration, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadSessionHours: 24, analytics,
     version: packageInfo.version, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.3.0beta/mirea-0.3.0beta-android.apk' }));
-  app.post('/api/v1/auth/register', { ...authLimits, schema: { body: object({ email, password, name: text(80) }) } }, async (req, reply) => {
+  app.post('/api/v1/auth/register', { ...authLimits, schema: { body: object({ email, password, name: text(80),remember:{type:'boolean',default:true} },['email','password','name']) } }, async (req, reply) => {
     if (!allowRegistration) throw httpError(403, '新規登録は現在停止しています。');
     const normalizedEmail = req.body.email.trim().toLowerCase();
     const name = req.body.name.trim();
@@ -162,18 +165,19 @@ export async function createApp(options = {}) {
       if (err.code === 'ERR_SQLITE_ERROR' && err.message.includes('UNIQUE')) throw httpError(409, 'このメールアドレスは登録済みです。');
       throw err;
     }
-    return reply.code(201).send(loginResult(user));
+    return reply.code(201).send(loginResult(user,reply,req.body.remember));
   });
-  app.post('/api/v1/auth/login', { ...authLimits, schema: { body: credentials } }, async req => {
+  app.post('/api/v1/auth/login', { ...authLimits, schema: { body: credentials } }, async (req,reply) => {
     const user = db.prepare('SELECT * FROM users WHERE email=?').get(req.body.email.trim().toLowerCase());
     const valid = await verifyPassword(req.body.password, user?.password_hash ?? dummyHash);
     if (!user || !valid || !adminAccess.enabled(user.id)) throw httpError(401, 'メールアドレスまたはパスワードが違います。');
-    return loginResult(user);
+    return loginResult(user,reply,req.body.remember);
   });
   app.get('/api/v1/auth/me', auth, async req => ({ user: req.user }));
   app.get('/api/v1/history',auth,async req=>({items:db.prepare(`SELECT i.*,MAX(v.last_received_at) AS lastSeenAt FROM analytics_views v JOIN items i ON i.id=v.asset_id JOIN memberships m ON m.shelf_id=i.shelf_id AND m.user_id=? WHERE v.user_id=? AND v.context='viewer' AND v.counted=1 GROUP BY i.id ORDER BY lastSeenAt DESC,i.id LIMIT 100`).all(req.user.id,req.user.id).map(item=>({...publicItem(item),lastSeenAt:item.lastSeenAt}))}));
   app.post('/api/v1/auth/logout', auth, async (req, reply) => {
     db.prepare('DELETE FROM sessions WHERE id=?').run(req.session.id);
+    clearRememberCookie(reply);
     return reply.code(204).send();
   });
   app.get('/api/v1/shelves', auth, async req => ({ shelves: db.prepare(`
