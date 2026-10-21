@@ -5,6 +5,7 @@ import { IMAGE_BOOK_MIME } from './media.js';
 import { isAudio, isTimedKind } from './audio-types.js';
 import { EPUB_MIME } from './ebook-types.js';
 import { replayHeatmap } from './replay-heatmap.js';
+import {registerReplayProjection} from './replay-eligibility.js';
 
 const DAY = 86400000, MAX_SESSION = 7 * DAY, BIN_MS = 10000;
 const uuid = { type: 'string', pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' };
@@ -29,6 +30,7 @@ const kindOf = item => item.mime_type === IMAGE_BOOK_MIME ? 'image-book' : item.
 
 export async function registerAnalytics(app, { db, authenticate, membership, findItem, options, adminAccess }) {
   const enabled = options.analyticsEnabled ?? process.env.ANALYTICS_ENABLED !== 'false';
+  const replayProjection=registerReplayProjection(app,db);
   const isAdmin = adminAccess.isAdmin;
   const config = { enabled, access: 'self-detail-admin-aggregate', retentionDays: 0, sampleIntervalMs: 1000, schemaVersion: 1, minimumAggregateViewers: 5 };
   const auth = { onRequest: async req => authenticate(req) };
@@ -113,6 +115,7 @@ export async function registerAnalytics(app, { db, authenticate, membership, fin
         accepted++;
       }
     });
+    if(accepted&&kind==='video'&&input.context==='viewer')replayProjection.ingest(input.id);
     return { accepted, duplicates, schemaVersion: 1 };
   });
 

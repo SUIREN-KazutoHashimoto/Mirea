@@ -12,7 +12,7 @@ export function replayHeatmap(db, item, { enabled = true, now = Date.now(), user
   // Exclude entire sessions still receiving events today. Per-bin thresholds
   // stop a popular asset from revealing a single viewer's unusual seek position.
   const rows = db.prepare(`SELECT CAST(b.start_ms / ? AS INTEGER) AS bucket, SUM(b.media_ms) AS mediaMs
-    FROM analytics_video_bins b JOIN analytics_views v ON v.id=b.view_id
+    FROM analytics_replay_bins b JOIN analytics_views v ON v.id=b.view_id
     WHERE v.asset_id=? AND v.shelf_id=? AND v.asset_kind='video' AND v.context='viewer' AND v.counted=1
       AND v.opened_at<? AND v.last_received_at<? AND b.start_ms>=0 AND b.start_ms<? AND b.media_ms>0
     GROUP BY bucket HAVING COUNT(DISTINCT v.user_id)>=? ORDER BY bucket LIMIT 200`)
@@ -30,7 +30,7 @@ export function replayHeatmap(db, item, { enabled = true, now = Date.now(), user
     // Explicit owner-approved fallback: own sessions only, never a small group.
     // It is deliberately a separate scope and never fills anonymous gaps.
     const own = db.prepare(`SELECT CAST(b.start_ms / ? AS INTEGER) AS bucket, SUM(b.media_ms) AS mediaMs
-      FROM analytics_video_bins b JOIN analytics_views v ON v.id=b.view_id
+      FROM analytics_replay_bins b JOIN analytics_views v ON v.id=b.view_id
       WHERE v.user_id=? AND v.asset_id=? AND v.shelf_id=? AND v.asset_kind='video' AND v.context='viewer' AND v.counted=1
         AND b.start_ms>=0 AND b.start_ms<? AND b.media_ms>0 GROUP BY bucket ORDER BY bucket LIMIT 200`)
       .all(binSizeMs, userId, item.id, item.shelf_id, durationMs);

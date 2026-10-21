@@ -126,10 +126,10 @@ test('viewer replay graph enforces current ACL, per-bin anonymity, coarsening, f
   const viewers=[];
   for(let n=0;n<5;n++){
     const user=n?await c.register('heat'+n):c.viewer;viewers.push(user);if(n)await c.member(user);
-    const view=c.view();assert.equal((await c.send(view,[c.start(),c.interval(2,{fromMs:0,toMs:1000})],user)).statusCode,200);
-    c.db.prepare('UPDATE analytics_video_bins SET media_ms=10000,watch_ms=5000 WHERE view_id=?').run(view.id);
+    const view=c.view(),intervals=Array.from({length:10},(_,i)=>c.interval(i+2,{fromMs:i*1000,toMs:(i+1)*1000}));
+    if(n===0)for(let i=0;i<3;i++)intervals.push(c.interval(i+12,{fromMs:20000+i*1000,toMs:21000+i*1000}));
+    assert.equal((await c.send(view,[c.start(),...intervals],user)).statusCode,200);
     c.db.prepare('UPDATE analytics_views SET last_received_at=? WHERE id=?').run(yesterday,view.id);
-    if(n===0)c.db.prepare('INSERT INTO analytics_video_bins VALUES(?,20000,1000000,1000000)').run(view.id);
     const response=await c.req('GET',path,c.viewer);assert.equal(response.json().available,true);assert.equal(response.json().scope,n===4?'anonymous':'self');
     if(n<4)assert.equal((await c.req('GET',path,c.owner)).json().available,false,'owner does not inherit another viewer’s personal fallback');
     assert.equal(response.headers['cache-control'],'no-store');
@@ -144,6 +144,14 @@ test('viewer replay graph enforces current ACL, per-bin anonymity, coarsening, f
   assert.ok((await c.req('GET',path,c.viewer)).json().points.length<=200);
   await c.req('DELETE',`/shelves/${c.shelf}/members/${c.viewer.user.id}`,c.owner);
   assert.equal((await c.req('GET',path,c.viewer)).statusCode,404,'historical viewer loses graph access too');
+});
+
+test('replay graph drops short searches but keeps raw history, qualifies three seconds across requests and backfills after restart',async t=>{
+  const c=await setup(t),path=`/items/${c.video}/replay-heatmap`,view=c.view();c.db.prepare('INSERT INTO video_assets VALUES(?,?,1)').run(c.video,JSON.stringify({duration:60}));
+  const first=[c.start(1,{elapsedMs:0}),c.interval(2,{elapsedMs:1000,fromMs:0,toMs:1000}),c.interval(3,{elapsedMs:2000,fromMs:20000,toMs:21000}),c.event(4,'pause',{elapsedMs:2000,playing:false,toMs:21000})];assert.equal((await c.send(view,first)).statusCode,200);assert.equal((await c.req('GET',path,c.viewer)).json().available,false);
+  const next=[c.interval(5,{elapsedMs:3000,fromMs:30000,toMs:31000}),c.interval(6,{elapsedMs:4000,fromMs:31000,toMs:32000})];await c.send(view,next);assert.equal((await c.req('GET',path,c.viewer)).json().available,false);await c.send(view,[c.interval(7,{elapsedMs:5000,fromMs:32000,toMs:33000})]);assert.deepEqual((await c.req('GET',path,c.viewer)).json().points,[null,null,null,1,null,null]);
+  assert.equal((await c.req('GET','/analytics/me/summary',c.viewer)).json().assets[0].watchMs,5000);assert.equal((await c.send(view,next)).json().duplicates,2);
+  const before=c.db.prepare('SELECT * FROM analytics_events ORDER BY row_id').all(),views=c.db.prepare('SELECT * FROM analytics_views').all();await c.app.close();c.db.exec('DELETE FROM analytics_replay_bins;DELETE FROM analytics_replay_state;');c.app=await createApp(c.options);let graph;for(let n=0;n<100;n++){graph=(await c.req('GET',path,c.viewer)).json();if(graph.available)break;await new Promise(r=>setTimeout(r,20));}assert.deepEqual(graph.points,[null,null,null,1,null,null]);assert.deepEqual(c.db.prepare('SELECT * FROM analytics_events ORDER BY row_id').all(),before);assert.deepEqual(c.db.prepare('SELECT * FROM analytics_views').all(),views);
 });
 
 test('actual recorder batches with fractional clock, seek, page changes and lifecycle pass server validation',async t=>{
