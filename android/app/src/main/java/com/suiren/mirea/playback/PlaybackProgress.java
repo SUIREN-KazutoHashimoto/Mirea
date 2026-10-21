@@ -13,12 +13,19 @@ public final class PlaybackProgress {
     private JSONObject pending,desired,last;
     public boolean conflicted;
     public PlaybackProgress(PlaybackApi api,PlaybackJournal journal,String asset)throws Exception{
-        this((method,body)->api.json("/items/"+asset+"/progress",method,body),new Store(){public JSONObject load()throws Exception{return journal.progress(api.partition,asset);}public void save(JSONObject value){journal.progress(api.partition,asset,value);}});
+        this(api,journal,asset,false);
+    }
+    public PlaybackProgress(PlaybackApi api,PlaybackJournal journal,String asset,boolean localOnly)throws Exception{
+        this((method,body)->api.json("/items/"+asset+"/progress",method,body),new Store(){public JSONObject load()throws Exception{return journal.progress(api.partition,asset);}public void save(JSONObject value){journal.progress(api.partition,asset,value);}},localOnly);
     }
     public PlaybackProgress(Transport remote,Store store)throws Exception{
+        this(remote,store,false);
+    }
+    public PlaybackProgress(Transport remote,Store store,boolean localOnly)throws Exception{
         this.remote=remote;this.store=store;
         revision=-1;
         JSONObject saved=store.load();if(saved!=null){revision=saved.optLong("revision",-1);pending=saved.optJSONObject("pending");desired=saved.optJSONObject("desired");last=saved.optJSONObject("last");}
+        if(localOnly)return;
         try{
             if(pending!=null){try{send();}catch(PlaybackApi.Failure e){if(e.status==409){pending=null;desired=null;}else throw e;}}
             JSONObject initial=remote.call("GET",null);long remoteRevision=initial.getLong("revision");

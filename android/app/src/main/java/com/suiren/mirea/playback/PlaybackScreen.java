@@ -41,6 +41,11 @@ public final class PlaybackScreen extends FrameLayout {
     private int insetLeft,insetTop,insetRight,insetBottom;
     private JSONObject model=new JSONObject();
     private Bitmap artwork;
+    private AudioBackdrop backdrop;private boolean motionForeground,audioPlaying;
+    public void setMotionForeground(boolean value){motionForeground=value;updateMotion();}
+    private void updateMotion(){if(backdrop==null)return;if(motionForeground&&audioPlaying&&!isVideo&&!pip&&isAttachedToWindow()&&getWindowVisibility()==VISIBLE)backdrop.start();else backdrop.stop();}
+    private void replaceBackdrop(AudioBackdrop value){if(backdrop!=null)backdrop.stop();backdrop=value;setBackground(value);updateMotion();}
+    @Override protected void onAttachedToWindow(){super.onAttachedToWindow();updateMotion();}
     private long duration;
 
     public PlaybackScreen(Context context,Actions actions){
@@ -112,7 +117,7 @@ public final class PlaybackScreen extends FrameLayout {
         if(!holdTriggered&&!holdConsumed)taps.onTouchEvent(event);
         return true;
     }
-    @Override protected void onDetachedFromWindow(){cancelHold();cancelScrub();super.onDetachedFromWindow();}
+    @Override protected void onDetachedFromWindow(){if(backdrop!=null)backdrop.stop();cancelHold();cancelScrub();super.onDetachedFromWindow();}
     public void cancelScrub(){heatmap.setSeeking(false);if(preview!=null&&preview.precise)finishPrecise(false,scrubOrigin);if(preview!=null)preview.hide();if(scrubbing){scrubCancelled=true;scrubbing=false;actions.scrub(false);}}
     private void finishPrecise(boolean commit,long position){preview.hide();scrubbing=false;scrubCancelled=true;heatmap.setSeeking(false);actions.seek(commit?position:scrubOrigin);actions.scrub(false);if(scrubPlaying)actions.perform("resume-scrub");}
     public void navigation(JSONObject nav,Bitmap sheet){preview.data(nav,sheet);if(videoSeek instanceof ChapterSeekBar)((ChapterSeekBar)videoSeek).chapters(nav);}
@@ -142,11 +147,11 @@ public final class PlaybackScreen extends FrameLayout {
     }
     public void setVideo(boolean value){
         if(isVideo!=value)cancelScrub();
-        if(isVideo!=value||audioWide==null){isVideo=value;audioBody.setVisibility(value?GONE:VISIBLE);rotate.setVisibility(value?VISIBLE:GONE);setBackground(value?null:new AudioBackdrop(artwork,model.optJSONObject("item")==null?"Mirea":model.optJSONObject("item").optString("id")));header.setBackground(value?new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,new int[]{0xd908101d,0x0008101d}):null);}
+        if(isVideo!=value||audioWide==null){isVideo=value;audioBody.setVisibility(value?GONE:VISIBLE);rotate.setVisibility(value?VISIBLE:GONE);replaceBackdrop(value?null:new AudioBackdrop(artwork,model.optJSONObject("item")==null?"Mirea":model.optJSONObject("item").optString("id")));header.setBackground(value?new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,new int[]{0xd908101d,0x0008101d}):null);}
         updateVisibility();
     }
     public void setChromeVisible(boolean value){if(!value)cancelScrub();chrome=value;updateVisibility();}
-    public void setPip(boolean value){if(value)cancelScrub();pip=value;setVisibility(value?GONE:VISIBLE);}
+    public void setPip(boolean value){if(value)cancelScrub();pip=value;setVisibility(value?GONE:VISIBLE);updateMotion();}
     public void landscape(boolean value){rotate.setContentDescription(value?"縦画面に切り替え":"横画面に切り替え");}
     private void updateVisibility(){header.setVisibility(!isVideo||chrome?VISIBLE:GONE);center.setVisibility(isVideo&&chrome?VISIBLE:GONE);videoFooter.setVisibility(isVideo&&chrome?VISIBLE:GONE);}
     public void bind(JSONObject value,Bitmap image){
@@ -154,7 +159,8 @@ public final class PlaybackScreen extends FrameLayout {
         if(!prepared||!value.optString("error").isEmpty())cancelScrub();
         if(!video||!playing||busy||!value.optString("error").isEmpty())cancelHold();heatmap.bind(video?value.optJSONObject("heatmap"):null);boostBadge.setVisibility(video&&value.optBoolean("holdBoost")?VISIBLE:GONE);
         JSONObject item=value.optJSONObject("item");String name=item==null?"Mirea":item.optString("title","Mirea");headerTitle.setText(video?name:"再生中");audioTitle.setText(name);
-        if(artwork!=image){artwork=image;cover.setImageBitmap(image);if(!video)setBackground(new AudioBackdrop(image,item==null?"Mirea":item.optString("id")));}cover.setVisibility(image==null?GONE:VISIBLE);
+        if(artwork!=image){artwork=image;cover.setImageBitmap(image);if(!video)replaceBackdrop(new AudioBackdrop(image,item==null?"Mirea":item.optString("id")));}cover.setVisibility(image==null?GONE:VISIBLE);
+        audioPlaying=playing&&!busy&&value.optString("error").isEmpty();updateMotion();
         duration=value.optLong("durationMs");long position=value.optLong("positionMs");String label=PlaybackPresentation.time(position)+" / "+PlaybackPresentation.time(duration);if(!scrubbing){videoTime.setText(label);audioTime.setText(label);int p=duration>0?(int)Math.max(0,Math.min(10000,position*10000/duration)):0;videoSeek.setProgress(p);audioSeek.setProgress(p);}
         String caption=value.optString("caption");captions.setText(caption);captions.setTextSize(value.optInt("captionSize",20));captions.setVisibility(video&&!caption.isEmpty()?VISIBLE:GONE);LayoutParams cp=(LayoutParams)captions.getLayoutParams();cp.bottomMargin=insetBottom+dp(chrome?170:36);captions.setLayoutParams(cp);
         for(ImageButton button:new ImageButton[]{videoPlay,audioPlay}){button.setEnabled(prepared);button.setAlpha(prepared?1f:.45f);button.setContentDescription(playing?"一時停止":"再生");button.setImageDrawable(new PlaybackIcon(playing?"pause":"play",button==audioPlay?0xff142039:WHITE));}

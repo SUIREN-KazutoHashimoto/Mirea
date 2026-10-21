@@ -121,7 +121,7 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
         if(destroyed||screen==null)return;PlaybackService s=service();if(s==null){try{boolean starting=SystemClock.elapsedRealtime()-createdAt<2000;screen.bind(new JSONObject().put("video",true).put("buffering",starting).put("error",starting?"":"再生を終了しました。ライブラリから開いてください。"),null);}catch(JSONException ignored){}return;}
         boolean inPip=isInPictureInPictureMode();s.visibility(visible&&!inPip,inPip);JSONObject state=s.status();boolean isVideo=s.video();
         JSONObject current=state.optJSONObject("item");String id=current==null?"":current.optString("id");if(!shownAsset.equals(id)){shownAsset=id;screen.resetZoom();zoom=1;panX=panY=0;applyZoom();}screen.navigation(s.navigation,s.storyboard);
-        video.setVisibility(isVideo?View.VISIBLE:View.GONE);screen.bind(state,s.artwork);screen.setPip(inPip);
+        video.setVisibility(isVideo?View.VISIBLE:View.GONE);screen.bind(state,s.artwork);screen.setPip(inPip);screen.setMotionForeground(visible&&!inPip);
         AccessibilityManager accessibility=getSystemService(AccessibilityManager.class);boolean assisted=accessibility!=null&&accessibility.isTouchExplorationEnabled();boolean busy=scrubbing||!dialogs.isEmpty()||state.optBoolean("buffering")||!state.optString("error").isEmpty();
         screen.setChromeVisible(chrome.update(SystemClock.elapsedRealtime(),isVideo,s.playing(),busy,assisted,inPip));screen.landscape(getResources().getConfiguration().orientation==Configuration.ORIENTATION_LANDSCAPE);
         if(isVideo){Surface surface=video.getHolder().getSurface();if(surface!=null&&surface.isValid()&&(s!=surfaceService||surface!=boundSurface))attach(surface);fitVideo();}
@@ -149,7 +149,7 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
     @Override public void onWindowFocusChanged(boolean focus){super.onWindowFocusChanged(focus);if(!focus&&screen!=null){screen.cancelHold();screen.cancelScrub();}if(focus&&root!=null)applySystemBars();}
     @Override public void onSaveInstanceState(Bundle out){out.putInt("orientationMode",orientation.manual());super.onSaveInstanceState(out);}
     @Override public void onResume(){super.onResume();visible=true;backgroundRequested=false;chrome.interact(SystemClock.elapsedRealtime());if(service()!=null)service().visibility(true,isInPictureInPictureMode());render();}
-    @Override public void onPause(){if(screen!=null){screen.cancelHold();screen.cancelScrub();}visible=false;if(service()!=null)service().visibility(false,isInPictureInPictureMode());super.onPause();}
+    @Override public void onPause(){if(screen!=null){screen.setMotionForeground(false);screen.cancelHold();screen.cancelScrub();}visible=false;if(service()!=null)service().visibility(false,isInPictureInPictureMode());super.onPause();}
     private void returnToLibrary(){
         PlaybackService s=service();preserve=true;backgroundRequested=true;configurePip(false);
         if(s!=null&&s.video()&&canPip()){

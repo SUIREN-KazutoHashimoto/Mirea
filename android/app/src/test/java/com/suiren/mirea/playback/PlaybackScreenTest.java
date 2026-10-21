@@ -26,6 +26,13 @@ public class PlaybackScreenTest {
     private void layout(PlaybackScreen screen,int width,int height){for(int n=0;n<4;n++){screen.measure(View.MeasureSpec.makeMeasureSpec(width,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(height,View.MeasureSpec.EXACTLY));screen.layout(0,0,width,height);org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();}assertEquals("actual rendering width",width,screen.getWidth());assertEquals("actual rendering height",height,screen.getHeight());}
     private Rect bounds(View view,View root){Rect r=new Rect(0,0,view.getWidth(),view.getHeight());((ViewGroup)root).offsetDescendantRectToMyCoords(view,r);return r;}
     private void touch(PlaybackScreen screen,int action,float x,float y){MotionEvent event=MotionEvent.obtain(0,android.os.SystemClock.uptimeMillis(),action,x,y,0);screen.dispatchTouchEvent(event);event.recycle();}
+    @Test public void audioMotionStopsForPauseBackgroundPipVideoAndDetach()throws Exception{
+        try(ActivityController<Activity> controller=Robolectric.buildActivity(Activity.class).setup()){
+            PlaybackScreen screen=create(controller.get(),false);layout(screen,360,800);screen.setMotionForeground(true);AudioBackdrop glow=(AudioBackdrop)screen.getBackground();assertTrue(glow.isRunning());
+            screen.setMotionForeground(false);assertFalse(glow.isRunning());screen.setMotionForeground(true);assertTrue(glow.isRunning());screen.setPip(true);assertFalse(glow.isRunning());screen.setPip(false);assertTrue(glow.isRunning());
+            screen.bind(new JSONObject().put("video",false).put("prepared",true).put("playing",false),null);assertFalse(glow.isRunning());screen.bind(new JSONObject().put("video",false).put("prepared",true).put("playing",true),null);assertTrue(glow.isRunning());screen.setVideo(true);assertFalse(glow.isRunning());screen.setVideo(false);AudioBackdrop replacement=(AudioBackdrop)screen.getBackground();assertTrue(replacement.isRunning());controller.get().setContentView(new FrameLayout(controller.get()));assertFalse(replacement.isRunning());
+        }
+    }
     @Test @Config(qualifiers="w800dp-h360dp-land-mdpi") public void doubleTapSeeksAndFineSeekCanCancelOrConfirmWithoutReplayingAHistoryJob()throws Exception{
         try(ActivityController<Activity> controller=Robolectric.buildActivity(Activity.class).setup()){
             PlaybackScreen screen=create(controller.get(),true);layout(screen,800,360);screen.setChromeVisible(false);layout(screen,800,360);

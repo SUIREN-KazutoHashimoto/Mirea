@@ -1,5 +1,5 @@
 import { DOWNLOAD_PATH,encryptedRangeResponse } from './download-core.js';
-import {validShellManifest} from './offline-shell.js';
+import {validShellManifest,shellResponse} from './offline-shell.js';
 import { openDownloadDb } from './download-db.js';
 
 // Only allowlisted build assets enter Cache Storage. API/media responses never
@@ -38,16 +38,12 @@ self.addEventListener('fetch',event=>{
   if(!url.pathname.startsWith(DOWNLOAD_PATH)){
     if(event.request.method!=='GET'||url.search||url.pathname.startsWith('/api/'))return;
     if(event.request.mode==='navigate'||url.pathname.startsWith('/assets/')||url.pathname.startsWith('/pdf-assets/')||url.pathname==='/favicon.svg'||url.pathname.startsWith('/brand/')){
-      event.respondWith((async()=>{
-        try{return await fetch(event.request);}
-        catch{
-          const path=event.request.mode==='navigate'?'/index.html':url.pathname;
-          for(const name of (await caches.keys()).filter(name=>name.startsWith(SHELL)).reverse()){
-            const hit=await(await caches.open(name)).match(path);if(hit)return hit;
-          }
-          return new Response('オフライン用画面がありません。オンラインで一度ダウンロードしてください。',{status:503});
+      event.respondWith(shellResponse(event.request,{navigate:event.request.mode==='navigate',findCached:async()=>{
+        const path=event.request.mode==='navigate'?'/index.html':url.pathname;
+        for(const name of (await caches.keys()).filter(name=>name.startsWith(SHELL)).reverse()){
+          const hit=await(await caches.open(name)).match(path);if(hit)return hit;
         }
-      })());
+      }}));
     }
     return;
   }

@@ -1,4 +1,4 @@
-import { getSession,getEndpoint,sessionRevision,api,authenticatedBlob } from './api.js';
+import { getSession,getEndpoint,sessionRevision,isOfflineSession,api,authenticatedBlob } from './api.js';
 import { openDownloadDb } from './download-db.js';
 import { DOWNLOAD_PATH,validateManifest,importDownloadKey,ciphertextHash } from './download-core.js';
 import { NativePlayer,nativePlayerAvailable } from './native-player-bridge.js';
@@ -122,6 +122,7 @@ const denied=error=>[400,401,403,404,409,410,422].includes(error.status);
 export async function authorizeDownload(ctx,record){
   const vault=await offlineVault();let grant;
   try{
+    if(isOfflineSession())throw new Error('オフラインです。');
     grant=await api(`/downloads/${record.manifest.id}/open`,{method:'POST',signal:AbortSignal.timeout(10000)});
     if(!current(ctx))throw Object.assign(new Error('ログイン先が変更されました。'),{status:401});
     if(grant.manifest?.id!==record.manifest.id||grant.manifest?.assetId!==record.assetId)throw Object.assign(new Error('保存情報が一致しません。'),{status:409});
@@ -135,6 +136,7 @@ export async function authorizeDownload(ctx,record){
     }
     // Failed connections never extend a previously authenticated lease.
     grant=await vault.lease(ctx.partition,record.manifest.id);
+    if(!current(ctx))throw new Error('閲覧セッションは終了しました。');
     if(!grant)throw new Error('オフライン視聴期限（最終接続から7日）が切れています。オンラインで接続してください。');
     return grant;
   }

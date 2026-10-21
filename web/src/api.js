@@ -1,6 +1,7 @@
 import { NativePlayer,nativePlayerAvailable,invalidateNativePlayback } from './native-player-bridge.js';
 import { Capacitor,registerPlugin } from '@capacitor/core';
 import {offlineVault,offlineIdentity,forgetOfflineIdentity} from './offline-vault.js';
+import {connectionBudget} from './connection-budget.js';
 import {createLoginStore} from './session-store.js';
 import { createResumableUpload } from './resumable-upload.js';
 import { beginUpdateActivity } from './update-busy.js';
@@ -13,41 +14,45 @@ export const sessionRevision=()=>authRevision;
 export const isOfflineSession=()=>session?.offline===true;
 export async function markSessionOffline(){if(session&&await offlineIdentity(endpoint,session.user.id))session={...session,offline:true};}
 export async function rememberOfflineConfig(config){if(session&&!session.offline)try{await(await offlineVault()).saveIdentity(endpoint,session,rememberChoice,config);}catch{/* Offline storage is optional for online viewing. */}}
-export async function reconnectSession(){
+export async function reconnectSession({signal}={}){
   if(!session)return false;
   const revision=authRevision,origin=endpoint,actor=session.user.id;
-  if(session.offline&&!native){
-    let restored;try{restored=await sessionRequest('/auth/remember');}catch(error){if([401,403].includes(error.status)&&authRevision===revision)await setSession(null);throw error;}
+  if(session.offline&&!native&&!session.token){
+    let restored;try{restored=await sessionRequest('/auth/remember',{signal});}catch(error){if([401,403].includes(error.status)&&authRevision===revision)await setSession(null);throw error;}
     if(authRevision!==revision||endpoint!==origin||restored.user.id!==actor)return false;
     session=restored;
   }
-  const value=await api('/auth/me');if(authRevision!==revision||endpoint!==origin)return false;
+  const value=await api('/auth/me',{signal});if(authRevision!==revision||endpoint!==origin)return false;
   session={...session,user:value.user,offline:false};return true;
 }
 async function offlineLoggedOut(origin){try{return await(await offlineVault()).loggedOut(origin);}catch{return false;}}
 async function sessionRequest(path,options={}){
   let response;try{response=await fetch(`/api/v1${path}`,{...options,signal:options.signal??AbortSignal.timeout(10000),credentials:'same-origin',cache:'no-store',headers:{...(options.body?{'Content-Type':'application/json'}:{}),...options.headers},body:options.body?JSON.stringify(options.body):undefined});}catch{throw new Error('サーバーに接続できません。ログイン保持は解除していません。');}
-  if(!response.ok)throw Object.assign(new Error('保持されたログインを確認できません。'),{status:response.status});return response.status===204?null:response.json();
+  options.signal?.throwIfAborted();
+  if(!response.ok)throw Object.assign(new Error('保持されたログインを確認できません。'),{status:response.status});const value=response.status===204?null:await response.json();options.signal?.throwIfAborted();return value;
 }
 const loginStore=createLoginStore({native,temporary:()=>{try{return sessionStorage;}catch{return null;}},secure:registerPlugin('MireaSession'),request:sessionRequest});
-export async function initializeSession(){
+export async function initializeSession({signal}={}){
+  const budget=signal?null:connectionBudget();signal??=budget.signal;
+  try {
   const revision=++authRevision,origin=endpoint;let loaded;
-  try{loaded=await loginStore.load(origin);
-    if(await offlineLoggedOut(origin)){if(loaded?.value?.token&&!native){await fetch('/api/v1/auth/logout',{method:'POST',headers:{Authorization:'Bearer '+loaded.value.token},cache:'no-store'}).catch(()=>{});await loginStore.clear(origin,loaded.value.token);}session=null;return;}
+  try{loaded=await loginStore.load(origin,{signal});
+    if(await offlineLoggedOut(origin)){if(loaded?.value?.token&&!native){await fetch('/api/v1/auth/logout',{method:'POST',headers:{Authorization:'Bearer '+loaded.value.token},cache:'no-store',signal}).catch(()=>{});await loginStore.clear(origin,loaded.value.token,{signal});}session=null;return;}
   }catch(error){const cached=await offlineIdentity(origin);if(!cached)throw error;loaded={value:{...cached,token:'',offline:true},remember:true};}if(authRevision!==revision||origin!==endpoint)return;
   if(!loaded){session=null;await forgetOfflineIdentity(origin);return;}session=loaded.value;rememberChoice=loaded.remember;
   if(session.offline)return;
   let current;
-  try{current=await api('/auth/me');}catch(error){
+  try{current=await api('/auth/me',{signal});}catch(error){
     // A newer login/server selection wins over an older in-flight validation.
     // api() already clears the matching current session on a 401.
     if(authRevision!==revision||origin!==endpoint)return;
-    if(error.status===401){await loginStore.clear(origin,loaded.value.token);if(authRevision===revision)session=null;return;}const cached=await offlineIdentity(origin,session?.user.id);if(cached){session={...session,offline:true};return;}throw error;
+    if(error.status===401){await loginStore.clear(origin,loaded.value.token,{signal});if(authRevision===revision)session=null;return;}const cached=await offlineIdentity(origin,session?.user.id);if(cached){session={...session,offline:true};return;}throw error;
   }
   if(authRevision!==revision||origin!==endpoint)return;
   if(current.user.id!==loaded.value.user.id){await setSession(null);return;}
   session={...session,user:{id:current.user.id,name:current.user.name,email:current.user.email}};
   if(loaded.legacy)await loginStore.save(origin,session,rememberChoice);
+  } finally {budget?.dispose();}
 }
 
 export const getSession = () => session;
@@ -83,6 +88,7 @@ export async function api(path, options = {}) {
   if (native && !endpoint) throw new Error('接続先のサーバーURLを設定してください。');
   const token = session?.token;
   if(session?.offline&&!token&&!path.startsWith('/auth/login')&&!path.startsWith('/auth/register')&&path!=='/config')throw new Error('オフラインです。接続後に自動同期します。');
+  options.signal?.throwIfAborted();
   let response;
   try {
     response = await fetch(absoluteUrl(`/api/v1${path}`), {
@@ -92,8 +98,10 @@ export async function api(path, options = {}) {
       cache: 'no-store'
     });
   } catch { throw new Error('サーバーに接続できません。接続先とネットワークを確認してください。'); }
+  options.signal?.throwIfAborted();
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
+    options.signal?.throwIfAborted();
     const error = Object.assign(new Error(data.error || 'リクエストに失敗しました。'), { status: response.status });
     if (response.status === 401 && session && session.token === token && !path.startsWith('/auth/login')) {
       setSession(null);
@@ -101,7 +109,7 @@ export async function api(path, options = {}) {
     }
     throw error;
   }
-  return response.status === 204 ? null : response.json();
+  const result=response.status===204?null:await response.json();options.signal?.throwIfAborted();return result;
 }
 
 export async function authenticatedBlob(path, signal) {

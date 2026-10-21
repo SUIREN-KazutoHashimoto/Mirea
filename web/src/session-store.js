@@ -11,19 +11,19 @@ export function createLoginStore({native,temporary,secure,request}){
   const removeTemporary=origin=>{try{temporary()?.removeItem(key(origin));temporary()?.removeItem('mirea.session');}catch{}};
   const writeTemporary=(origin,value)=>{try{temporary()?.setItem(key(origin),JSON.stringify({origin,remember:false,session:value}));}catch{}};
   const enqueue=work=>{const task=tail.catch(()=>{}).then(work);tail=task;return task;};
-  async function forgetPersistent(origin,token){
+  async function forgetPersistent(origin,token,options={}){
     if(native){if(origin)await secure.clear({origin});}
-    else if(token)await request('/auth/remember',{method:'DELETE',body:{token}});
+    else if(token)await request('/auth/remember',{...options,method:'DELETE',body:{token}});
   }
   return {
-    async load(origin){
+    async load(origin,options={}){
       let raw;try{raw=JSON.parse(temporary()?.getItem(key(origin))??temporary()?.getItem('mirea.session')??'null');}catch{}
       if(raw){const value=validSession(raw.session??raw);if(value&&(raw.origin===undefined||raw.origin===origin))return {value,remember:raw.remember!==false,legacy:raw.session===undefined};removeTemporary(origin);}
       if(native){
         if(!origin)return null;const loaded=await secure.load({origin});let value;try{value=validSession(JSON.parse(loaded.session??'null'));}catch{}
         if(!value){if(loaded.session)await secure.clear({origin});return null;}return {value,remember:true};
       }
-      try{const value=validSession(await request('/auth/remember'));return value?{value,remember:true}:null;}catch(error){if(error.status===401)return null;throw error;}
+      try{const value=validSession(await request('/auth/remember',options));return value?{value,remember:true}:null;}catch(error){if(error.status===401)return null;throw error;}
     },
     save(origin,input,remember=true){return enqueue(async()=>{
       const value=validSession(input);if(!value)throw new Error('ログイン情報が無効です。');
@@ -37,6 +37,6 @@ export function createLoginStore({native,temporary,secure,request}){
         removeTemporary(origin);return true;
       }catch{writeTemporary(origin,value);return false;}
     });},
-    clear(origin,token){removeTemporary(origin);return enqueue(async()=>{try{await forgetPersistent(origin,token);return true;}catch{return false;}finally{removeTemporary(origin);}});}
+    clear(origin,token,options={}){removeTemporary(origin);return enqueue(async()=>{try{await forgetPersistent(origin,token,options);return true;}catch{return false;}finally{removeTemporary(origin);}});}
   };
 }

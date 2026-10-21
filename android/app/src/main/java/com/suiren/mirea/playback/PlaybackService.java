@@ -93,10 +93,10 @@ public final class PlaybackService extends Service {
             io.submit(()->{
                 PlaybackSource candidate=null;String resolvedQuality=requestedQuality,adaptiveGeneration=null;JSONArray availableQualities=new JSONArray();android.graphics.Bitmap nextArtwork=null;
                 try{
-                    PlaybackProgress bookmark=new PlaybackProgress(nextApi,journal,id);JSONObject initial=bookmark.initial();
+                    boolean offline=next.has("download")&&next.optBoolean("offline");PlaybackProgress bookmark=new PlaybackProgress(nextApi,journal,id,offline);JSONObject initial=bookmark.initial();
                     long resume=forcedPosition>0?forcedPosition:next.optBoolean("restart")||initial==null||initial.optBoolean("completed")?0:initial.optLong("positionMs");
                     if(next.has("download")){
-                        JSONObject manifest=next.getJSONObject("download"),grant=new OfflineLease(this).authorize(nextApi,manifest.getString("id"));
+                        JSONObject manifest=next.getJSONObject("download"),grant=offline?new OfflineLease(this).load(nextApi,manifest.getString("id")):new OfflineLease(this).authorize(nextApi,manifest.getString("id"));
                         JSONObject verified=grant.getJSONObject("manifest");if(!verified.getString("assetId").equals(id)||!verified.getString("id").equals(manifest.getString("id")))throw new IOException("Cache identity changed");
                         File folder=new PlaybackCache(this).folder(nextApi.partition,manifest.getString("id"));if(!new File(folder,"complete").isFile())throw new IOException("Encrypted cache incomplete");
                         candidate=new PlaybackSource(nextApi,grant,folder);grant.remove("key");resolvedQuality=verified.getJSONArray("files").getJSONObject(0).optString("quality","download");
@@ -107,10 +107,10 @@ public final class PlaybackService extends Service {
                         if(adaptiveGeneration==null){if(size<1||size>8589934592L)throw new IOException("Invalid media size");candidate=new PlaybackSource(nextApi,path,size);}
                     }
                     if(next.optString("artwork").length()<=350000&&!next.optString("artwork").isEmpty())try{byte[] cover=Base64.getDecoder().decode(next.getString("artwork"));nextArtwork=PlaybackArtwork.decode(cover);Arrays.fill(cover,(byte)0);}catch(Exception ignored){}
-                    if(nextArtwork==null)try{java.net.HttpURLConnection c=nextApi.connection("/api/v1/items/"+id+"/thumbnail","GET");try{if(c.getResponseCode()==200){byte[] bytes=PlaybackApi.read(c.getInputStream(),3*1024*1024);nextArtwork=PlaybackArtwork.decode(bytes);}}finally{c.disconnect();}}catch(Exception ignored){}
+                    if(nextArtwork==null&&!offline)try{java.net.HttpURLConnection c=nextApi.connection("/api/v1/items/"+id+"/thumbnail","GET");try{if(c.getResponseCode()==200){byte[] bytes=PlaybackApi.read(c.getInputStream(),3*1024*1024);nextArtwork=PlaybackArtwork.decode(bytes);}}finally{c.disconnect();}}catch(Exception ignored){}
                     final PlaybackSource ready=candidate;final String readyQuality=resolvedQuality,readyGeneration=adaptiveGeneration;final JSONArray readyQualities=availableQualities;final android.graphics.Bitmap readyArtwork=nextArtwork;main.post(()->{if(destroyed||epoch!=generation){if(ready!=null)ready.close();return;}progress=bookmark;source=ready;hlsGeneration=readyGeneration;quality=readyQuality;qualities=readyQualities;artwork=readyArtwork;prepare(resume,auto||next.optBoolean("autoplay"));});
-                    if("video".equals(asset.optString("kind")))try{final JSONObject graph=nextApi.json("/items/"+id+"/replay-heatmap","GET",null);main.post(()->{if(!destroyed&&epoch==generation){heatmap=graph;changed();}});}catch(Exception ignored){/* Graph failure never interrupts media. */}
-                    if("video".equals(asset.optString("kind")))loadNavigation(nextApi,id,epoch,0);
+                    if(!offline&&"video".equals(asset.optString("kind")))try{final JSONObject graph=nextApi.json("/items/"+id+"/replay-heatmap","GET",null);main.post(()->{if(!destroyed&&epoch==generation){heatmap=graph;changed();}});}catch(Exception ignored){/* Graph failure never interrupts media. */}
+                    if(!offline&&"video".equals(asset.optString("kind")))loadNavigation(nextApi,id,epoch,0);
                 }catch(Exception failure){
                     if(failure instanceof PlaybackApi.Failure&&((PlaybackApi.Failure)failure).denied()&&next.optJSONObject("download")!=null)try{new OfflineLease(this).revoke(nextApi.partition,next.getJSONObject("download").getString("id"));}catch(Exception ignored){}
                     if(candidate!=null)candidate.close();main.post(()->{if(epoch==generation)fail("再生準備に失敗しました。アクセス権・接続・保存データを確認して開き直してください。");});}

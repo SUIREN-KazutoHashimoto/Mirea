@@ -1,0 +1,8 @@
+.app-launch{position:fixed;inset:0;z-index:20000;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:26px;background:var(--bg,#0d1421);color:var(--text,#e8efff);opacity:1;transition:opacity 180ms ease;pointer-events:none}
+.app-launch-logo{display:flex;align-items:center;gap:15px;font-size:40px;animation:launch-arrive 650ms cubic-bezier(.2,.7,.2,1) both}.app-launch-logo .brand-symbol{width:64px;height:40px;object-fit:contain;animation:launch-mark 750ms cubic-bezier(.2,.7,.2,1) both}
+.app-launch .brand-symbol-dark{display:none}:root[data-theme="dark"] .app-launch .brand-symbol-dark{display:block}
+.app-launch-line{width:70px;height:3px;background:#a58aff;border-radius:4px;transform-origin:left;animation:launch-line 800ms ease both}.app-launch.launch-ready{opacity:0}
+@keyframes launch-arrive{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+@keyframes launch-mark{from{transform:scale(.84) rotate(-8deg)}to{transform:scale(1) rotate(0)}}
+@keyframes launch-line{from{opacity:0;transform:scaleX(.15)}to{opacity:.7;transform:scaleX(1)}}
+@media(prefers-reduced-motion:reduce){.app-launch,.app-launch *{animation:none!important;transition:none!important}}

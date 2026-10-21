@@ -37,9 +37,9 @@ export function createViewerScreen({ title, kind, onClose, doc = document }) {
   });
   const updateDock=()=>mini?.update({key:dockOptions?.key??title,id:dockOptions?.id,title,kind,playing:Boolean(media&&!media.paused),positionMs:(media?.currentTime||0)*1000,durationMs:(media?.duration||0)*1000});
   node.bindBackground=(element,options)=>{stopDockBinding?.();media=element;dockOptions=options;const events=['play','pause','timeupdate','durationchange','loadedmetadata','ended'];for(const name of events)element.addEventListener(name,updateDock);stopDockBinding=()=>{for(const name of events)element.removeEventListener(name,updateDock);};updateDock();};
-  const restore=()=>{if(closed)return;minimized=false;node.isMinimized=false;node.style.display='';mini?.dispose();mini=null;if(app)app.inert=true;doc.body.style.overflow='hidden';node.focus();};
+  const restore=()=>{if(closed)return;minimized=false;node.isMinimized=false;node.style.display='';node.dispatchEvent(new Event('viewer:presentation'));mini?.dispose();mini=null;if(app)app.inert=true;doc.body.style.overflow='hidden';node.focus();};
   node.minimize = () => {
-    if(closed||minimized)return;minimized=true;node.isMinimized=true;node.style.display='none';if(app)app.inert=wasInert;doc.body.style.overflow=previousOverflow;
+    if(closed||minimized)return;minimized=true;node.isMinimized=true;node.style.display='none';node.dispatchEvent(new Event('viewer:presentation'));if(app)app.inert=wasInert;doc.body.style.overflow=previousOverflow;
     if(doc.fullscreenElement===node)doc.exitFullscreen?.().catch(()=>{});
     mini=mountPlaybackDock({doc,onRestore:restore,onToggle:()=>{if(media){if(media.paused)return media.play();media.pause();}},onStop:()=>node.close(),loadArtwork:(state,signal)=>dockOptions?.loadArtwork?.(state,signal)});updateDock();
   };

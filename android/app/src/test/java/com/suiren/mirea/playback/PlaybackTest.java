@@ -26,6 +26,11 @@ public class PlaybackTest {
         PlaybackProgress restarted=new PlaybackProgress(transport,store);assertEquals(5000,restarted.initial().getLong("positionMs"));
         online[0]=true;restarted.flush();assertEquals(pending,sent.get(0).getString("updateId"));assertEquals(3,sent.get(0).getLong("revision"));assertEquals(4,saved[0].getLong("revision"));
     }
+    @Test public void knownOfflineStartupDoesNotEvenAttemptProgressTransportAndRetainsPendingRevision()throws Exception{
+        String id=UUID.randomUUID().toString();final JSONObject[] saved={new JSONObject().put("revision",7).put("pending",new JSONObject().put("updateId",id).put("revision",7).put("positionMs",4500).put("durationMs",10000))};final int[] calls={0};
+        PlaybackProgress progress=new PlaybackProgress((method,body)->{calls[0]++;return new JSONObject().put("progress",new JSONObject().put("revision",8).put("positionMs",4500).put("durationMs",10000));},new PlaybackProgress.Store(){public JSONObject load(){return saved[0];}public void save(JSONObject value){saved[0]=value;}},true);
+        assertEquals(0,calls[0]);assertEquals(4500,progress.initial().getLong("positionMs"));assertEquals(id,saved[0].getJSONObject("pending").getString("updateId"));progress.flush();assertEquals(1,calls[0]);assertEquals(8,saved[0].getLong("revision"));
+    }
     @Test public void fixedQualityPersistsAsACompatibleResolutionWithoutClaimingNativeAbr()throws Exception{
         JSONArray q=new JSONArray().put(new JSONObject().put("quality","360p")).put(new JSONObject().put("quality","720p"));
         assertEquals("720p",PlaybackQuality.resolve(q,"1080p"));assertEquals("360p",PlaybackQuality.resolve(q,"480p"));assertEquals("360p",PlaybackQuality.resolve(q,"144p"));assertEquals("legacy",PlaybackQuality.resolve(q,"legacy"));assertEquals("legacy",PlaybackQuality.resolve(new JSONArray(),"720p"));assertEquals("legacy",PlaybackQuality.resolve(q,"../../original"));
