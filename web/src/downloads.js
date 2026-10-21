@@ -3,6 +3,7 @@ import { openDownloadDb } from './download-db.js';
 import { DOWNLOAD_PATH,validateManifest,importDownloadKey,ciphertextHash } from './download-core.js';
 import { NativePlayer,nativePlayerAvailable } from './native-player-bridge.js';
 import { beginUpdateActivity } from './update-busy.js';
+import {rememberDownloadProgress} from './progress.js';
 import {offlineVault} from './offline-vault.js';
 
 const grants=new Map(),tasks=new Set();let workerReady;
@@ -110,6 +111,7 @@ export async function downloadToDevice(item,onProgress=()=>{},externalSignal,qua
     signal.throwIfAborted();const complete=await store.complete(key,manifest.id);
     await authorizeDownload(ctx,complete);
     await saveThumbnail(ctx,item.id);
+    try{const snapshot=await api(`/items/${item.id}/progress`);if(current(ctx))rememberDownloadProgress(item,snapshot);}catch{/* The exact cached baseline is kept until the next online sync. */}
     // Import native ciphertext and its Keystore lease before going offline.
     if(nativePlayerAvailable()&&['video','audio'].includes(item.kind))await prepareNativeDownload(item,()=>current(ctx),()=>{});
     return complete;
@@ -149,6 +151,7 @@ export function syncDownloads({items=[]}={}){
       try{
         const lease=await authorizeDownload(ctx,row);
         await saveThumbnail(ctx,row.assetId);
+        try{const snapshot=await api(`/items/${row.assetId}/progress`);if(current(ctx))rememberDownloadProgress({id:row.assetId},snapshot);}catch{/* Pending revisions must never be overwritten. */}
         if(nativePlayerAvailable()&&['audio','video'].includes(row.manifest.kind)){
           if(lease.online)await NativePlayer.leaseSave({origin:ctx.endpoint,token:ctx.token,userId:ctx.userId,id:row.manifest.id});lease.key='';
         }

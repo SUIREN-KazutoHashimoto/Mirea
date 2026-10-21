@@ -64,3 +64,12 @@ test('finished video opens from start but stays completed until actual playback;
   h.video.paused=false;h.event('play');h.video.currentTime=1;h.event('timeupdate');assert.equal(h.positions.at(-1).positionMs,1000);h.cleanup();
   const early=videoHarness({positionMs:5000,durationMs:10000});early.cleanup.restart();early.event('loadedmetadata');assert.equal(early.video.currentTime,0);assert.equal(early.positions.at(-1).positionMs,0);early.cleanup();
 });
+
+test('acknowledged offline resume snapshots survive cold reopening with a dated revision baseline; accounts remain isolated',async()=>{
+  const {createProgressCache}=await import('../web/src/progress-cache.js');const values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)};
+  let now=1800000000000;const partition='https://mirea.test|actor',id='asset';
+  const first=createProgressCache(storage,partition,id,{now:()=>now}),position={positionMs:64000,durationMs:100000,revision:7};first.write({last:position,revision:7});
+  now+=86400000;const reopened=createProgressCache(storage,partition,id,{now:()=>now});assert.equal(reopened.read().last.positionMs,64000);assert.equal(reopened.read().revision,7);assert.equal(reopened.read().at,now-86400000);
+  assert.equal(createProgressCache(storage,'https://other.test|actor',id).read(),null);
+  reopened.write({pending:{updateId:'stable-id',revision:7,positionMs:65000,durationMs:100000},desired:{positionMs:70000,durationMs:100000},last:position,revision:7});assert.equal(reopened.read().pending.updateId,'stable-id');assert.equal(reopened.read().at,now);
+});

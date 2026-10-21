@@ -1,3 +1,4 @@
+import {createProgressCache} from './progress-cache.js';
 import { isTimedKind } from '../../server/audio-types.js';
 import { getSession,getEndpoint } from './api.js';
 import { createProgressSync,resumeVideoMs } from './progress-core.js';
@@ -28,25 +29,11 @@ export async function clearAccountProgress(){
   for(const key of Object.keys(localStorage))if(key.startsWith(prefix))localStorage.removeItem(key);
 }
 
-function cacheFor(partition,assetId){
-  const prefix=`mirea.progress.v1|${partition}|`,key=prefix+assetId;
-  // Only small pending positions, never tokens/media. Bounded per account/server.
-  try{
-    const rows=Object.keys(localStorage).filter(key=>key.startsWith(prefix)).map(key=>{
-      try{const row=JSON.parse(localStorage.getItem(key));return {key,at:row?.at??0,pending:Boolean(row?.pending||row?.desired)};}catch{return {key,at:0};}
-    }).sort((a,b)=>b.at-a.at);
-    rows.forEach((row,index)=>{if(!row.pending&&(index>=200 || row.at<Date.now()-30*86400000))localStorage.removeItem(row.key);});
-  }catch{/* The server remains the primary store. */}
-  let ownedId;
-  return {
-    read(){try{const row=JSON.parse(localStorage.getItem(key));ownedId=row?.pending?.updateId;return row;}catch{return null;}},
-    write(row){
-      try{
-        if(row){ownedId=row.pending?.updateId;localStorage.setItem(key,JSON.stringify(row));}
-        else{const current=JSON.parse(localStorage.getItem(key));if(!current || current.pending?.updateId===ownedId)localStorage.removeItem(key);}
-      }catch{/* In-memory retries still work when storage is unavailable. */}
-    }
-  };
+function cacheFor(partition,assetId){return createProgressCache(localStorage,partition,assetId);}
+export function rememberDownloadProgress(item,result){
+  const session=getSession();if(!session)return;
+  const cache=cacheFor(`${getEndpoint()||location.origin}|${session.user.id}`,item.id),old=cache.read();
+  if(!old?.pending&&!old?.desired&&![...active].some(manager=>manager.assetId===item.id))cache.write({last:result.progress,revision:result.revision});
 }
 
 export async function openProgress(item,{status=()=>{},saved=()=>{}}={}){
@@ -63,7 +50,7 @@ export async function openProgress(item,{status=()=>{},saved=()=>{}}={}){
   const read=()=>request('GET'),send=body=>request('PUT',body);
   let queued=cache.read(),initial=null,revision=null;
   if(queued?.pending||queued?.desired){
-    const recover=createProgressSync({revision:queued.pending?.revision??null,pending:queued.pending,desired:queued.desired,read,send,persist:cache.write,status});
+    const recover=createProgressSync({revision:queued.pending?.revision??queued.revision??null,pending:queued.pending,desired:queued.desired,read,send,persist:row=>cache.write(row?{...queued,...row}:queued.last?{last:queued.last,revision:queued.revision}:null),status});
     await recover.flush();queued=cache.read();
   }
   try{const result=await read();initial=result.progress;revision=result.revision;}
@@ -78,6 +65,7 @@ export async function openProgress(item,{status=()=>{},saved=()=>{}}={}){
   if(queued?.pending)revision=queued.pending.revision;
   const lastValue=initial?(isTimedKind(item.kind)?{positionMs:initial.positionMs,durationMs:initial.durationMs}:{page:initial.page,scrollX:initial.scrollX,scrollY:initial.scrollY,zoom:initial.zoom}):null;
   let lastSaved=initial,lastRevision=revision;
+  if(!queued?.pending&&!queued?.desired&&revision!==null)cache.write({last:initial,revision});
   const persist=row=>cache.write(row?{...row,last:lastSaved,revision:lastRevision}:lastSaved?{last:lastSaved,revision:lastRevision}:null);
   const sync=createProgressSync({revision,pending:queued?.pending,desired:queued?.desired,lastValue,read,send,persist,status,saved:value=>{lastSaved=value;lastRevision=value.revision;saved(value);}});
   let disposed=false,snapshot=()=>null;
