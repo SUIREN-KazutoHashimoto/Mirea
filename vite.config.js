@@ -19,7 +19,11 @@ export default defineConfig({
       function walk(folder){for(const entry of readdirSync(folder,{withFileTypes:true})){const path=folder+'/'+entry.name;if(entry.isDirectory())walk(path);else if(!path.endsWith('/offline-assets.json'))files.push('/'+path.slice('dist/'.length));}}
       walk('dist');
       const revision=createHash('sha256');for(const file of files.sort())revision.update(file).update(readFileSync('dist'+file));
-      writeFileSync('dist/offline-assets.json',JSON.stringify({version:revision.digest('hex'),files}));
+      const version=revision.digest('hex');
+      // SW byte identity must change with the UI build, not just SW source.
+      // Otherwise register() considers it unchanged and keeps an old shell.
+      writeFileSync('dist/download-sw.js',readFileSync('dist/download-sw.js','utf8')+'\n// Mirea offline shell '+version+'\n');
+      writeFileSync('dist/offline-assets.json',JSON.stringify({version,files}));
     }
   }]
 });
