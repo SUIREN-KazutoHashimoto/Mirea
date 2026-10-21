@@ -1,6 +1,7 @@
 import { mountMediaSession } from './media-session.js';
 import { mountVideoHold } from './video-hold.js';
 import { heatmapGeometry } from './replay-heatmap.js';
+import { bindSeekInteraction } from './seek-interaction.js';
 
 let playbackPreferences={muted:false,volume:1,rate:1};
 export const formatVideoTime = value => {
@@ -29,11 +30,12 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
   }
   const video = root.querySelector('video,audio'), seek = root.querySelector('.player-seek'), volume = root.querySelector('.player-volume'), center = root.querySelector('.player-center');
   video.controls = false;video.muted=playbackPreferences.muted;video.volume=playbackPreferences.volume;video.playbackRate=playbackPreferences.rate;
-  const listeners = []; let disposed = false, timer, scrubbing = false;
+  const listeners = []; let disposed = false, timer, scrubbing = false, hasHeatmap = false;
   const listen = (target, event, fn, options) => { target.addEventListener(event, fn, options); listeners.push(() => target.removeEventListener(event, fn, options)); };
   const hold=audioMode?null:mountVideoHold(video,{document:doc,changed:active=>{boostLabel.hidden=!active;root.classList.toggle('hold-boost',active);showControls();}});
   const announceControls = visible => root.dispatchEvent(new CustomEvent('viewer:player-controls', { bubbles:true, detail:visible }));
-  function showControls() { root.classList.remove('controls-hidden'); announceControls(true); clearTimeout(timer); if (!audioMode && !video.paused) timer = setTimeout(() => { if (!video.paused && !root.querySelector('.player-controls').contains(doc.activeElement)) { root.classList.add('controls-hidden'); announceControls(false); } }, 2600); }
+  const seekInteraction=bindSeekInteraction(seek,{document:doc,changed:active=>{scrubbing=active;heatmap.hidden=!hasHeatmap||!active;showControls();}});
+  function showControls() { root.classList.remove('controls-hidden'); announceControls(true); clearTimeout(timer); if (!audioMode && !video.paused) timer = setTimeout(() => { if (!scrubbing && !video.paused && !root.querySelector('.player-controls').contains(doc.activeElement)) { root.classList.add('controls-hidden'); announceControls(false); } }, 2600); }
   const play = async () => { try { if (video.paused || video.ended) { if (video.ended) seekVideo(video, 0); await video.play(); } else video.pause(); } catch { if (!disposed) onError(new Error('再生を開始できません。再生ボタンを押すか、再接続してください。')); } };
   const fullscreen = () => { const screen = root.closest('.viewer-screen') ?? root; const result = doc.fullscreenElement ? doc.exitFullscreen?.() : screen.requestFullscreen?.(); result?.catch?.(() => {}); };
   function update() {
@@ -55,11 +57,12 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
   root.querySelector('.player-speed select').onchange = event => { hold?.cancel();video.playbackRate = Number(event.target.value); };
   root.querySelector('.player-fullscreen').onclick = fullscreen;
   root.querySelector('.player-reconnect').onclick = async event => {
-    hold?.cancel();if (!reconnect) return; const button = event.currentTarget; button.disabled = true;
+    hold?.cancel();seekInteraction.cancel();if (!reconnect) return; const button = event.currentTarget; button.disabled = true;
     try { const position = video.currentTime, playing = !video.paused, next = await reconnect(); if (disposed) return; if (!next) return; video.src = next; video.addEventListener('loadedmetadata', () => { if (!disposed) { seekVideo(video, position); if (playing) video.play().catch(() => {}); } }, { once: true }); video.load(); } catch (error) { if (!disposed) onError(error); } finally { if (!disposed) button.disabled = false; }
   };
-  seek.oninput = () => { scrubbing = true; root.querySelector('.player-time').textContent = `${formatVideoTime(Number(seek.value))} / ${formatVideoTime(video.duration)}`; };
-  seek.onchange = () => { seekVideo(video, Number(seek.value)); scrubbing = false; update(); };
+  seek.oninput = () => { root.querySelector('.player-time').textContent = `${formatVideoTime(Number(seek.value))} / ${formatVideoTime(video.duration)}`; };
+  seek.onchange = () => { seekVideo(video, Number(seek.value)); update(); };
+  for(const event of ['loadstart','emptied','error','enterpictureinpicture'])listen(video,event,()=>seekInteraction.cancel());
   for (const event of ['timeupdate', 'loadedmetadata', 'durationchange', 'play', 'pause', 'ended', 'volumechange']) listen(video, event, () => { update(); if (event !== 'timeupdate') showControls(); });
   for (const event of ['waiting', 'seeking', 'loadstart']) listen(video, event, () => { root.querySelector('.player-loading').hidden = false; });
   for (const event of ['playing', 'canplay', 'seeked', 'error']) listen(video, event, () => { root.querySelector('.player-loading').hidden = true; });
@@ -74,12 +77,12 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
     else if (event.key.toLowerCase() === 'f') fullscreen();
     showControls();
   });
-  root.querySelector('.player-background').onclick=()=>root.closest('.viewer-screen')?.minimize?.();
+  root.querySelector('.player-background').onclick=()=>{seekInteraction.cancel();root.closest('.viewer-screen')?.minimize?.();};
   const mediaSession=mountMediaSession(video,{title,kind,artwork:coverUrl,stop:()=>root.closest('.viewer-screen')?.close(),onError,document:doc});
   const pipButton=root.querySelector('.player-pip');pipButton.hidden=!mediaSession.supportsPip;pipButton.onclick=()=>mediaSession.pip().catch(()=>onError(new Error('PiPに切り替えられません。動画を読み込んでから再試行してください。')));
   update(); root.focus();
   return { video, surface:audioMode?root.querySelector('.audio-art'):video, setHeatmap(value) {
-    if(disposed||audioMode)return;const geometry=heatmapGeometry(value);heatmap.replaceChildren();heatmap.hidden=!geometry;if(!geometry)return;
+    if(disposed||audioMode)return;const geometry=heatmapGeometry(value);hasHeatmap=Boolean(geometry);heatmap.replaceChildren();heatmap.hidden=!hasHeatmap||!seekInteraction.active;if(!geometry)return;
     const label=doc.createElement('span');label.className='player-heatmap-label';label.textContent=`${value.scope==='self'?'自分の再生傾向':'よく再生されている箇所（匿名集計）'} · ${formatVideoTime(geometry.peakMs/1000)}`;
     const svg=doc.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 1000 40');svg.setAttribute('preserveAspectRatio','none');svg.setAttribute('aria-hidden','true');
     const path=doc.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',geometry.path);svg.append(path);heatmap.append(label,svg);
@@ -91,5 +94,5 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
     if(select.dataset.levels!==key){select.replaceChildren(...values.map(value=>{const option=doc.createElement('option');option.value=value.value;option.textContent=value.text;return option;}));select.dataset.levels=key;}
     else for(const value of values){const option=[...select.options].find(o=>o.value===value.value);if(option)option.textContent=value.text;}
     select.value=selected;select.onchange=()=>{hold?.cancel();choose(select.value);};
-  }, dispose() { hold?.dispose();playbackPreferences={muted:video.muted,volume:video.volume,rate:video.playbackRate};disposed = true; mediaSession.dispose(); clearTimeout(timer); for (const remove of listeners) remove(); video.pause(); video.removeAttribute('src'); video.load(); root.remove(); } };
+  }, dispose() { hold?.dispose();seekInteraction.dispose();playbackPreferences={muted:video.muted,volume:video.volume,rate:video.playbackRate};disposed = true; mediaSession.dispose(); clearTimeout(timer); for (const remove of listeners) remove(); video.pause(); video.removeAttribute('src'); video.load(); root.remove(); } };
 }
