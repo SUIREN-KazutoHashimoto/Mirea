@@ -13,7 +13,7 @@ const cookieOf=response=>response.headers['set-cookie'].split(';')[0];
 test('remembered browser sessions persist without renewing, remain HttpOnly and never authorize other APIs',async t=>{
   const c=await setup(t),response=await c.req('POST','/auth/login',null,{email:c.owner.user.email,password}),value=response.json(),cookie=cookieOf(response),header=response.headers['set-cookie'];
   for(const attribute of ['Path=/api/v1','Secure','HttpOnly','SameSite=Strict','Expires='])assert.ok(header.includes(attribute),header);
-  assert.ok(!/Domain=/i.test(header));assert.ok(Number(header.match(/Max-Age=(\d+)/)[1])<=604800);
+  assert.ok(!/Domain=/i.test(header));assert.ok(Number(header.match(/Max-Age=(\d+)/)[1])<=2592000);
   const count=c.db.prepare('SELECT COUNT(*) n FROM sessions').get().n;
   for(let i=0;i<2;i++){
     const restored=await c.app.inject({url:'/api/v1/auth/remember',headers:{cookie}});assert.equal(restored.statusCode,200,restored.body);assert.deepEqual(restored.json(),value);assert.match(restored.headers['cache-control'],/no-store/);

@@ -88,3 +88,17 @@ test('missing master key with existing packages fails safely rather than silentl
   await writeFile(path,master);c.app=await createApp(c.options);
   assert.equal((await c.create()).statusCode,200);
 });
+
+test('thirty-day login and seven-day download leases are server-anchored, capped by legacy session expiry and never renewed by ciphertext reads',async t=>{
+  const c=await setup(t),now=Date.now();
+  assert.ok(c.viewer.expiresAt-now>29*86400000&&c.viewer.expiresAt-now<=30*86400000);
+  const login=await c.req('POST','/auth/login',null,{email:c.viewer.user.email,password:'encrypted-download-password'});
+  assert.match(login.headers['set-cookie'],/Max-Age=259[0-9]{4}/);
+  const {manifest}=(await c.create()).json(),opened=(await c.open(manifest.id)).json();
+  assert.equal(opened.userId,c.viewer.user.id);assert.equal(opened.expiresAt-opened.serverTime,7*86400000);
+  const remembered=(await c.req('GET','/auth/me',c.viewer)).json();assert.equal(remembered.user.id,c.viewer.user.id);
+  const cap=Date.now()+10000;c.db.prepare('UPDATE sessions SET expires_at=? WHERE user_id=?').run(cap,c.viewer.user.id);
+  assert.equal((await c.open(manifest.id)).json().expiresAt,cap,'old sessions keep their original shorter expiration');
+  c.db.prepare('UPDATE sessions SET expires_at=1 WHERE user_id=?').run(c.viewer.user.id);
+  assert.equal((await c.open(manifest.id)).statusCode,401);
+});

@@ -45,7 +45,7 @@ erDiagram
 - `memberships`: `(shelf_id, user_id)` が主キー。管理者は本棚作成時にトランザクションで作成し、本棚当たり1名の制約を持つ。
 - `items`: タイトル、元ファイル名、MIME、バイト数、登録者。実ファイル名はサーバー生成UUIDで、元の名前をパスには使わない。
 - `image_pages`: 画像の本のページ番号、元ファイル名、MIME、原画像のサイズ・表示寸法。`(item_id, page_number)` が主キーで、送信順を保持する。
-- `sessions`: 7日で期限切れ。ランダムなBearerトークンをクライアントに返し、DBにはSHA-256ハッシュだけ保存。
+- `sessions`: 30日で期限切れ。ランダムなBearerトークンをクライアントに返し、DBにはSHA-256ハッシュだけ保存。
 - `playback_tickets`: HTML videoでAuthorizationヘッダーを付けられないための1時間・1コンテンツ限定チケット。元セッションが有効で、かつ現在も本棚のメンバーである場合だけ配信する。
 - `upload_sessions`: 開始者・本棚・開始時セッションID・タイトル・順序付きファイル情報・固定分割サイズ・状態・24時間の期限。処理中に開始セッションが無効になったら公開しない。開始セッションIDは後始末情報を保持するためsessionsへCASCADEしない。
 - `upload_parts`: 0始まりのファイル／分割番号・サイズ・SHA-256。主キーは `(upload_id,file_index,part_index)` で、同じ分割の再送を重複登録しない。

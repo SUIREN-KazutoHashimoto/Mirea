@@ -1,7 +1,7 @@
 // One in-flight update per viewer, optimistic revisions across viewers/devices.
 export function createProgressSync({revision=0,pending=null,desired=null,lastValue=null,read,send,persist=()=>{},status=()=>{},saved=()=>{},uuid=()=>crypto.randomUUID(),now=Date.now}) {
   let running,stopped=false,last=desired?JSON.stringify(desired):lastValue?JSON.stringify(lastValue):null;
-  const store=()=>persist(pending || desired ? {pending,desired,at:now()}:null);
+  const store=()=>persist(pending || desired ? {pending,desired,revision,at:now()}:null);
   function prepare(){if(!pending && desired && revision!==null)pending={revision,updateId:uuid(),...desired};}
   function update(value){
     if(stopped || !value)return;
@@ -20,7 +20,7 @@ export function createProgressSync({revision=0,pending=null,desired=null,lastVal
           revision=result.progress.revision;pending=null;
           const {revision:ignored,updateId,...sentValue}=sent;
           if(JSON.stringify(desired)===JSON.stringify(sentValue))desired=null;
-          prepare();store();saved(result.progress);status('saved');
+          prepare();saved(result.progress);store();status('saved');
           if(!pending)return;
         }
       }catch(error){

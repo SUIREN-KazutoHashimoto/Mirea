@@ -38,7 +38,7 @@
 | PUT | `/items/:id/progress` | 本人の再開位置をrevision検査付きで更新。2 KiBまで |
 | POST | `/items/:id/download` | 本人用の暗号化ダウンロード登録。鍵なし |
 | GET | `/downloads/:id/files/:file/parts/:part` | 暗号化分割データ。現在の所属・本人の登録必須 |
-| POST | `/downloads/:id/open` | 開くたびにオンライン認可しメモリー用の鍵を発行。永続保存不可 |
+| POST | `/downloads/:id/open` | オンライン認可で最長7日の閲覧許可と鍵を発行。端末では暗号化保護して保存 |
 | POST | `/analytics/events` | 現在閲覧できるアセットの本人イベント。64 KiB・50件まで |
 | GET | `/analytics/access` | 本人が全体匿名集計を見られるか |
 | GET | `/analytics/me/summary` | 本人だけの詳細集計 |

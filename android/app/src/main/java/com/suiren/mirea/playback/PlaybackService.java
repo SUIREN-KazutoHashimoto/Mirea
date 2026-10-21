@@ -94,7 +94,7 @@ public final class PlaybackService extends Service {
                     PlaybackProgress bookmark=new PlaybackProgress(nextApi,journal,id);JSONObject initial=bookmark.initial();
                     long resume=forcedPosition>0?forcedPosition:next.optBoolean("restart")||initial==null||initial.optBoolean("completed")?0:initial.optLong("positionMs");
                     if(next.has("download")){
-                        JSONObject manifest=next.getJSONObject("download"),grant=nextApi.json("/downloads/"+manifest.getString("id")+"/open","POST",null);
+                        JSONObject manifest=next.getJSONObject("download"),grant=new OfflineLease(this).authorize(nextApi,manifest.getString("id"));
                         JSONObject verified=grant.getJSONObject("manifest");if(!verified.getString("assetId").equals(id)||!verified.getString("id").equals(manifest.getString("id")))throw new IOException("Cache identity changed");
                         File folder=new PlaybackCache(this).folder(nextApi.partition,manifest.getString("id"));if(!new File(folder,"complete").isFile())throw new IOException("Encrypted cache incomplete");
                         candidate=new PlaybackSource(nextApi,grant,folder);grant.remove("key");resolvedQuality=verified.getJSONArray("files").getJSONObject(0).optString("quality","download");
@@ -104,11 +104,14 @@ public final class PlaybackService extends Service {
                             if(!"legacy".equals(resolvedQuality)){adaptiveGeneration=info.optString("generation","base");if(!adaptiveGeneration.equals("base")&&!PlaybackApi.uuid(adaptiveGeneration))throw new IOException("Invalid media generation");}}
                         if(adaptiveGeneration==null){if(size<1||size>8589934592L)throw new IOException("Invalid media size");candidate=new PlaybackSource(nextApi,path,size);}
                     }
-                    try{java.net.HttpURLConnection c=nextApi.connection("/api/v1/items/"+id+"/thumbnail","GET");try{if(c.getResponseCode()==200){byte[] bytes=PlaybackApi.read(c.getInputStream(),3*1024*1024);nextArtwork=android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length);}}finally{c.disconnect();}}catch(Exception ignored){}
+                    if(next.optString("artwork").length()<=350000&&!next.optString("artwork").isEmpty())try{byte[] cover=Base64.getDecoder().decode(next.getString("artwork"));nextArtwork=android.graphics.BitmapFactory.decodeByteArray(cover,0,cover.length);Arrays.fill(cover,(byte)0);}catch(Exception ignored){}
+                    if(nextArtwork==null)try{java.net.HttpURLConnection c=nextApi.connection("/api/v1/items/"+id+"/thumbnail","GET");try{if(c.getResponseCode()==200){byte[] bytes=PlaybackApi.read(c.getInputStream(),3*1024*1024);nextArtwork=android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length);}}finally{c.disconnect();}}catch(Exception ignored){}
                     final PlaybackSource ready=candidate;final String readyQuality=resolvedQuality,readyGeneration=adaptiveGeneration;final JSONArray readyQualities=availableQualities;final android.graphics.Bitmap readyArtwork=nextArtwork;main.post(()->{if(destroyed||epoch!=generation){if(ready!=null)ready.close();return;}progress=bookmark;source=ready;hlsGeneration=readyGeneration;quality=readyQuality;qualities=readyQualities;artwork=readyArtwork;prepare(resume,auto||next.optBoolean("autoplay"));});
                     if("video".equals(asset.optString("kind")))try{final JSONObject graph=nextApi.json("/items/"+id+"/replay-heatmap","GET",null);main.post(()->{if(!destroyed&&epoch==generation){heatmap=graph;changed();}});}catch(Exception ignored){/* Graph failure never interrupts media. */}
                     if("video".equals(asset.optString("kind")))loadNavigation(nextApi,id,epoch,0);
-                }catch(Exception failure){if(candidate!=null)candidate.close();main.post(()->{if(epoch==generation)fail("再生準備に失敗しました。アクセス権・接続・保存データを確認して開き直してください。");});}
+                }catch(Exception failure){
+                    if(failure instanceof PlaybackApi.Failure&&((PlaybackApi.Failure)failure).denied()&&next.optJSONObject("download")!=null)try{new OfflineLease(this).revoke(nextApi.partition,next.getJSONObject("download").getString("id"));}catch(Exception ignored){}
+                    if(candidate!=null)candidate.close();main.post(()->{if(epoch==generation)fail("再生準備に失敗しました。アクセス権・接続・保存データを確認して開き直してください。");});}
             });
         }catch(Exception failure){fail("再生情報が不正です。ライブラリから開き直してください。");}
     }
@@ -141,6 +144,8 @@ public final class PlaybackService extends Service {
         if(request.optBoolean("analytics"))recorder=new PlaybackRecorder(item.getString("id"),request.optString("version","development"),SystemClock.elapsedRealtime(),(v,e)->journal.event(api.partition,v,e));
         record(null);adaptive.player.prepare();changed();
     }
+    public boolean ownsProgress(String partition,String asset){return api!=null&&api.partition.equals(partition)&&item!=null&&asset.equals(item.optString("id"));}
+    public void revokeDownload(String partition,String id){main.post(()->{if(api!=null&&api.partition.equals(partition)&&request!=null&&request.optJSONObject("download")!=null&&id.equals(request.optJSONObject("download").optString("id")))fail("ダウンロードの閲覧権限が失効しました。");});}
     public boolean playing(){try{return prepared&&(adaptive!=null?adaptive.player.isPlaying():player!=null&&player.isPlaying());}catch(Exception e){return false;}}
     public long position(){try{return ended?duration():prepared?Math.max(0,adaptive!=null?adaptive.player.getCurrentPosition():player.getCurrentPosition()):0;}catch(Exception e){return 0;}}
     public long duration(){try{return prepared?Math.max(0,adaptive!=null?adaptive.player.getDuration():player.getDuration()):0;}catch(Exception e){return 0;}}
@@ -184,7 +189,18 @@ public final class PlaybackService extends Service {
         if(progress==null||!prepared||seeking)return;if(!force&&++ticks%5!=0)return;
         PlaybackProgress bookmark=progress;PlaybackApi target=api;long position=position(),duration=duration();int epoch=generation;
         if(!force&&!syncQueued.compareAndSet(false,true))return;if(force)syncQueued.set(true);
-        io.submit(()->{try{bookmark.update(position,duration);bookmark.flush();journal.flush(target);}catch(PlaybackApi.Failure failure){main.post(()->{if(epoch!=generation)return;if(failure.denied())fail("アクセス権またはログインが失効したため再生を停止しました。");else if(failure.status==409){error="別の端末で続き位置が更新されました。保存を停止しています。";changed();}});}catch(Exception ignored){/* Exact pending update and raw events remain durable for retry. */}finally{syncQueued.set(false);}});
+        io.submit(()->{try{bookmark.update(position,duration);
+            if(request!=null&&request.has("download")){
+                String download=request.getJSONObject("download").getString("id");
+                // Bound an active session even if the decoder has buffered ahead.
+                JSONObject lease=new OfflineLease(this).load(target,download);lease.remove("key");
+                if(force||ticks%30==0){JSONObject renewed=new OfflineLease(this).authorize(target,download);if(source!=null&&epoch==generation)source.renew(renewed.getLong("expiresAt"));renewed.remove("key");}
+            }
+            bookmark.flush();journal.flush(target);}catch(PlaybackApi.Failure failure){main.post(()->{if(epoch!=generation)return;if(failure.denied()){
+                    if(request!=null&&request.optJSONObject("download")!=null)try{new OfflineLease(this).revoke(target.partition,request.getJSONObject("download").getString("id"));}catch(Exception ignored){}
+                    fail("アクセス権またはログインが失効したため再生を停止しました。");
+                }else if(failure.status==409){error="別の端末で続き位置が更新されました。保存を停止しています。";changed();}});}catch(IllegalStateException expired){main.post(()->{if(epoch==generation)fail("オフライン視聴期限が切れています。オンラインで接続してください。");});}
+        catch(Exception ignored){/* Exact pending update and raw events remain durable for retry. */}finally{syncQueued.set(false);}});
     }
     private void releasePlayer(){endBoost();AdaptivePlayback oldAdaptive=adaptive;adaptive=null;if(oldAdaptive!=null){oldAdaptive.player.clearVideoSurface();oldAdaptive.player.release();}MediaPlayer old=player;player=null;prepared=false;if(old!=null){try{old.setSurface(null);old.release();}catch(Exception ignored){}}PlaybackSource oldSource=source;source=null;if(oldSource!=null)io.submit(oldSource::close);}
     private void loadNavigation(PlaybackApi target,String id,int epoch,int attempt){

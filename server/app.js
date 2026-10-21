@@ -41,7 +41,7 @@ import {pendingShelfUploads} from './pending-uploads.js';
 import {registerShelfManagement} from './shelf-management.js';
 import {registerRememberSessions,issueRememberCookie,clearRememberCookie} from './remember-session.js';
 
-const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
+const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const TICKET_MS = 60 * 60 * 1000;
 const text = (maxLength, minLength = 1) => ({ type: 'string', minLength, maxLength });
 const object = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });

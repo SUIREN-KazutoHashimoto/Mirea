@@ -1,6 +1,6 @@
 # ログイン状態の保持
 
-ログイン／新規登録時の「ログイン状態を保持する」は初期ONです。ブラウザーやアプリを閉じても、元のログインから最長7日間は復元できます。復元操作では有効期限を延長しません。共用端末ではOFFにしてください。パスワードは保存しません。
+ログイン／新規登録時の「ログイン状態を保持する」は初期ONです。ブラウザーやアプリを閉じても、元のログインから最長30日間は復元できます。復元操作では有効期限を延長しません。共用端末ではOFFにしてください。パスワードは保存しません。
 
 ## Web
 
@@ -27,3 +27,5 @@
 サーバーのCookie属性・復元・失効・停止・期限・通常APIのBearer必須、JS保存先の分離・一時保存・通信障害・保存/解除順序、JVMの暗号化ラウンドトリップ・ランダムIV・改ざん/AAD拒否を自動テストします。Android Keystore自体の永続性はAndroid実機での追加確認が必要です。
 
 参照: [MDN Cookie属性](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie)、[Android KeyGenParameterSpec](https://developer.android.com/reference/android/security/keystore/KeyGenParameterSpec)。
+
+0.6.0beta以降の新規ログインは30日です。既存セッションは元の期限を維持します。ダウンロード済み作品は別途、最終オンライン認可から7日の期限付き許可でオフライン起動できます。Webのオフライン復元には非抽出鍵で暗号化したプロフィールを使い、Bearerトークンは永続化しません。再接続後はHttpOnly Cookieから通常認証を復元し、権限・期限・履歴・進行度を自動同期します。[詳細](downloads.md)

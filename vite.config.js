@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
-import { cpSync, mkdirSync } from 'node:fs';
+import { cpSync, mkdirSync, readdirSync, writeFileSync, readFileSync } from 'node:fs';
+import {createHash} from 'node:crypto';
 import { resolve } from 'node:path';
 
 export default defineConfig({
@@ -14,6 +15,11 @@ export default defineConfig({
       for (const dir of ['cmaps', 'standard_fonts', 'wasm']) {
         cpSync(resolve('node_modules/pdfjs-dist', dir), resolve('dist/pdf-assets', dir), { recursive: true });
       }
+      const files=[];
+      function walk(folder){for(const entry of readdirSync(folder,{withFileTypes:true})){const path=folder+'/'+entry.name;if(entry.isDirectory())walk(path);else if(!path.endsWith('/offline-assets.json'))files.push('/'+path.slice('dist/'.length));}}
+      walk('dist');
+      const revision=createHash('sha256');for(const file of files.sort())revision.update(file).update(readFileSync('dist'+file));
+      writeFileSync('dist/offline-assets.json',JSON.stringify({version:revision.digest('hex'),files}));
     }
   }]
 });

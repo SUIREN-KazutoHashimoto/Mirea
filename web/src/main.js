@@ -2,20 +2,20 @@ import './style.css';
 import './workspace.css';
 import './immersive.css';
 import './audio-player.css';
-import { api, native, getEndpoint, setEndpoint, getSession, setSession, initializeSession, upload, absoluteUrl, authenticatedBlob } from './api.js';
+import { api, isOfflineSession, markSessionOffline, reconnectSession, rememberOfflineConfig, native, getEndpoint, setEndpoint, getSession, setSession, initializeSession, upload, absoluteUrl, authenticatedBlob } from './api.js';
 import { openImageBook } from './image-reader.js';
 import { App } from '@capacitor/app';
 import { mountVideoPreviews } from './video-previews.js';
 import { configureAnalytics, startAnalytics, stopAnalytics, clearAccountAnalytics, flushAnalytics, trackAsset, analyticsNativeState } from './analytics.js';
 import { openAnalytics } from './analytics-ui.js';
-import { openProgress,bindVideoProgress,progressNativeState,flushProgress,clearAccountProgress } from './progress.js';
-import { downloadToDevice,listDownloads,removeDownload,openDownloaded,closeDownloads,clearAccountDownloads,downloadsNativeState } from './downloads.js';
+import { openProgress,bindVideoProgress,progressNativeState,flushProgress,clearAccountProgress,syncStoredProgress } from './progress.js';
+import { downloadToDevice,listDownloads,removeDownload,openDownloaded,closeDownloads,clearAccountDownloads,downloadsNativeState,syncDownloads,ensureDownloadWorker,downloadedThumbnail } from './downloads.js';
 import { openSeriesManager,mountSeriesNavigation,seriesNativeState } from './series-ui.js';
 import { createTheme } from './theme.js';
 import { openSettings } from './settings.js';
 import { createViewerScreen } from './viewer-shell.js';
 import { initializeNativePlayback,openNativePlayback,refreshNativePlayback } from './native-playback.js';
-import { nativePlayerAvailable } from './native-player-bridge.js';
+import { NativePlayer,nativePlayerAvailable } from './native-player-bridge.js';
 import { mountVideoPlayer } from './video-player.js';
 import {loadVideoNavigation} from './video-navigation.js';
 import './video-navigation.css';
@@ -29,6 +29,7 @@ import './app-updates.css';
 import {openAdmin} from './admin.js';
 import './admin.css';
 import './library-layout.css';
+import {offlineIdentity,offlineVault,offlinePartition} from './offline-vault.js';
 import {showShelfMenu} from './shelf-menu.js';
 
 const theme = createTheme();
@@ -62,7 +63,7 @@ const date = timestamp => new Intl.DateTimeFormat('ja-JP', { year: 'numeric', mo
 let config = { allowRegistration: true, maxUploadBytes: 2147483648, maxBookPages: 500, maxImageBytes: 25 * 1024 * 1024 };
 let shelves = [], items = [], activeShelf = null, filter = 'all', search = '', sort = 'recent', loadGeneration = 0;
 let series=[],activeSeries='';
-let libraryPoll,refreshBusy=false,librarySnapshot='';
+let libraryPoll,refreshBusy=false,librarySnapshot='',offlineLibrary=false,synchronizing;
 let seriesContinuous=true;
 let thumbnailRequest, thumbnailObserver, thumbnailUrls = [], videoPreviews;
 let nativeAppActive = true, nativeStateRevision = 0;
@@ -70,7 +71,7 @@ if (native) {
   App.addListener('appStateChange', ({ isActive }) => {
     nativeStateRevision++;
     nativeAppActive = isActive;
-    if (isActive) {refreshAppUpdates();refreshNativePlayback().catch(()=>{});}
+    if (isActive) {refreshAppUpdates();refreshNativePlayback().catch(()=>{});synchronizeConnection();}
     analyticsNativeState(isActive);
     progressNativeState(isActive);
     downloadsNativeState(isActive);
@@ -103,7 +104,7 @@ function loadThumbnails() {
     for (const entry of entries) if (entry.isIntersecting) {
       const img = entry.target;
       thumbnailObserver.unobserve(img);
-      authenticatedBlob(img.dataset.thumbnail, signal).then(blob => {
+      downloadedThumbnail(img.dataset.localThumbnail).catch(()=>null).then(blob=>blob||(!offlineLibrary?authenticatedBlob(img.dataset.thumbnail,signal):Promise.reject(new Error('オフラインの表紙がありません。')))).then(blob => {
         if (signal.aborted || !img.isConnected) return;
         const url = URL.createObjectURL(blob);
         thumbnailUrls.push(url);
@@ -112,7 +113,7 @@ function loadThumbnails() {
       }).catch(error => {
         if (signal.aborted || !img.isConnected) return;
         const placeholder = img.parentElement.querySelector('.cover-placeholder');
-        if (placeholder) { placeholder.textContent = '表紙を読み込めません'; placeholder.title = error.message; }
+        if (placeholder) { placeholder.textContent = offlineLibrary?'端末保存済み':'表紙を読み込めません'; placeholder.title = error.message; }
       });
     }
   }, { rootMargin: '200px' });
@@ -158,7 +159,7 @@ function renderAuth(register = false) {
       ${register ? '<label>表示名<input name="name" autocomplete="name" maxlength="80" required placeholder="例：水蓮 太郎"></label>' : ''}
       <label>メールアドレス<input name="email" type="email" autocomplete="email" maxlength="254" placeholder="you@example.com" required></label>
       <label>パスワード<input name="password" type="password" autocomplete="${register ? 'new-password' : 'current-password'}" minlength="12" maxlength="128" placeholder="12文字以上" required></label>
-      <label class="confirm-row remember-login"><input name="remember" type="checkbox" checked>ログイン状態を保持する（最長7日間）</label><small class="muted">共用端末ではチェックを外してください。パスワードは保存しません。</small>
+      <label class="confirm-row remember-login"><input name="remember" type="checkbox" checked>ログイン状態を保持する（最長30日間）</label><small class="muted">共用端末ではチェックを外してください。パスワードは保存しません。</small>
       <p class="form-error" role="alert" hidden></p><button class="button primary auth-submit" type="submit">${register ? 'アカウントを作成する' : 'ログインする'}${icon('arrow')}</button>
     </form><p class="auth-switch">${register ? 'すでにアカウントをお持ちですか？' : 'はじめてご利用ですか？'} <button class="text-button" id="switch-auth">${register ? 'ログイン' : 'アカウントを作成'}</button></p><a class="auth-apk" href="${esc(currentApkUrl())}" target="_blank" rel="noopener noreferrer">${icon('download')} Android版APKをダウンロード</a><div class="auth-note">${icon('shelf')} 本棚ごとに、共有する相手を選べます。</div></div></section></main>`;
   const switchButton = document.querySelector('#switch-auth');
@@ -222,7 +223,7 @@ function renderShell() {
     const button=document.createElement('button');button.id='nav-admin';button.className='nav-item';button.innerHTML=icon('settings')+'<span>サーバー管理</span>';button.onclick=showAdmin;adminAnchor.before(button);
   }).catch(()=>{});
   const logout = async () => {
-    try { clearThumbnails(); document.querySelectorAll('dialog,.viewer-screen').forEach(node=>node.close()); await Promise.all([flushAnalytics(),flushProgress()]); await stopAnalytics(); await api('/auth/logout', { method: 'POST' }); await setSession(null); loadGeneration++; shelves = []; items = []; activeShelf = null; renderAuth(); }
+    try { clearThumbnails(); document.querySelectorAll('dialog,.viewer-screen').forEach(node=>node.close()); await Promise.all([flushAnalytics(),flushProgress()]); await stopAnalytics(); await api('/auth/logout', { method: 'POST' }).catch(error=>{if(error.status)throw error;}); await setSession(null); loadGeneration++; shelves = []; items = []; activeShelf = null; renderAuth(); }
     catch (error) { report(error); }
   };
   document.querySelector('#logout').onclick = logout;
@@ -236,6 +237,7 @@ function renderShell() {
 function showSettings() {
   const actor=getSession(),server=getEndpoint();
   const current=()=>getSession()===actor && getEndpoint()===server;
+  if(offlineLibrary){openDownloadManager();return;}
   openSettings({ dialog, api, esc, theme, flush:flushAnalytics, apkUrl: currentApkUrl(), version: config.version || '0.4.4-beta', manageShelf: id => openMembers(id), manageDownloads:openDownloadManager, mountUpdates: native ? mountAppUpdates : null,
     onUpdated: async result => { if(!current())return;closeDownloads();await setSession(result);await stopAnalytics().catch(()=>{});if(getSession()!==result || getEndpoint()!==server)return;await startAnalytics();if(getSession()!==result || getEndpoint()!==server)return;renderShell();await refresh();toast('アカウント情報を更新しました。他の端末では再ログインが必要です。'); },
     onDeleted: async () => { if(!current())return;const results=await Promise.allSettled([clearAccountDownloads(),clearAccountAnalytics(),clearAccountProgress()]);if(!current())return;const cacheError=results.some(r=>r.status==='rejected');clearThumbnails();setSession(null);loadGeneration++;shelves=[];items=[];activeShelf=null;renderAuth();toast(cacheError?'アカウントを削除しました。端末内データを消去できませんでした。ブラウザーのサイトデータを削除してください。':'アカウントと個人の記録、この端末のダウンロードを削除しました。'); }
@@ -266,7 +268,7 @@ async function refresh({background=false}={}) {
   try {
     const [response,uploadStatus] = await Promise.all([api('/shelves'),api('/uploads')]);
     if (generation !== loadGeneration) return;
-    shelves = response.shelves;
+    offlineLibrary=false;shelves = response.shelves;
     if (activeShelf && !shelves.some(s => s.id === activeShelf)) activeShelf = null;
     const targets = activeShelf ? shelves.filter(s => s.id === activeShelf) : shelves;
     const results = await Promise.all(targets.map(s => api(`/shelves/${s.id}/items`)));
@@ -280,8 +282,11 @@ async function refresh({background=false}={}) {
     if(activeSeries && activeSeries!=='ungrouped' && !series.some(s=>s.id===activeSeries))activeSeries='';
     renderNav();
     renderItems();
+    rememberOfflineConfig(config);
   } catch (error) {
-    if (generation !== loadGeneration || !getSession() || background) return;
+    if (generation !== loadGeneration || !getSession()) return;
+    if(background){if(!error.status&&!offlineLibrary)await renderOfflineLibrary();return;}
+    if(!error.status||error.status>=500){if(await renderOfflineLibrary())return;}
     node.innerHTML = `<div class="empty-state"><h3>ライブラリを読み込めませんでした</h3><p>${esc(error.message)}</p><button class="button secondary" id="retry-library">もう一度読み込む</button></div>`;
     node.querySelector('button').onclick = refresh;
   }finally{if(generation===loadGeneration)refreshBusy=false;}
@@ -296,15 +301,16 @@ function selectShelf(id) {
 function renderNav() {
   const current = shelves.find(s => s.id === activeShelf);
   document.querySelector('#nav-all').classList.toggle('active', !current);
-  document.querySelector('.nav-count').textContent = shelves.reduce((n, s) => n + s.itemCount, 0);
+  document.querySelector('.nav-count').textContent = offlineLibrary?items.length:shelves.reduce((n, s) => n + s.itemCount, 0);
   document.querySelector('#shelf-nav').innerHTML = shelves.length ? shelves.map((s, index) => `<div class="shelf-nav-row"><button class="nav-item shelf-nav ${s.id === activeShelf ? 'active' : ''}" data-shelf="${esc(s.id)}"><span class="shelf-dot color-${index % 4}"></span><span>${esc(s.name)}</span>${s.memberCount > 1 ? icon('users', 'shared-icon') : ''}<span class="nav-count">${s.itemCount}</span></button><button class="icon-button shelf-menu-toggle" data-shelf-menu="${esc(s.id)}" aria-label="${esc(s.name)}の本棚メニュー">⋯</button></div>`).join('') : '<p class="sidebar-empty">本棚を作成して<br>コレクションを始めましょう。</p>';
   document.querySelectorAll('[data-shelf]').forEach(button => { button.onclick = () => selectShelf(button.dataset.shelf); });
   document.querySelectorAll('[data-shelf-menu]').forEach(button=>button.onclick=()=>openShelfMenu(button.dataset.shelfMenu));
   document.querySelector('#breadcrumb-title').textContent = current?.name ?? 'ライブラリ';
   document.querySelector('#overview-title').textContent=current?.name??'すべてのコンテンツ';
-  document.querySelector('#overview-description').textContent=current?(current.description||`${roleName[current.role]}として参加している本棚です。`):'本棚を選んで、コレクションを楽しみましょう。';
-  document.querySelector('#add-series').hidden=Boolean(current?current.role==='viewer':!shelves.some(s=>s.role!=='viewer'));
-  document.querySelector('#open-upload').hidden = Boolean(current && current.role === 'viewer');
+  document.querySelector('#overview-description').textContent=offlineLibrary?'オフライン · 保存済み作品のみ表示しています。接続後に自動同期します。':current?(current.description||`${roleName[current.role]}として参加している本棚です。`):'本棚を選んで、コレクションを楽しみましょう。';
+  document.querySelector('#add-series').hidden=offlineLibrary||Boolean(current?current.role==='viewer':!shelves.some(s=>s.role!=='viewer'));
+  document.querySelector('#add-shelf').hidden=offlineLibrary;document.querySelector('#recent-history').disabled=offlineLibrary;document.querySelector('#upload-jobs').disabled=offlineLibrary;
+  document.querySelector('#open-upload').hidden = offlineLibrary||Boolean(current && current.role === 'viewer');
 }
 function renderItems() {
   const node = document.querySelector('#items');
@@ -341,7 +347,7 @@ function renderItems() {
     if(item.pending)return `<article class="media-card pending-card" aria-disabled="true"><div class="card-art pending-art">${icon(item.kind==='video'?'video':item.kind==='audio'?'audio':'book')}<span>${item.state==='uploading'?'アップロード中':esc(processingLabel(item.processing))}</span></div><div class="card-content"><span class="card-shelf">${esc(item.shelfName)}</span><h3>${esc(item.title)}</h3><p class="muted">処理が完了すると開けます</p><progress max="100" value="${Math.max(0,Math.min(100,Number(item.processing?.percent)||0))}" aria-label="後処理の進捗"></progress></div></article>`;
     const isBook = !isTimedKind(item.kind);
     const label = item.kind === 'image-book' ? `画像・${item.pageCount}ページ` : item.kind === 'epub' ? 'EPUB' : item.kind === 'pdf' ? 'PDF' : item.kind === 'audio' ? 'AAC / M4A' : item.mimeType === 'video/mp4' ? 'MP4' : 'WebM';
-    return `<article class="media-card"><button class="card-open" data-open="${item.id}" ${item.kind==='video' ? `data-preview-id="${item.id}"` : ''} aria-label="${esc(item.title)}を${isBook ? '読む' : '再生する'}"><div class="card-art actual-cover ${isBook ? 'book-cover' : item.kind==='audio' ? 'audio-cover' : 'video-cover'}"><img data-thumbnail="${esc(item.thumbnailUrl)}" alt="${esc(item.title)}のサムネイル"><span class="cover-placeholder">${icon(isBook ? 'book' : item.kind==='audio' ? 'audio' : 'video')}<span>表紙を読み込んでいます…</span></span><span class="media-type">${item.kind === 'image-book' ? 'IMAGE BOOK' : item.kind==='epub' ? 'EPUB' : isBook ? 'PDF' : item.kind==='audio' ? 'AUDIO' : 'VIDEO'}</span><span class="card-open-label">${isBook ? '本を開く' : '再生する'} ${icon('arrow')}</span></div><div class="card-content"><span class="card-shelf">${icon('shelf')}${esc(item.shelfName)}</span><h3>${esc(item.title)}</h3><div class="card-meta"><span>${label} <span class="meta-dot">·</span> ${bytes(item.size)}</span><span>${date(item.createdAt)}</span></div><div class="card-progress">${esc(progressLabel(item,item.progress))}</div></div></button>${item.role !== 'viewer' ? `<button class="card-delete icon-button" data-delete="${item.id}" aria-label="${esc(item.title)}を削除">${icon('trash')}</button>` : ''}</article>`;
+    return `<article class="media-card"><button class="card-open" data-open="${item.id}" ${item.kind==='video' ? `data-preview-id="${item.id}"` : ''} aria-label="${esc(item.title)}を${isBook ? '読む' : '再生する'}"><div class="card-art actual-cover ${isBook ? 'book-cover' : item.kind==='audio' ? 'audio-cover' : 'video-cover'}"><img data-local-thumbnail="${item.id}" data-thumbnail="${esc(item.thumbnailUrl)}" alt="${esc(item.title)}のサムネイル"><span class="cover-placeholder">${icon(isBook ? 'book' : item.kind==='audio' ? 'audio' : 'video')}<span>表紙を読み込んでいます…</span></span><span class="media-type">${item.kind === 'image-book' ? 'IMAGE BOOK' : item.kind==='epub' ? 'EPUB' : isBook ? 'PDF' : item.kind==='audio' ? 'AUDIO' : 'VIDEO'}</span><span class="card-open-label">${isBook ? '本を開く' : '再生する'} ${icon('arrow')}</span></div><div class="card-content"><span class="card-shelf">${icon('shelf')}${esc(item.shelfName)}</span><h3>${esc(item.title)}</h3><div class="card-meta"><span>${label} <span class="meta-dot">·</span> ${bytes(item.size)}</span><span>${date(item.createdAt)}</span></div><div class="card-progress">${esc(progressLabel(item,item.progress))}</div></div></button>${item.role !== 'viewer' ? `<button class="card-delete icon-button" data-delete="${item.id}" aria-label="${esc(item.title)}を削除">${icon('trash')}</button>` : ''}</article>`;
   }).join('');
   node.querySelectorAll('[data-open]').forEach(button => { button.onclick = () => openViewer(items.find(i => i.id === button.dataset.open)); });
   node.querySelectorAll('[data-delete]').forEach(button => { button.onclick = () => deleteItem(items.find(i => i.id === button.dataset.delete)); });
@@ -355,6 +361,7 @@ function renderItems() {
   });
   updateDownloadButtons();
   loadThumbnails();
+  if(offlineLibrary)return;
   videoPreviews = mountVideoPreviews(node, { native, api, authenticatedBlob, trackPreview:(id,video)=>trackAsset(id,'preview')?.video(video) });
   videoPreviews.setPaused('native', !nativeAppActive);
 }
@@ -628,7 +635,7 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false,background
       if(downloaded)video.setAttribute('controlsList','nodownload');
     }
     restart.disabled=false;
-    if(downloaded){const badge=document.createElement('span');badge.className='download-source';badge.textContent='端末の暗号化データを使用（今回のアクセス権確認済み）';progressBar.prepend(badge);}
+    if(downloaded){const badge=document.createElement('span');badge.className='download-source';badge.textContent='端末の暗号化データを使用（7日間の閲覧許可）';progressBar.prepend(badge);}
   } catch (error) { onError(error); }
 }
 async function updateDownloadButtons(){
@@ -639,7 +646,7 @@ async function updateDownloadButtons(){
 }
 function openDownload(item){
   if(!item)return;
-  const node=dialog('端末へ暗号化ダウンロード',`<div class="modal-body"><h3>${esc(item.title)}</h3><p>本・動画・音声のデータはAES-256-GCMで暗号化してアプリ／ブラウザー内に保存します。復号鍵は閲覧中のメモリーにだけ保持します。開くたびにオンラインでアクセス権を確認するため、完全オフラインでは開けません。</p><p>画面を閉じると取得を一時停止します。次回は受信済み部分から再開できます。</p><div class="download-quality" hidden><label>保存する画質<select aria-label="ダウンロード画質"></select></label><small>1アセットにつき1画質を保存します。変更すると以前の保存データを置き換えます。</small></div><progress class="download-progress" max="100" value="0" aria-label="ダウンロードの進行状況"></progress><p class="download-status" role="status">${bytes(item.size)}・端末の空き容量が必要です。</p><div class="modal-actions"><button class="button primary start-download">保存を開始／再開</button></div></div>`);
+  const node=dialog('端末へ暗号化ダウンロード',`<div class="modal-body"><h3>${esc(item.title)}</h3><p>本・動画・音声のデータはAES-256-GCMで暗号化してアプリ／ブラウザー内に保存します。閲覧許可と復号鍵は端末固有の鍵で保護します。オンライン時は権限を確認し、最後の接続から7日間はオフラインでも開けます。</p><p>画面を閉じると取得を一時停止します。次回は受信済み部分から再開できます。</p><div class="download-quality" hidden><label>保存する画質<select aria-label="ダウンロード画質"></select></label><small>1アセットにつき1画質を保存します。変更すると以前の保存データを置き換えます。</small></div><progress class="download-progress" max="100" value="0" aria-label="ダウンロードの進行状況"></progress><p class="download-status" role="status">${bytes(item.size)}・端末の空き容量が必要です。</p><div class="modal-actions"><button class="button primary start-download">保存を開始／再開</button></div></div>`);
   const controller=new AbortController(),status=node.querySelector('.download-status'),button=node.querySelector('.start-download');
   node.addEventListener('close',()=>{controller.abort();updateDownloadButtons();},{once:true});
   if(item.kind==='video'){
@@ -654,13 +661,13 @@ function openDownload(item){
   }
   button.onclick=async()=>{
     button.disabled=true;
-    try{await downloadToDevice(item,({received,total})=>{if(node.isConnected){node.querySelector('progress').value=received/total*100;status.textContent=`${bytes(received)} / ${bytes(total)}`;}},controller.signal,node.querySelector('.download-quality select')?.value||undefined);if(node.isConnected)status.textContent='暗号化して保存しました。開く際には毎回オンラインで権限を確認します。';await updateDownloadButtons();}
+    try{await downloadToDevice(item,({received,total})=>{if(node.isConnected){node.querySelector('progress').value=received/total*100;status.textContent=`${bytes(received)} / ${bytes(total)}`;}},controller.signal,node.querySelector('.download-quality select')?.value||undefined);if(node.isConnected)status.textContent='暗号化して保存しました。最終接続から7日以内はオフラインで開けます。再接続時に自動延長します。';await updateDownloadButtons();}
     catch(error){if(node.isConnected)status.textContent=error.name==='QuotaExceededError'?'端末の保存容量が不足しています。不要なダウンロードを削除してください。':error.message;}
     finally{if(node.isConnected)button.disabled=false;}
   };
 }
 function openDownloadManager(){
-  const node=dialog('この端末のダウンロード','<div class="modal-body"><p>保存内容は暗号化されています。別アカウントとは共有せず、開く際は毎回オンライン認証が必要です。ここから削除してもサーバーの原本や閲覧履歴は消えません。</p><div class="download-list">読み込んでいます…</div></div>');
+  const node=dialog('この端末のダウンロード','<div class="modal-body"><p>保存内容は暗号化されています。別アカウントとは共有せず、最終接続から7日間はオフラインで開けます。接続後に閲覧記録・続き位置・権限と期限を自動同期します。ここから削除してもサーバーの原本や閲覧履歴は消えません。</p><div class="download-list">読み込んでいます…</div></div>');
   const actor=getSession()?.user.id,endpoint=getEndpoint();
   async function reload(){
     try{const rows=await listDownloads();if(!node.isConnected || getSession()?.user.id!==actor || getEndpoint()!==endpoint)return;
@@ -677,9 +684,33 @@ function progressLabel(item,position){
   const time=ms=>{const seconds=Math.floor((ms??0)/1000);return `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`;};
   return position.completed?'最後まで再生済み（次回は最初から）':`続きから: ${time(position.positionMs)} / ${time(position.durationMs)}`;
 }
+async function renderOfflineLibrary(){
+  const session=getSession();if(!session)return false;
+  const identity=await offlineIdentity(getEndpoint(),session.user.id);if(!identity)return false;
+  const rows=(await listDownloads()).filter(row=>row.state==='ready');if(!rows.length)return false;
+  offlineLibrary=true;await markSessionOffline();shelves=[];series=[];activeShelf=null;activeSeries='';
+  items=rows.map(row=>{const m=row.manifest;return {id:row.assetId,title:m.title,kind:m.kind,mimeType:m.files[0].mime,pageCount:m.pageCount,size:m.files.reduce((sum,f)=>sum+f.size,0),createdAt:row.savedAt,shelfName:'端末のダウンロード',role:'viewer'};});
+  renderNav();renderItems();return true;
+}
+function synchronizeConnection(){
+  if(synchronizing||!getSession())return synchronizing;
+  synchronizing=(async()=>{
+    if(!await reconnectSession())return;
+    await loadConfig();
+    ensureDownloadWorker().catch(()=>{});
+    await refresh({background:!offlineLibrary});
+    await Promise.all([syncDownloads({items}),syncStoredProgress(),flushProgress(),flushAnalytics(),
+      nativePlayerAvailable()?NativePlayer.synchronize({origin:getEndpoint(),token:getSession().token,userId:getSession().user.id}):null]);
+    if(offlineLibrary){offlineLibrary=false;await refresh();}
+  })().catch(error=>{if([401,403].includes(error.status)){window.dispatchEvent(new Event('mirea:unauthorized'));}}).finally(()=>{synchronizing=null;});
+  return synchronizing;
+}
+window.addEventListener('online',()=>synchronizeConnection());
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)synchronizeConnection();});
+setInterval(()=>synchronizeConnection(),30000);
 async function loadConfig() {
   if (native && !getEndpoint()) return;
-  try { config = { ...config, ...await api('/config') }; configureAnalytics(config.analytics); } catch { /* the login action presents connection errors */ }
+  try { if(isOfflineSession()){const cached=await offlineIdentity(getEndpoint(),getSession()?.user.id);config={...config,...cached?.config};}else config = { ...config, ...await api('/config') }; configureAnalytics(config.analytics); await rememberOfflineConfig(config); } catch { /* the login action presents connection errors */ }
 }
 window.addEventListener('mirea:unauthorized', () => {
   stopAnalytics();
@@ -693,7 +724,7 @@ window.addEventListener('mirea:update-ready', event => toast(`アプリ ${event.
 initializeAppUpdates();
 initializeNativePlayback().catch(()=>{});
 async function bootstrapLogin(){
-  try{await initializeSession();await loadConfig();if(getSession()){await startAnalytics();renderShell();await refresh();}else renderAuth();}
+  try{await initializeSession();await loadConfig();if(getSession()){await startAnalytics();renderShell();if(isOfflineSession())await renderOfflineLibrary();else await refresh();synchronizeConnection();}else renderAuth();}
   catch(error){
     clearInterval(libraryPoll);clearThumbnails();
     root.innerHTML=`<main class="reconnect-screen"><section><h1>サーバーに再接続</h1><p>${esc(error.message)}</p><p class="muted">通信に失敗しても、保持したログインは解除しません。オンラインで認証を確認してからライブラリを開きます。</p><button class="button primary retry-connection">もう一度接続する</button><button class="button secondary show-login">ログイン画面を開く</button></section></main>`;

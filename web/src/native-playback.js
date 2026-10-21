@@ -1,6 +1,6 @@
 import { getSession,getEndpoint } from './api.js';
 import { NativePlayer,nativePlayerAvailable,nativePlaybackGeneration,nativePlaybackStopped } from './native-player-bridge.js';
-import { prepareNativeDownload } from './downloads.js';
+import { prepareNativeDownload,downloadedThumbnail } from './downloads.js';
 import { beginUpdateActivity } from './update-busy.js';
 
 let release;
@@ -27,6 +27,9 @@ export async function openNativePlayback(item,{restart=false,continuous=true,ana
   const valid=()=>isCurrent()&&nativePlaybackGeneration()===epoch&&getSession()?.token===session.token&&getEndpoint()===origin;
   const download=await prepareNativeDownload(item,valid,progress);
   if(!valid())throw new Error('再生準備を取り消しました。');
-  await NativePlayer.open({origin,token:session.token,userId:session.user.id,item,restart,continuous,analytics,version,autoplay:true,...(download?{download}:{})});
+  let artwork;
+  if(download){const cover=await downloadedThumbnail(item.id).catch(()=>null);if(cover){const bytes=new Uint8Array(await cover.arrayBuffer()),parts=[];for(let n=0;n<bytes.length;n+=8192)parts.push(String.fromCharCode(...bytes.subarray(n,n+8192)));artwork=btoa(parts.join(''));bytes.fill(0);}}
+  if(!valid())throw new Error('再生準備を取り消しました。');
+  await NativePlayer.open({...(artwork?{artwork}:{}),origin,token:session.token,userId:session.user.id,item,restart,continuous,analytics,version,autoplay:true,...(download?{download}:{})});
   await refreshNativePlayback();
 }

@@ -15,7 +15,9 @@ import javax.crypto.spec.*;
 public final class PlaybackSource extends MediaDataSource {
     private final PlaybackApi api;
     private final String path;
-    private final long size,expiresAt;
+    private final long size;
+    private long expiresAt;
+    private long deadline=Long.MAX_VALUE,lastWall=System.currentTimeMillis();
     private final JSONObject manifest;
     private final File folder;
     private byte[] key;
@@ -27,7 +29,9 @@ public final class PlaybackSource extends MediaDataSource {
         this.api=api;this.path=null;this.folder=folder;manifest=grant.getJSONObject("manifest");validateManifest(manifest);
         size=manifest.getJSONArray("files").getJSONObject(0).getLong("size");blockSize=1048576;expiresAt=grant.getLong("expiresAt");key=Base64.getDecoder().decode(grant.getString("key"));
         if(key.length!=32||expiresAt<=System.currentTimeMillis())throw new IOException("Invalid playback grant");
+        deadline=android.os.SystemClock.elapsedRealtime()+expiresAt-System.currentTimeMillis();
     }
+    public synchronized void renew(long expires){if(manifest!=null&&expires>System.currentTimeMillis()){expiresAt=expires;deadline=android.os.SystemClock.elapsedRealtime()+expires-System.currentTimeMillis();}}
     public static void validateManifest(JSONObject m)throws Exception{
         if(m.getInt("version")!=1||!"AES-256-GCM".equals(m.getString("algorithm"))||m.getInt("chunkSize")!=1048576||!PlaybackApi.uuid(m.getString("id"))||!PlaybackApi.uuid(m.getString("assetId"))||!Arrays.asList("video","audio").contains(m.getString("kind"))||m.getJSONArray("files").length()!=1)throw new IOException("Invalid encrypted media manifest");
         JSONObject f=m.getJSONArray("files").getJSONObject(0);long size=f.getLong("size");
@@ -56,7 +60,9 @@ public final class PlaybackSource extends MediaDataSource {
         blocks.put(number,bytes);if(blocks.size()>2){Long first=blocks.keySet().iterator().next();Arrays.fill(blocks.remove(first),(byte)0);}return bytes;
     }
     @Override public synchronized int readAt(long position,byte[] buffer,int offset,int count)throws IOException{
-        if(closed||api.closed||System.currentTimeMillis()>=expiresAt)throw new IOException("Playback grant expired");
+        long wall=System.currentTimeMillis();
+        if(closed||api.closed||wall<lastWall-1000||wall>=expiresAt||android.os.SystemClock.elapsedRealtime()>=deadline)throw new IOException("Playback grant expired");
+        lastWall=Math.max(lastWall,wall);
         if(position<0||offset<0||count<0||offset>buffer.length-count)throw new IOException("Invalid media read");
         if(count==0)return 0;if(position>=size)return -1;
         byte[] bytes=block(position/blockSize);int from=(int)(position%blockSize),n=(int)Math.min(Math.min(count,bytes.length-from),size-position);System.arraycopy(bytes,from,buffer,offset,n);return n;
