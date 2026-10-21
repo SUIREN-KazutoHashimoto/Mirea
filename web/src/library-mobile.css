@@ -16,3 +16,8 @@
 @media(prefers-reduced-motion:no-preference){.compact-library:not(.drawer-dragging) .sidebar{transition:transform .2s ease,visibility .2s}}
 
 .asset-action-menu{width:min(360px,calc(100vw - 32px))}.asset-action-list{padding:10px;gap:2px}.asset-action{display:flex;align-items:center;gap:14px;min-height:52px;padding:12px 14px;border:0;background:transparent;text-align:left;font-size:13px;color:var(--text);border-radius:8px}.asset-action .icon{width:21px;height:21px}.asset-action:hover{background:var(--soft)}.asset-action.danger-text{color:#d64e62}.asset-action-list .action-status{font-size:11px;line-height:1.7;padding:5px 14px;margin:0}.asset-action-list .action-status:empty{display:none}.card-open{-webkit-touch-callout:none;user-select:none}.card-content{padding-bottom:16px}
+
+/* X-style reveal: the library is pushed with the drawer, not covered in place. */
+.compact-library{--drawer-reveal:0;--drawer-width:min(330px,86vw);overflow-x:clip}.compact-library.drawer-open{--drawer-reveal:1}.compact-library .main-content{transform:translate3d(calc(var(--drawer-reveal)*var(--drawer-width)),0,0)}.compact-library .drawer-backdrop:not([hidden]){opacity:var(--drawer-reveal)}
+@media(prefers-reduced-motion:no-preference){.compact-library:not(.drawer-dragging) .main-content,.compact-library:not(.drawer-dragging) .sidebar{transition:transform .24s cubic-bezier(.2,.8,.2,1),visibility .24s}.compact-library:not(.drawer-dragging) .drawer-backdrop{transition:opacity .24s}}
+.compact-library.drawer-dragging .main-content{transition:none!important}

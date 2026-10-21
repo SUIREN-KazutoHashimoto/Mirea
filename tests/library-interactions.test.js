@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {drawerProgress,settleDrawer,mountAssetHold,mountLibraryDrawer} from '../web/src/library-interactions.js';
+import {drawerProgress,settleDrawer,recentDrawerVelocity,mountAssetHold,mountLibraryDrawer} from '../web/src/library-interactions.js';
 import {downloadableSnapshot,runBulkDownloads} from '../web/src/bulk-downloads.js';
 
 const event=(type,props={})=>{const e=new Event(type,{cancelable:true});for(const [key,value] of Object.entries(props))Object.defineProperty(e,key,{value});return e;};
@@ -13,6 +13,7 @@ class Node extends EventTarget{
 }
 test('drawer follows clamped finger distance and settles by distance or deliberate flick, not a fixed end-of-swipe trigger',()=>{
   assert.equal(drawerProgress(false,165,330),.5);assert.equal(drawerProgress(true,-165,330),.5);assert.equal(drawerProgress(false,-20,330),0);assert.equal(drawerProgress(true,900,330),1);
+  assert.equal(settleDrawer(false,230,330,2000,-.8),false);assert.equal(settleDrawer(true,-60,330,2000,.8),true);assert.equal(recentDrawerVelocity([{x:0,at:0},{x:200,at:1900},{x:140,at:2000}],2000),-.6);
   assert.equal(settleDrawer(false,100,330,1000),false);assert.equal(settleDrawer(false,200,330,2000),true);assert.equal(settleDrawer(false,65,330,80),true);assert.equal(settleDrawer(true,-65,330,80),false);assert.equal(settleDrawer(false,5,330,1),false);
 });
 test('drawer is inert when closed, traps focus while open, restores overflow and moves the same action nodes at responsive breakpoints',()=>{

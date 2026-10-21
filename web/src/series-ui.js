@@ -72,20 +72,20 @@ export function openSeriesManager({dialog,api,esc,shelves,initialShelfId,initial
 const activeNavigations=new Set();
 export function seriesNativeState(active){for(const update of activeNavigations)update(active);}
 
-export function mountSeriesNavigation({node,body,item,api,esc,open,isCurrent,isActive=()=>!document.hidden,enabled=true,onEnabled=()=>{},beforeMove=async()=>{}}){
+export function mountSeriesNavigation({node,body,item,api,esc,open,isCurrent,isActive=()=>!document.hidden,enabled=true,onEnabled=()=>{},beforeMove=async()=>{},order,onModes=()=>{}}){
   const bar=document.createElement('nav');bar.className='series-reader-nav';bar.setAttribute('aria-label','シリーズ内の移動');bar.hidden=true;(node.querySelector('.viewer-meta')??node).append(bar);
   const footer=document.createElement('div');footer.className='series-book-end';footer.hidden=true;
-  const subscribers=new Set();let disposed=false,book=null,videoCleanup,signature='',pendingEnd;
+  const subscribers=new Set();let disposed=false,book=null,videoCleanup,signature='',pendingEnd,video,loopEpoch=0;
   const alive=()=>!disposed && node.isConnected && node.open && isCurrent();
   const backgroundCapable=['video','audio'].includes(item.kind);
   const active=()=>alive() && isActive() && (backgroundCapable || !document.hidden);
-  const core=createSeriesContinuation({assetId:item.id,enabled,loadContext:()=>api(`/items/${item.id}/series`),isActive:active,changed:render,
+  const core=createSeriesContinuation({assetId:item.id,enabled,order,loadContext:()=>api(`/items/${item.id}/series`),isActive:active,changed:render,
     move:async(target,options,allowed)=>{
       await beforeMove();
       if(!active() || !allowed())return false;
       return new Promise(resolve=>{
         const background=Boolean(node.isMinimized);
-        node.addEventListener('close',()=>{if(isCurrent() && isActive() && (backgroundCapable || !document.hidden))open(target,{...options,background:options.autoplay&&background});resolve();},{once:true});
+        node.addEventListener('close',()=>{if(isCurrent() && isActive() && (backgroundCapable || !document.hidden))open(target,{...options,playbackOrder:order,background:options.autoplay&&background});resolve();},{once:true});
         node.close();
       });
     }
@@ -111,13 +111,13 @@ export function mountSeriesNavigation({node,body,item,api,esc,open,isCurrent,isA
       }
       bar.dataset.chromePinned=String(countdown!==null || busy);
       if(countdown!==null || busy){bar.querySelector('details').open=true;node.showChrome?.();}
-      bar.querySelector('.series-prev').disabled=busy || currentIndex===0;
-      bar.querySelector('.series-next').disabled=busy || !next;
+      bar.querySelector('.series-prev').disabled=busy || (order?!order.canMove(context,item.id,-1):currentIndex===0);
+      bar.querySelector('.series-next').disabled=busy || (order?!order.canMove(context,item.id):!next);
       bar.querySelector('select').disabled=busy;
       bar.querySelector('input').checked=enabled;
       bar.querySelector('.series-cancel').hidden=countdown===null && !busy;
       bar.querySelector('.series-now').hidden=countdown===null;
-      bar.querySelector('.series-continuation-status').textContent=busy?'次のアセットの権限と続き位置を確認しています…':countdown!==null?`${countdown}秒後に「${next?.title??''}」へ進みます。`:message;
+      bar.querySelector('.series-continuation-status').textContent=busy?'次のアセットの権限と続き位置を確認しています…':countdown!==null?`${countdown}秒後に「${order&&(order.modes.shuffle||order.modes.repeat==='series')?'次の作品':next?.title??''}」へ進みます。`:message;
     }
     // Keep footer height stable during page re-render/resize to avoid a ResizeObserver loop.
     const lastPage=book && (book.atEnd??book.page===book.total);
@@ -143,20 +143,22 @@ export function mountSeriesNavigation({node,body,item,api,esc,open,isCurrent,isA
   })();
   return {
     ready,
+    get modeState(){return {...(order?.modes??{repeat:'off',shuffle:false}),hasSeries:Boolean(core.state.context?.series)};},
+    setModes(value){if(!order)return;loopEpoch++;order.setModes(value);onModes(order.modes);onEnabled(true);core.setEnabled(true);},
     get canContinue(){return core.state.canContinue;},
     subscribe(fn){subscribers.add(fn);fn();return()=>subscribers.delete(fn);},
     bookState(state){book=state;render();},
     nextBook:()=>core.nextBook(),
     navigate:direction=>core.navigate({direction,autoplay:true}),
     cancel:()=>core.cancel(),
-    bindVideo(video,{autoplay=false}={}){
-      videoCleanup?.();
-      const ended=()=>{if(!core.state.context)pendingEnd=video;else core.videoEnded();};
-      const cancel=()=>{pendingEnd=null;core.cancel();};
+    bindVideo(element,{autoplay=false}={}){
+      videoCleanup?.();video=element;
+      const ended=async()=>{if(order?.modes.repeat==='one'&&core.state.enabled){const epoch=++loopEpoch;try{await beforeMove();if(epoch!==loopEpoch||!active()||order.modes.repeat!=='one'||!core.state.enabled)return;video.currentTime=0;await video.play();}catch{if(alive())core.notify('単体リピートを開始できません。再生ボタンで再開してください。');}return;}if(!core.state.context)pendingEnd=video;else core.videoEnded();};
+      const cancel=()=>{loopEpoch++;pendingEnd=null;core.cancel();};
       const failure=()=>core.cancel('メディアのエラーにより連続再生を停止しました。');
       videoCleanup=bindContinuationVideo(video,{autoplay,canAutoplay:()=>active() && core.state.enabled,onEnded:ended,onReset:cancel,onError:failure,
         onBlocked:reason=>core.notify(reason==='policy'?'自動再生が制限されました。プレーヤーの再生ボタンを押してください。':'自動再生を停止しました。再生ボタンで開始してください。')});
     },
-    dispose(){if(disposed)return;disposed=true;pendingEnd=null;core.dispose();videoCleanup?.();subscribers.clear();activeNavigations.delete(nativeState);document.removeEventListener('visibilitychange',visibility);window.removeEventListener('pagehide',suspend);}
+    dispose(){if(disposed)return;disposed=true;loopEpoch++;pendingEnd=null;core.dispose();videoCleanup?.();subscribers.clear();activeNavigations.delete(nativeState);document.removeEventListener('visibilitychange',visibility);window.removeEventListener('pagehide',suspend);}
   };
 }

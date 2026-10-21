@@ -44,8 +44,9 @@ public final class PlaybackService extends Service {
     private JSONObject item,request;
     private JSONArray qualities=new JSONArray();
     private String quality="legacy",error="",nextTitle="";
-    private boolean prepared,seeking,buffering,foreground,pip,resumeFocus,continuous=true,ended,destroyed;
-    private int generation,volume=100;
+    private boolean prepared,seeking,buffering,foreground,pip,resumeFocus,continuous=true,ended,destroyed,resumeAfterSeek;
+    private int generation,volume=100,transitionEpoch;
+    private String repeat="off";private boolean shuffle;private PlaybackOrder order=new PlaybackOrder();
     private boolean holdBoost;
     private float boostRestoreRate=1f;
     private JSONObject heatmap;
@@ -85,8 +86,9 @@ public final class PlaybackService extends Service {
             if(!PlaybackApi.uuid(id)||!Arrays.asList("audio","video").contains(asset.getString("kind")))throw new IOException("Invalid media identity");
             PlaybackApi nextApi=new PlaybackApi(next.getString("origin"),next.getString("token"),next.getString("userId"));
             if(api!=null&&api.partition.equals(nextApi.partition)&&item!=null&&id.equals(item.optString("id"))&&prepared&&!next.optBoolean("restart")&&!next.has("quality")){nextApi.close();changed();return;}
+            boolean sameOrder=api!=null&&api.partition.equals(nextApi.partition)&&(next.optBoolean("orderContinuation")||item!=null&&id.equals(item.optString("id")));if(!sameOrder)order=new PlaybackOrder();
             endBoost();final int epoch=++generation;cancelContinuation();record("close");checkpoint(true);releasePlayer();
-            PlaybackApi old=api;api=nextApi;if(old!=null)old.close();request=next;item=asset;error="";ended=false;prepared=false;seeking=false;buffering=true;quality=next.optString("quality",getSharedPreferences("mirea-playback-quality",MODE_PRIVATE).getString(nextApi.partition,"legacy"));continuous=next.optBoolean("continuous",true);nextTitle="";pausedAt=SystemClock.elapsedRealtime();
+            PlaybackApi old=api;api=nextApi;if(old!=null)old.close();request=next;item=asset;android.content.SharedPreferences modes=getSharedPreferences("mirea-playback-modes",MODE_PRIVATE);repeat=next.optString("repeat",modes.getString(nextApi.partition+":repeat","off"));if(!Arrays.asList("off","one","series").contains(repeat))repeat="off";shuffle=next.optBoolean("shuffle",modes.getBoolean(nextApi.partition+":shuffle",false));error="";ended=false;prepared=false;seeking=false;buffering=true;quality=next.optString("quality",getSharedPreferences("mirea-playback-quality",MODE_PRIVATE).getString(nextApi.partition,"legacy"));continuous=next.optBoolean("continuous",true);nextTitle="";pausedAt=SystemClock.elapsedRealtime();
             recorder=null;progress=null;qualities=new JSONArray();artwork=null;heatmap=null;navigation=null;storyboard=null;hlsGeneration=null;captionId=getSharedPreferences("mirea-captions",MODE_PRIVATE).getString("language","off");final String requestedQuality=next.has("quality")?quality:networkQuality(nextApi);updateSession();changed();
             io.submit(()->{
                 PlaybackSource candidate=null;String resolvedQuality=requestedQuality,adaptiveGeneration=null;JSONArray availableQualities=new JSONArray();android.graphics.Bitmap nextArtwork=null;
@@ -120,11 +122,11 @@ public final class PlaybackService extends Service {
             if(hlsGeneration!=null){prepareAdaptive(resume,autoplay);return;}
             MediaPlayer created=new MediaPlayer();player=created;applyVolume();created.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MOVIE).build());created.setWakeMode(getApplicationContext(),PowerManager.PARTIAL_WAKE_LOCK);
             created.setDataSource(source);if(surface!=null)created.setSurface(surface);
-            created.setOnPreparedListener(p->{if(player!=p)return;prepared=true;buffering=false;try{if(resume>0){seeking=true;p.seekTo(Math.min(resume,Math.max(0,p.getDuration()-250)),MediaPlayer.SEEK_CLOSEST);}if(autoplay)play();record("ready");changed();}catch(Exception e){fail("再生を開始できません。");}});
-            created.setOnSeekCompleteListener(p->{if(player==p){seeking=false;record("seeked");checkpoint(true);changed();}});
+            created.setOnPreparedListener(p->{if(player!=p)return;prepared=true;buffering=false;try{if(resume>0){seeking=true;resumeAfterSeek=autoplay;p.seekTo(Math.min(resume,Math.max(0,p.getDuration()-250)),MediaPlayer.SEEK_CLOSEST);}else if(autoplay)play();record("ready");changed();}catch(Exception e){fail("再生を開始できません。");}});
+            created.setOnSeekCompleteListener(this::seekComplete);
             created.setOnInfoListener((p,what,extra)->{if(player==p){if(what==MediaPlayer.MEDIA_INFO_BUFFERING_START){endBoost();buffering=true;}if(what==MediaPlayer.MEDIA_INFO_BUFFERING_END)buffering=false;record("buffering");}return false;});
             created.setOnVideoSizeChangedListener((p,w,h)->changed());
-            created.setOnCompletionListener(p->{if(player!=p)return;endBoost();ended=true;pausedAt=SystemClock.elapsedRealtime();record("ended");checkpoint(true);updateSession();changed();if(continuous){continuation=()->navigate(1);main.postDelayed(continuation,5000);}});
+            created.setOnCompletionListener(p->{if(player!=p)return;endBoost();ended=true;pausedAt=SystemClock.elapsedRealtime();record("ended");checkpoint(true);updateSession();changed();scheduleEnded();});
             created.setOnErrorListener((p,what,extra)->{if(player==p)fail("メディアを再生できません。接続・権限を確認し、再接続してください。");return true;});
             if(request.optBoolean("analytics")){recorder=new PlaybackRecorder(item.getString("id"),request.optString("version","development"),SystemClock.elapsedRealtime(),(v,e)->journal.event(api.partition,v,e));}
             record(null);created.prepareAsync();changed();
@@ -135,7 +137,7 @@ public final class PlaybackService extends Service {
         adaptive=new AdaptivePlayback(this,api,item.getString("id"),hlsGeneration,qualities,new AdaptivePlayback.Events(){
             public void ready(){if(epoch!=generation)return;prepared=true;buffering=false;if(resume>0)adaptive.player.seekTo(Math.min(resume,Math.max(0,duration()-250)));if(autoplay)play();record("ready");changed();}
             public void buffering(boolean value){if(epoch!=generation)return;if(value)endBoost();buffering=value;record("buffering");}
-            public void ended(){if(epoch!=generation)return;endBoost();ended=true;pausedAt=SystemClock.elapsedRealtime();record("ended");checkpoint(true);updateSession();changed();if(continuous){continuation=()->navigate(1);main.postDelayed(continuation,5000);}}
+            public void ended(){if(epoch!=generation)return;endBoost();ended=true;pausedAt=SystemClock.elapsedRealtime();record("ended");checkpoint(true);updateSession();changed();scheduleEnded();}
             public void failed(){if(epoch==generation)fail("配信を再生できません。接続・アクセス権を確認して再接続してください。");}
             public void changed(){if(epoch==generation)PlaybackService.this.changed();}
             public void seeked(){if(epoch==generation){seeking=false;record("seeked");checkpoint(true);changed();}}
@@ -144,16 +146,18 @@ public final class PlaybackService extends Service {
         if(request.optBoolean("analytics"))recorder=new PlaybackRecorder(item.getString("id"),request.optString("version","development"),SystemClock.elapsedRealtime(),(v,e)->journal.event(api.partition,v,e));
         record(null);adaptive.player.prepare();changed();
     }
+    private void seekComplete(MediaPlayer p){if(player!=p)return;seeking=false;record("seeked");checkpoint(true);boolean resume=resumeAfterSeek;resumeAfterSeek=false;if(resume)play();changed();}
     public boolean ownsProgress(String partition,String asset){return api!=null&&api.partition.equals(partition)&&item!=null&&asset.equals(item.optString("id"));}
     public void revokeDownload(String partition,String id){main.post(()->{if(api!=null&&api.partition.equals(partition)&&request!=null&&request.optJSONObject("download")!=null&&id.equals(request.optJSONObject("download").optString("id")))fail("ダウンロードの閲覧権限が失効しました。");});}
     public boolean playing(){try{return prepared&&(adaptive!=null?adaptive.player.isPlaying():player!=null&&player.isPlaying());}catch(Exception e){return false;}}
     public long position(){try{return ended?duration():prepared?Math.max(0,adaptive!=null?adaptive.player.getCurrentPosition():player.getCurrentPosition()):0;}catch(Exception e){return 0;}}
     public long duration(){try{return prepared?Math.max(0,adaptive!=null?adaptive.player.getDuration():player.getDuration()):0;}catch(Exception e){return 0;}}
     public boolean video(){return item!=null&&"video".equals(item.optString("kind"));}
-    public void play(){if(!prepared||player==null&&adaptive==null)return;cancelContinuation();lastInput=SystemClock.elapsedRealtime();try{if(!ownsAudioFocus){if(audioManager.requestAudioFocus(focus)!=AudioManager.AUDIOFOCUS_REQUEST_GRANTED){error="他の音声再生が優先されています。再生ボタンで再試行してください。";changed();return;}ownsAudioFocus=true;ducked=false;}applyVolume();if(ended){ended=false;seek(0);}if(adaptive!=null)adaptive.player.play();else player.start();pausedAt=0;record("play");updateSession();changed();}catch(Exception e){fail("再生を開始できません。");}}
+    public void play(){if(!prepared||player==null&&adaptive==null)return;cancelContinuation();lastInput=SystemClock.elapsedRealtime();try{if(!ownsAudioFocus){if(audioManager.requestAudioFocus(focus)!=AudioManager.AUDIOFOCUS_REQUEST_GRANTED){error="他の音声再生が優先されています。再生ボタンで再試行してください。";changed();return;}ownsAudioFocus=true;ducked=false;}applyVolume();if(player!=null&&seeking){resumeAfterSeek=true;return;}if(ended){ended=false;if(player!=null){seek(0,true);return;}seek(0);}if(adaptive!=null)adaptive.player.play();else player.start();pausedAt=0;record("play");updateSession();changed();}catch(Exception e){fail("再生を開始できません。");}}
     public void pause(){pauseInternal(true);}
-    private void pauseInternal(boolean abandon){endBoost();cancelContinuation();resumeFocus=false;record(null);try{if(adaptive!=null)adaptive.player.pause();else if(playing())player.pause();}catch(Exception ignored){}pausedAt=SystemClock.elapsedRealtime();record("pause");checkpoint(true);if(abandon){audioManager.abandonAudioFocusRequest(focus);ownsAudioFocus=false;}updateSession();changed();}
-    public void seek(long position){endBoost();if(!prepared)return;cancelContinuation();lastInput=SystemClock.elapsedRealtime();record(null);seeking=true;ended=false;record("seeking");long target=Math.max(0,Math.min(position,duration()));if(adaptive!=null)adaptive.player.seekTo(target);else player.seekTo(target,MediaPlayer.SEEK_CLOSEST);}
+    private void pauseInternal(boolean abandon){resumeAfterSeek=false;endBoost();cancelContinuation();resumeFocus=false;record(null);try{if(adaptive!=null)adaptive.player.pause();else if(playing())player.pause();}catch(Exception ignored){}pausedAt=SystemClock.elapsedRealtime();record("pause");checkpoint(true);if(abandon){audioManager.abandonAudioFocusRequest(focus);ownsAudioFocus=false;}updateSession();changed();}
+    public void seek(long position){seek(position,false);}
+    private void seek(long position,boolean resume){resumeAfterSeek=resume;endBoost();if(!prepared)return;cancelContinuation();lastInput=SystemClock.elapsedRealtime();record(null);seeking=true;ended=false;record("seeking");long target=Math.max(0,Math.min(position,duration()));if(adaptive!=null)adaptive.player.seekTo(target);else player.seekTo(target,MediaPlayer.SEEK_CLOSEST);}
     public void speed(float rate){endBoost();if(!prepared||!Float.isFinite(rate)||rate<.25f||rate>2)return;setRate(rate);changed();}
     private void setRate(float rate){record(null);if(adaptive!=null)adaptive.player.setPlaybackSpeed(rate);else{boolean wasPlaying=playing();player.setPlaybackParams(player.getPlaybackParams().setSpeed(rate));if(!wasPlaying)player.pause();}record("rate_change");updateSession();}
     public boolean startBoost(){if(holdBoost)return true;if(!video()||!playing()||buffering||seeking||!foreground||pip)return false;boostRestoreRate=playbackRate();try{setRate(2f);holdBoost=true;changed();return true;}catch(Exception ignored){return false;}}
@@ -167,13 +171,27 @@ public final class PlaybackService extends Service {
     public void mute(){volume=volume==0?100:0;applyVolume();record("viewport");changed();}
     public void setSurface(Surface value){surface=value;try{if(adaptive!=null)adaptive.player.setVideoSurface(value);else if(player!=null)player.setSurface(value);}catch(Exception ignored){}}
     public void visibility(boolean visible,boolean inPip){if(!visible||inPip)endBoost();if(foreground==visible&&pip==inPip)return;record(null);foreground=visible;pip=inPip;record("visibility");changed();}
-    public void continuous(boolean value){continuous=value;try{if(request!=null)request.put("continuous",value);}catch(JSONException ignored){}cancelContinuation();}
-    public void cancelContinuation(){if(continuation!=null){main.removeCallbacks(continuation);continuation=null;}}
-    public void navigate(int direction){
-        if(item==null||api==null)return;cancelContinuation();final int epoch=generation;final PlaybackApi target=api;final String id=item.optString("id");
-        io.submit(()->{try{JSONObject context=target.json("/items/"+id+"/series","GET",null);JSONArray items=context.getJSONArray("items");int index=context.getInt("currentIndex")+direction;if(index<0||index>=items.length())return;JSONObject next=items.getJSONObject(index);
-            main.post(()->{if(epoch!=generation||destroyed)return;try{if(!Arrays.asList("audio","video").contains(next.optString("kind"))){nextTitle="次は本「"+next.optString("title")+"」です。ライブラリから開いてください。";changed();return;}JSONObject nextRequest=new JSONObject(request.toString());nextRequest.put("item",next).put("restart",direction>0&&ended).put("autoplay",playing()||ended).remove("download");nextRequest.remove("quality");nextRequest.remove("artwork");open(nextRequest,true,0);}catch(Exception e){fail("次のアセットを開けません。");}});
-        }catch(Exception failure){main.post(()->{if(epoch==generation)fail("シリーズのアクセス権を確認できません。接続を確認してください。");});}});
+    public void continuous(boolean value){continuous=value;try{if(request!=null)request.put("continuous",value);}catch(JSONException ignored){}cancelContinuation();if(value&&ended)scheduleEnded();changed();}
+    public void repeat(String value){if(!Arrays.asList("off","one","series").contains(value))return;repeat=value;if(!value.equals("off"))continuous=true;saveModes();cancelContinuation();if(ended)scheduleEnded();changed();}
+    public void shuffle(boolean value){shuffle=value;order=new PlaybackOrder();if(value)continuous=true;saveModes();cancelContinuation();if(ended)scheduleEnded();changed();}
+    private void saveModes(){if(api==null)return;getSharedPreferences("mirea-playback-modes",MODE_PRIVATE).edit().putString(api.partition+":repeat",repeat).putBoolean(api.partition+":shuffle",shuffle).apply();try{if(request!=null)request.put("repeat",repeat).put("shuffle",shuffle).put("continuous",continuous);}catch(JSONException ignored){}}
+    public void cancelContinuation(){transitionEpoch++;if(continuation!=null){main.removeCallbacks(continuation);continuation=null;}}
+    private void scheduleEnded(){if(!continuous)return;final int epoch=transitionEpoch;continuation=()->{if(epoch!=transitionEpoch||destroyed||!ended)return;if(repeat.equals("one"))play();else navigate(1,true);};main.postDelayed(continuation,repeat.equals("one")?100:shuffle||repeat.equals("series")?250:5000);}
+    public void navigate(int direction){navigate(direction,false);}
+    private void navigate(int direction,boolean automatic){
+        if(item==null||api==null)return;cancelContinuation();final int epoch=generation,transition=transitionEpoch;final PlaybackApi target=api;final String id=item.optString("id");
+        io.submit(()->{try{JSONObject context=target.json("/items/"+id+"/series","GET",null);JSONArray entries=context.getJSONArray("items");int current=context.optInt("currentIndex",-1);JSONObject series=context.optJSONObject("series");
+            main.post(()->{if(epoch!=generation||transition!=transitionEpoch||destroyed)return;try{
+                JSONObject original=item.optJSONObject("series");if(series==null||current<0||current>=entries.length()||!entries.getJSONObject(current).getString("id").equals(id)||original!=null&&!original.optString("id").equals(series.optString("id"))){nextTitle="シリーズの所属を確認できません。閉じて開き直してください。";changed();return;}
+                JSONObject next;PlaybackOrder.Plan plan=null;
+                if(shuffle||repeat.equals("series")){plan=order.plan(entries,id,series.getString("id"),direction,repeat.equals("series"),shuffle);next=plan==null?null:plan.target;}
+                else{int index=current+direction;next=index<0||index>=entries.length()?null:entries.getJSONObject(index);}
+                if(next==null){nextTitle="シリーズの最後（または先頭）の作品です。";changed();return;}
+                if(!Arrays.asList("audio","video").contains(next.optString("kind"))){nextTitle="次は本「"+next.optString("title")+"」です。ライブラリから開いてください。";changed();return;}
+                if(plan!=null)order=plan.order;if(next.getString("id").equals(id)){if(automatic)play();return;}
+                JSONObject nextRequest=new JSONObject(request.toString());nextRequest.put("item",next).put("restart",automatic||direction>0&&ended).put("autoplay",playing()||ended||automatic).put("orderContinuation",true).remove("download");nextRequest.remove("quality");nextRequest.remove("artwork");open(nextRequest,true,0);
+            }catch(Exception e){fail("次のアセットを開けません。");}});
+        }catch(Exception failure){main.post(()->{if(epoch==generation&&transition==transitionEpoch){nextTitle="シリーズのアクセス権を確認できません。接続を確認してから再試行してください。";changed();}});}});
     }
     public void reconnect(){if(request==null)return;try{open(new JSONObject(request.toString()).put("quality",quality),playing(),position());}catch(Exception ignored){}}
     private float playbackRate(){try{return prepared?adaptive!=null?adaptive.player.getPlaybackParameters().speed:player.getPlaybackParams().getSpeed():1f;}catch(Exception ignored){return 1f;}}
@@ -202,7 +220,7 @@ public final class PlaybackService extends Service {
                 }else if(failure.status==409){error="別の端末で続き位置が更新されました。保存を停止しています。";changed();}});}catch(IllegalStateException expired){main.post(()->{if(epoch==generation)fail("オフライン視聴期限が切れています。オンラインで接続してください。");});}
         catch(Exception ignored){/* Exact pending update and raw events remain durable for retry. */}finally{syncQueued.set(false);}});
     }
-    private void releasePlayer(){endBoost();AdaptivePlayback oldAdaptive=adaptive;adaptive=null;if(oldAdaptive!=null){oldAdaptive.player.clearVideoSurface();oldAdaptive.player.release();}MediaPlayer old=player;player=null;prepared=false;if(old!=null){try{old.setSurface(null);old.release();}catch(Exception ignored){}}PlaybackSource oldSource=source;source=null;if(oldSource!=null)io.submit(oldSource::close);}
+    private void releasePlayer(){resumeAfterSeek=false;endBoost();AdaptivePlayback oldAdaptive=adaptive;adaptive=null;if(oldAdaptive!=null){oldAdaptive.player.clearVideoSurface();oldAdaptive.player.release();}MediaPlayer old=player;player=null;prepared=false;if(old!=null){try{old.setSurface(null);old.release();}catch(Exception ignored){}}PlaybackSource oldSource=source;source=null;if(oldSource!=null)io.submit(oldSource::close);}
     private void loadNavigation(PlaybackApi target,String id,int epoch,int attempt){
         try{JSONObject nav=target.json("/items/"+id+"/navigation","GET",null);String state=nav.optString("state");if(state.equals("missing")&&attempt==0)nav=target.json("/items/"+id+"/navigation/prepare","POST",new JSONObject());
             final JSONObject ready=nav;android.graphics.Bitmap image=null;JSONObject sheet=nav.optJSONObject("storyboard");if(sheet!=null){java.net.HttpURLConnection c=target.connection(sheet.getString("url"),"GET");try{if(c.getResponseCode()==200){byte[] bytes=PlaybackApi.read(c.getInputStream(),8*1024*1024);android.graphics.BitmapFactory.Options options=new android.graphics.BitmapFactory.Options();options.inJustDecodeBounds=true;android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length,options);if(options.outWidth<=1600&&options.outHeight<=1080&&options.outWidth>0&&options.outHeight>0){options.inJustDecodeBounds=false;image=android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length,options);}}}finally{c.disconnect();}}
@@ -214,7 +232,7 @@ public final class PlaybackService extends Service {
     public void captionSize(int size){if(size>=14&&size<=32)getSharedPreferences("mirea-captions",MODE_PRIVATE).edit().putInt("size",size).apply();changed();}
     private String captionText(){return VideoNavigation.caption(navigation,captionId,position());}
     private void fail(String message){audioManager.abandonAudioFocusRequest(focus);ownsAudioFocus=false;cancelContinuation();record("error");checkpoint(true);releasePlayer();buffering=false;error=message;pausedAt=SystemClock.elapsedRealtime();updateSession();changed();}
-    public JSONObject status(){try{return new JSONObject().put("active",item!=null).put("item",item==null?JSONObject.NULL:item).put("playing",playing()).put("prepared",prepared).put("buffering",buffering).put("rate",holdBoost?boostRestoreRate:playbackRate()).put("holdBoost",holdBoost).put("heatmap",heatmap).put("muted",volume==0).put("positionMs",position()).put("durationMs",duration()).put("video",video()).put("error",error).put("notice",nextTitle).put("quality",quality).put("actualQuality",adaptive!=null?adaptive.actual():quality).put("adaptive",adaptive!=null).put("qualities",qualities).put("caption",captionText()).put("captionSize",getSharedPreferences("mirea-captions",MODE_PRIVATE).getInt("size",20)).put("chapter",VideoNavigation.chapter(navigation,position())).put("download",request!=null&&request.has("download")).put("continuous",continuous).put("width",prepared?Math.max(1,adaptive!=null?adaptive.player.getVideoSize().width:player.getVideoWidth()):16).put("height",prepared?Math.max(1,adaptive!=null?adaptive.player.getVideoSize().height:player.getVideoHeight()):9);}catch(Exception e){return new JSONObject();}}
+    public JSONObject status(){try{return new JSONObject().put("active",item!=null).put("item",item==null?JSONObject.NULL:item).put("playing",playing()).put("prepared",prepared).put("buffering",buffering).put("rate",holdBoost?boostRestoreRate:playbackRate()).put("holdBoost",holdBoost).put("heatmap",heatmap).put("muted",volume==0).put("positionMs",position()).put("durationMs",duration()).put("video",video()).put("error",error).put("notice",nextTitle).put("quality",quality).put("actualQuality",adaptive!=null?adaptive.actual():quality).put("adaptive",adaptive!=null).put("qualities",qualities).put("caption",captionText()).put("captionSize",getSharedPreferences("mirea-captions",MODE_PRIVATE).getInt("size",20)).put("chapter",VideoNavigation.chapter(navigation,position())).put("download",request!=null&&request.has("download")).put("continuous",continuous).put("repeat",repeat).put("shuffle",shuffle).put("hasSeries",item!=null&&item.optJSONObject("series")!=null).put("width",prepared?Math.max(1,adaptive!=null?adaptive.player.getVideoSize().width:player.getVideoWidth()):16).put("height",prepared?Math.max(1,adaptive!=null?adaptive.player.getVideoSize().height:player.getVideoHeight()):9);}catch(Exception e){return new JSONObject();}}
     private PendingIntent action(String value){return PendingIntent.getService(this,value.hashCode(),new Intent(this,PlaybackService.class).setAction(value),PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);}
     public PendingIntent activityIntent(){return PendingIntent.getActivity(this,1904,new Intent(this,PlaybackActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_SINGLE_TOP|Intent.FLAG_ACTIVITY_CLEAR_TOP),PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);}
     private Notification notification(){

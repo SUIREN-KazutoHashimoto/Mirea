@@ -1,3 +1,4 @@
+import {applyCoverPalette} from './cover-palette.js';
 import { mountMediaSession } from './media-session.js';
 import { mountVideoHold } from './video-hold.js';
 import { heatmapGeometry } from './replay-heatmap.js';
@@ -12,7 +13,7 @@ export const formatVideoTime = value => {
   return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
 };
 export function seekVideo(video, value) { if (Number.isFinite(value) && Number.isFinite(video.duration) && video.duration > 0) video.currentTime = Math.min(video.duration, Math.max(0, value)); }
-export function mountVideoPlayer(container, { onError = () => {}, reconnect, kind = 'video', title = '', coverUrl, onNavigate=()=>{},editNavigation, doc = document } = {}) {
+export function mountVideoPlayer(container, { onError = () => {}, reconnect, kind = 'video', title = '', coverUrl, onNavigate=()=>{},editNavigation, playback, assetId='', doc = document } = {}) {
   const audioMode = kind === 'audio';
   container.innerHTML = `<div class="mirea-player" tabindex="0" aria-label="動画プレーヤー"><video playsinline preload="metadata" aria-label="本編動画"></video><div class="player-loading" role="status" hidden>読み込み中…</div><button class="player-center" type="button" aria-label="動画を再生">▶</button><div class="player-controls"><label class="player-scrubber"><span class="sr-only">再生位置</span><input class="player-seek" type="range" min="0" max="1" step="0.01" value="0" disabled></label><div class="player-control-row"><button class="player-play" type="button" aria-label="再生">▶</button><button class="player-backward" type="button" aria-label="10秒戻る">−10</button><button class="player-forward" type="button" aria-label="10秒進む">＋10</button><span class="player-time">0:00 / 0:00</span><div class="player-volume-controls"><button class="player-mute" type="button" aria-label="消音">♫</button><label><span class="sr-only">音量</span><input class="player-volume" type="range" min="0" max="1" step="0.05" value="1"></label></div><label class="player-speed"><span class="sr-only">再生速度</span><select aria-label="再生速度"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="1.75">1.75×</option><option value="2">2×</option></select></label><label class="player-quality" hidden><span class="sr-only">画質</span><select aria-label="画質"></select></label><button class="player-reconnect" type="button" aria-label="動画へ再接続">↻</button><button class="player-background" type="button" aria-label="ライブラリでバックグラウンド再生">背景</button><button class="player-pip" type="button" aria-label="ピクチャーインピクチャー" hidden>▣</button><button class="player-fullscreen" type="button" aria-label="全画面を切り替える">⛶</button></div><p class="player-help">Space/K 再生 · J/L ±10秒 · ←/→ ±5秒 · 0–9 位置 · &lt;/&gt; 速度 · 停止中 ,/. コマ送り · F 全画面 · C 字幕</p></div></div>`;
   const root = container.querySelector('.mirea-player');
@@ -30,10 +31,15 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
     root.querySelector('.player-center').setAttribute('aria-label','音声を再生');
     root.querySelector('.player-reconnect').setAttribute('aria-label','音声へ再接続');
   }
+  const modeControls=doc.createElement('div');modeControls.className='player-mode-controls';modeControls.innerHTML='<label><span class="sr-only">リピート</span><select class="player-repeat" aria-label="リピート"><option value="off">リピートなし</option><option value="one">単体リピート</option><option value="series">シリーズリピート</option></select></label><button type="button" class="player-shuffle" aria-pressed="false">シャッフル</button>';
+  root.querySelector('.player-controls').append(modeControls);const modeSelect=modeControls.querySelector('select'),shuffleButton=modeControls.querySelector('button');
+  const updateModes=()=>{const state=playback?.modeState??{};modeSelect.value=state.repeat??'off';modeSelect.querySelector('[value="series"]').disabled=!state.hasSeries;shuffleButton.disabled=!state.hasSeries;shuffleButton.setAttribute('aria-pressed',String(state.shuffle===true));shuffleButton.textContent=state.shuffle?'シャッフル：オン':'シャッフル：オフ';};
+  modeSelect.onchange=()=>playback?.setModes({repeat:modeSelect.value});shuffleButton.onclick=()=>playback?.setModes({shuffle:!playback?.modeState.shuffle});const stopModes=playback?.subscribe(updateModes);updateModes();
   const video = root.querySelector('video,audio'), seek = root.querySelector('.player-seek'), volume = root.querySelector('.player-volume'), center = root.querySelector('.player-center');
   video.controls = false;video.muted=playbackPreferences.muted;video.volume=playbackPreferences.volume;video.playbackRate=playbackPreferences.rate;
   const listeners = []; let disposed = false, timer, clickTimer, scrubbing = false, hasHeatmap = false,navigation;
   const listen = (target, event, fn, options) => { target.addEventListener(event, fn, options); listeners.push(() => target.removeEventListener(event, fn, options)); };
+  if(audioMode){const image=root.querySelector('.audio-art img');listen(image,'load',()=>applyCoverPalette(root,image,assetId||title));if(image.complete&&image.naturalWidth)applyCoverPalette(root,image,assetId||title);}
   const hold=audioMode?null:mountVideoHold(video,{document:doc,changed:active=>{boostLabel.hidden=!active;root.classList.toggle('hold-boost',active);showControls();}});
   const announceControls = visible => root.dispatchEvent(new CustomEvent('viewer:player-controls', { bubbles:true, detail:visible }));
   const setSeeking=active=>{scrubbing=active||Boolean(navigation?.precise);heatmap.hidden=!hasHeatmap||!scrubbing;navigation?.scrub(scrubbing);if(!scrubbing)update();showControls();};
@@ -91,7 +97,7 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
     showControls();
   });
   root.querySelector('.player-background').onclick=()=>leavePlayer();
-  const mediaSession=mountMediaSession(video,{title,kind,artwork:coverUrl,stop:()=>root.closest('.viewer-screen')?.close(),onError,document:doc});
+  const mediaSession=mountMediaSession(video,{title,kind,artwork:coverUrl,previous:()=>onNavigate(-1),next:()=>onNavigate(1),stop:()=>root.closest('.viewer-screen')?.close(),onError,document:doc});
   const pipButton=root.querySelector('.player-pip');pipButton.hidden=!mediaSession.supportsPip;pipButton.onclick=()=>mediaSession.pip().catch(()=>onError(new Error('PiPに切り替えられません。動画を読み込んでから再試行してください。')));
   const screen=root.closest('.viewer-screen');
   async function leavePlayer(){
@@ -113,5 +119,5 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
     if(select.dataset.levels!==key){select.replaceChildren(...values.map(value=>{const option=doc.createElement('option');option.value=value.value;option.textContent=value.text;return option;}));select.dataset.levels=key;}
     else for(const value of values){const option=[...select.options].find(o=>o.value===value.value);if(option)option.textContent=value.text;}
     select.value=selected;select.onchange=()=>{hold?.cancel();choose(select.value);};
-  }, dispose() { hold?.dispose();navigation?.dispose();seekInteraction.dispose();playbackPreferences={muted:video.muted,volume:video.volume,rate:video.playbackRate};disposed = true;if(screen?.onReturn===leavePlayer)screen.onReturn=null; mediaSession.dispose(); clearTimeout(timer);clearTimeout(clickTimer); for (const remove of listeners) remove(); video.pause(); video.removeAttribute('src'); video.load(); root.remove(); } };
+  }, dispose() { stopModes?.();hold?.dispose();navigation?.dispose();seekInteraction.dispose();playbackPreferences={muted:video.muted,volume:video.volume,rate:video.playbackRate};disposed = true;if(screen?.onReturn===leavePlayer)screen.onReturn=null; mediaSession.dispose(); clearTimeout(timer);clearTimeout(clickTimer); for (const remove of listeners) remove(); video.pause(); video.removeAttribute('src'); video.load(); root.remove(); } };
 }

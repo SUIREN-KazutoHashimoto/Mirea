@@ -87,6 +87,8 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
             case "forward":if(s!=null)s.seek(s.position()+10000);break;
             case "previous":if(s!=null)s.navigate(-1);break;
             case "next":if(s!=null)s.navigate(1);break;
+            case "repeat":repeats();break;
+            case "shuffle":if(s!=null)s.shuffle(!s.status().optBoolean("shuffle"));break;
             case "continuous":if(s!=null)s.continuous(!s.status().optBoolean("continuous"));break;
             case "mute":if(s!=null)s.mute();break;
             case "reconnect":if(s!=null)s.reconnect();break;
@@ -97,10 +99,12 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
     private void options(){
         PlaybackService s=service();JSONObject state=s==null?new JSONObject():s.status();ArrayList<String> names=new ArrayList<>(),actions=new ArrayList<>();
         if(s!=null&&s.video()){if(canPip()){names.add("ピクチャーインピクチャー（PiP）");actions.add("pip");}if(!state.optBoolean("download")){names.add("画質を選択");actions.add("quality");names.add("Wi-Fi／モバイル通信の画質設定");actions.add("network-quality");}names.add("精密シーク（場面画像から選ぶ）");actions.add("precise");names.add("チャプター"+(state.optString("chapter").isEmpty()?"":"："+state.optString("chapter")));actions.add("chapters");names.add("字幕の言語・オン／オフ");actions.add("captions");names.add("字幕の文字サイズ");actions.add("caption-size");names.add("ズームをリセット");actions.add("zoom-reset");}
+        names.add("リピート："+(state.optString("repeat").equals("one")?"単体":state.optString("repeat").equals("series")?"シリーズ":"オフ"));actions.add("repeat");if(state.optBoolean("hasSeries")){names.add("シリーズシャッフル："+(state.optBoolean("shuffle")?"オン":"オフ"));actions.add("shuffle");}
         names.add("再生速度");actions.add("speed");names.add(state.optBoolean("muted")?"消音を解除":"消音にする");actions.add("mute");names.add("連続再生："+(state.optBoolean("continuous")?"オン":"オフ"));actions.add("continuous");
         names.add("前の作品");actions.add("previous");names.add("次の作品");actions.add("next");names.add("バックグラウンドで再生");actions.add("background");names.add("ライブラリへ戻る（再生を継続）");actions.add("library");names.add("再接続");actions.add("reconnect");names.add("再生を終了");actions.add("close");
         show(new AlertDialog.Builder(this).setTitle("再生オプション").setItems(names.toArray(new String[0]),(d,index)->act(actions.get(index))).setNegativeButton("閉じる",null).create());
     }
+    private void repeats(){PlaybackService s=service();if(s==null)return;boolean series=s.status().optBoolean("hasSeries");String[] names=series?new String[]{"オフ","単体リピート","シリーズリピート（動画・音声）"}:new String[]{"オフ","単体リピート"};String[] values={"off","one","series"};int selected=Arrays.asList(values).indexOf(s.status().optString("repeat","off"));show(new AlertDialog.Builder(this).setTitle("リピート").setSingleChoiceItems(names,Math.max(0,selected),(d,n)->{if(service()!=null)service().repeat(values[n]);d.dismiss();}).setNegativeButton("閉じる",null).create());}
     private void qualities(){PlaybackService s=service();if(s==null||!s.video()||s.status().optBoolean("download"))return;try{
         JSONObject state=s.status();JSONArray values=state.getJSONArray("qualities");ArrayList<String> names=new ArrayList<>(),ids=new ArrayList<>();if(values.length()>0){names.add("自動（通信状態に合わせる）");ids.add("auto");names.add("高画質優先");ids.add("higher");names.add("データセーバー（480p以下）");ids.add("data");}names.add("標準（基本MP4）");ids.add("legacy");for(int n=0;n<values.length();n++){String q=values.getJSONObject(n).getString("quality");names.add(q+"（固定）");ids.add(q);}int selected=Math.max(0,ids.indexOf(state.optString("quality","auto")));
         show(new AlertDialog.Builder(this).setTitle("画質（次の動画にも適用）").setSingleChoiceItems(names.toArray(new String[0]),selected,(d,i)->{if(service()!=null)service().quality(ids.get(i));d.dismiss();}).setNegativeButton("閉じる",null).create());

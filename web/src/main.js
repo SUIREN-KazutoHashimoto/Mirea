@@ -13,6 +13,7 @@ import { openAnalytics } from './analytics-ui.js';
 import { openProgress,bindVideoProgress,progressNativeState,flushProgress,clearAccountProgress,syncStoredProgress } from './progress.js';
 import { downloadToDevice,listDownloads,removeDownload,openDownloaded,closeDownloads,clearAccountDownloads,downloadsNativeState,syncDownloads,ensureDownloadWorker,downloadedThumbnail } from './downloads.js';
 import { openSeriesManager,mountSeriesNavigation,seriesNativeState } from './series-ui.js';
+import {syncAppearance} from './native-appearance.js';
 import { createTheme } from './theme.js';
 import { openSettings } from './settings.js';
 import { createViewerScreen } from './viewer-shell.js';
@@ -22,6 +23,7 @@ import { mountVideoPlayer } from './video-player.js';
 import {loadVideoNavigation} from './video-navigation.js';
 import './video-navigation.css';
 import {openNavigationEditor} from './video-navigation-editor.js';
+import {createPlaybackOrder,loadPlaybackModes,savePlaybackModes} from './playback-order.js';
 import {loadQualityPreference,saveQualityPreference,mountNetworkQuality} from './quality-preference.js';
 import { AUDIO_EXTENSIONS, isTimedKind } from '../../server/audio-types.js';
 import { VIDEO_EXTENSIONS } from '../../server/video-types.js';
@@ -38,7 +40,7 @@ import {downloadableSnapshot,runBulkDownloads} from './bulk-downloads.js';
 import './library-mobile.css';
 import './playback-dock.css';
 
-const theme = createTheme();
+const theme = createTheme({changed:syncAppearance});
 document.documentElement.classList.toggle('native-app',native);
 const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.3.0beta/mirea-0.3.0beta-android.apk';
 const currentApkUrl=()=>config.androidApkUrl?.startsWith('/api/v1/app-updates/')?absoluteUrl(config.androidApkUrl):config.androidApkUrl||defaultApkUrl;
@@ -86,7 +88,7 @@ if (native) {
   App.addListener('appStateChange', ({ isActive }) => {
     nativeStateRevision++;
     nativeAppActive = isActive;
-    if (isActive) {refreshAppUpdates();refreshNativePlayback().catch(()=>{});synchronizeConnection();}
+    if (isActive) {syncAppearance(document.documentElement.dataset.theme);refreshAppUpdates();refreshNativePlayback().catch(()=>{});synchronizeConnection();}
     analyticsNativeState(isActive);
     progressNativeState(isActive);
     downloadsNativeState(isActive);
@@ -548,7 +550,7 @@ function deleteItem(item) {
     catch (error) { const box = node.querySelector('.form-error'); box.textContent = error.message; box.hidden = false; node.querySelector('#confirm-delete').disabled = false; }
   };
 }
-async function openViewer(item,{startAtBeginning=false,autoplay=false,background=false}={}) {
+async function openViewer(item,{startAtBeginning=false,autoplay=false,background=false,playbackOrder}={}) {
   if(nativePlayerAvailable()&&isTimedKind(item.kind)){
     document.querySelectorAll('.viewer-screen').forEach(screen=>screen.close());
     const preparing=dialog('再生を準備しています','<div class="modal-body"><p class="native-playback-status" role="status">アクセス権・続き位置・端末の保存データを確認しています…</p></div>');
@@ -560,6 +562,8 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false,background
   }
   const backgroundContinuation=background || autoplay&&Boolean(document.querySelector('.viewer-screen')?.isMinimized);
   const progressActor=getSession()?.user.id,progressServer=getEndpoint();
+  const playbackScope=progressServer+'|'+progressActor;
+  const order=isTimedKind(item.kind)?playbackOrder?.scope===playbackScope?playbackOrder:createPlaybackOrder({scope:playbackScope,modes:loadPlaybackModes(localStorage,playbackScope)}):null;
   const isPdf = item.mimeType === 'application/pdf';
   document.querySelectorAll('.viewer-screen').forEach(screen=>screen.close());
   videoPreviews?.setPaused('viewer', true);
@@ -572,7 +576,7 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false,background
   body.innerHTML='<p class="viewer-loading" role="status">読み込んでいます…</p>';
   const tracker = trackAsset(item.id);
   let cleanup,progress,downloaded;
-  const seriesNavigation=mountSeriesNavigation({node,body,item,api,esc,open:openViewer,enabled:seriesContinuous,onEnabled:value=>{seriesContinuous=value;},
+  const seriesNavigation=mountSeriesNavigation({node,body,item,api,esc,open:openViewer,order,onModes:value=>savePlaybackModes(localStorage,playbackScope,value),enabled:seriesContinuous,onEnabled:value=>{seriesContinuous=value;},
     isCurrent:()=>getSession()?.user.id===progressActor && getEndpoint()===progressServer,isActive:()=>!native && isTimedKind(item.kind) || nativeAppActive && !document.hidden,beforeMove:()=>progress?.checkpoint()});
   node.addEventListener('close', () => { seriesNavigation.dispose();progress?.dispose();tracker?.dispose();cleanup?.();const video=body.querySelector('video,audio');video?.pause();downloaded?.dispose();if(downloaded && video){video.removeAttribute('src');video.load();} }, { once: true });
   const progressBar=document.createElement('div');progressBar.className='resume-toolbar';
@@ -630,11 +634,11 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false,background
       if(!node.isConnected)return;
       let stream,stopNetworkQuality;
       const renew=()=>api(`/items/${item.id}/playback-ticket`,{method:'POST'});
-      const player=mountVideoPlayer(body,{onError,kind:item.kind,title:item.title,onNavigate:direction=>seriesNavigation.navigate(direction),editNavigation:()=>openNavigationEditor({item,api,dialog,esc}),reconnect:async()=>{body.querySelector('.viewer-error')?.remove();if(downloaded)return downloaded.reconnect();await stream.reconnect();return null;}});
+      const player=mountVideoPlayer(body,{onError,kind:item.kind,title:item.title,assetId:item.id,playback:seriesNavigation,onNavigate:direction=>seriesNavigation.navigate(direction),editNavigation:()=>openNavigationEditor({item,api,dialog,esc}),reconnect:async()=>{body.querySelector('.viewer-error')?.remove();if(downloaded)return downloaded.reconnect();await stream.reconnect();return null;}});
       let coverUrl;
       if(item.kind==='audio'){
         try{
-          coverUrl=URL.createObjectURL(await authenticatedBlob(item.thumbnailUrl??`/api/v1/items/${item.id}/thumbnail`));
+          coverUrl=URL.createObjectURL(await downloadedThumbnail(item.id).catch(()=>null)||await authenticatedBlob(item.thumbnailUrl??`/api/v1/items/${item.id}/thumbnail`));
           if(!node.isConnected){URL.revokeObjectURL(coverUrl);player.dispose();return;}
           player.surface.querySelector('img').src=coverUrl;player.surface.querySelector('img').hidden=false;
         }catch{/* Audio remains usable when the cover request fails. */}
@@ -807,6 +811,7 @@ window.addEventListener('mirea:unauthorized', () => {
 });
 window.addEventListener('mirea:update-ready', event => toast(`アプリ ${event.detail} の更新を準備しました。「設定」またはログイン画面の「アプリの更新」で確認できます。`));
 initializeAppUpdates();
+syncAppearance(document.documentElement.dataset.theme);
 initializeNativePlayback().catch(()=>{});
 async function bootstrapLogin(){
   try{await initializeSession();await loadConfig();if(getSession()){await startAnalytics();renderShell();if(isOfflineSession())await renderOfflineLibrary();else await refresh();synchronizeConnection();}else renderAuth();}
