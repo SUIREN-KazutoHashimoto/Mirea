@@ -1,17 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {swipeDirection,mountAssetHold,mountLibraryDrawer} from '../web/src/library-interactions.js';
+import {drawerProgress,settleDrawer,mountAssetHold,mountLibraryDrawer} from '../web/src/library-interactions.js';
 import {downloadableSnapshot,runBulkDownloads} from '../web/src/bulk-downloads.js';
 
 const event=(type,props={})=>{const e=new Event(type,{cancelable:true});for(const [key,value] of Object.entries(props))Object.defineProperty(e,key,{value});return e;};
 class Node extends EventTarget{
-  constructor(doc){super();this.doc=doc;this.isConnected=true;this.hidden=false;this.disabled=false;this.attrs=new Map();this.classes=new Set();this.classList={add:n=>this.classes.add(n),remove:n=>this.classes.delete(n),toggle:(n,value)=>value?this.classes.add(n):this.classes.delete(n)};}
+  constructor(doc){super();this.doc=doc;this.isConnected=true;this.hidden=false;this.disabled=false;this.attrs=new Map();this.style={values:new Map(),setProperty(k,v){this.values.set(k,v);},removeProperty(k){this.values.delete(k);}};this.classes=new Set();this.classList={add:n=>this.classes.add(n),remove:n=>this.classes.delete(n),toggle:(n,value)=>value?this.classes.add(n):this.classes.delete(n)};}
+  getBoundingClientRect(){return {width:330};}
   setAttribute(k,v){this.attrs.set(k,v);}removeAttribute(k){this.attrs.delete(k);}focus(){this.doc.activeElement=this;}getClientRects(){return this.hidden?[]:[{}];}
   append(button){button.parent=this;}closest(){return this;}
 }
-test('drawer swipes require deliberate horizontal movement and reject scrolls, opposite direction and slow drags',()=>{
-  const start={x:70,y:300,at:100};assert(swipeDirection(start,{x:180,y:310,at:300}));assert(!swipeDirection(start,{x:180,y:390,at:300}));assert(!swipeDirection(start,{x:120,y:300,at:300}));assert(!swipeDirection(start,{x:180,y:300,at:1100}));assert(!swipeDirection(start,{x:0,y:300,at:300}));assert(swipeDirection({x:220,y:300,at:100},{x:100,y:310,at:300},-1));
+test('drawer follows clamped finger distance and settles by distance or deliberate flick, not a fixed end-of-swipe trigger',()=>{
+  assert.equal(drawerProgress(false,165,330),.5);assert.equal(drawerProgress(true,-165,330),.5);assert.equal(drawerProgress(false,-20,330),0);assert.equal(drawerProgress(true,900,330),1);
+  assert.equal(settleDrawer(false,100,330,1000),false);assert.equal(settleDrawer(false,200,330,2000),true);assert.equal(settleDrawer(false,65,330,80),true);assert.equal(settleDrawer(true,-65,330,80),false);assert.equal(settleDrawer(false,5,330,1),false);
 });
 test('drawer is inert when closed, traps focus while open, restores overflow and moves the same action nodes at responsive breakpoints',()=>{
   const doc=new EventTarget();doc.body={style:{overflow:'scroll'}};doc.querySelector=()=>null;const layout=new Node(doc),panel=new Node(doc),main=new Node(doc),opener=new Node(doc),closer=new Node(doc),backdrop=new Node(doc),slot=new Node(doc),home=new Node(doc),add=new Node(doc),series=new Node(doc);
@@ -24,12 +26,15 @@ test('drawer is inert when closed, traps focus while open, restores overflow and
   doc.dispatchEvent(event('keydown',{key:'Escape'}));assert.equal(drawer.isOpen(),false);assert.equal(panel.inert,true);assert.equal(main.inert,false);assert.equal(doc.activeElement,opener);assert.equal(doc.body.style.overflow,'scroll');
   const target={closest:()=>null};
   layout.dispatchEvent(event('pointerdown',{target,button:0,isPrimary:true,pointerId:7,clientX:25,clientY:200,timeStamp:100}));
-  layout.dispatchEvent(event('pointerup',{target,pointerId:7,clientX:150,clientY:210,timeStamp:350}));assert.equal(drawer.isOpen(),true,'right swipe opens');
+  layout.dispatchEvent(event('pointermove',{target,pointerId:7,clientX:100,clientY:204,timeStamp:200}));assert.equal(drawer.isOpen(),false);assert.equal(main.inert,false);assert.equal(panel.inert,true);assert.equal(Number(layout.style.values.get('--drawer-reveal')),75/330);
+  layout.dispatchEvent(event('pointerup',{target,pointerId:7,clientX:220,clientY:210,timeStamp:450}));assert.equal(drawer.isOpen(),true,'right swipe opens');
   layout.dispatchEvent(event('pointerdown',{target,button:0,isPrimary:true,pointerId:7,clientX:220,clientY:200,timeStamp:400}));
+  layout.dispatchEvent(event('pointermove',{target,pointerId:7,clientX:100,clientY:205,timeStamp:500}));
   layout.dispatchEvent(event('pointerup',{target,pointerId:7,clientX:50,clientY:210,timeStamp:600}));assert.equal(drawer.isOpen(),false,'left swipe closes');
   layout.dispatchEvent(event('pointerdown',{target,button:0,isPrimary:true,pointerId:7,clientX:25,clientY:200,timeStamp:700}));
   layout.dispatchEvent(event('pointermove',{target,pointerId:7,clientX:35,clientY:260,timeStamp:800}));
   layout.dispatchEvent(event('pointerup',{target,pointerId:7,clientX:150,clientY:260,timeStamp:850}));assert.equal(drawer.isOpen(),false,'vertical scroll cancels');
+  layout.dispatchEvent(event('pointerdown',{target,button:0,isPrimary:true,pointerId:8,clientX:20,clientY:200,timeStamp:900}));layout.dispatchEvent(event('pointermove',{target,pointerId:8,clientX:180,clientY:201,timeStamp:1100}));layout.dispatchEvent(event('pointercancel'));assert.equal(layout.classes.has('drawer-dragging'),false);assert.equal(drawer.isOpen(),false);assert.equal(doc.body.style.overflow,'scroll');
   drawer.show();media.matches=false;media.dispatchEvent(new Event('change'));assert.equal(drawer.isOpen(),false);assert.equal(add.parent,home);assert.equal(panel.inert,false);assert.equal(main.inert,false);
   drawer.dispose();opener.dispatchEvent(new Event('click'));assert.equal(drawer.isOpen(),false);
 });
@@ -43,6 +48,7 @@ test('asset hold opens once, suppresses release click, cancels on scroll/multito
     pointer('pointerdown');if(cancel==='move')pointer('pointermove',{clientY:50});else if(cancel==='multi')pointer('pointermove',{pointerId:2});else if(cancel==='blur')doc.defaultView.dispatchEvent(new Event('blur'));else if(cancel==='visibility')doc.dispatchEvent(new Event('visibilitychange'));else pointer(cancel);advance(600);
   }
   assert.equal(opened.length,1);pointer('pointerdown');hold.dispose();advance(600);assert.equal(opened.length,1);assert.equal(timers.size,0);
+  const keyboardHold=mountAssetHold(root,asset=>opened.push(asset),options);const menu=event('keydown',{target:button,key:'F10',shiftKey:true});root.dispatchEvent(menu);assert.equal(menu.defaultPrevented,true);assert.equal(opened.length,2);keyboardHold.dispose();
 });
 test('bulk downloads snapshot only ready visible assets, skip saved packages, run serially and continue per-item failures',async()=>{
   const items=[{id:'a',title:'A',size:20},{id:'p',pending:true},{id:'a'},{id:'b',title:'B',size:30},{id:'c',title:'C',size:40},{id:'d',title:'D',size:50}];
@@ -65,6 +71,6 @@ test('bulk cancellation, account changes and authorization/storage failure stop 
 });
 test('library integration removes chapter/subtitle action from cards, keeps editable details and respects reduced motion',async()=>{
   const main=await readFile(new URL('../web/src/main.js',import.meta.url),'utf8'),css=await readFile(new URL('../web/src/library-mobile.css',import.meta.url),'utf8');
-  const cards=main.slice(main.indexOf('function renderItems('),main.indexOf('function manageSeries('));assert(!cards.includes('openNavigationEditor'));assert(cards.includes('card-actions'));assert(cards.includes('data-details'));assert(cards.includes('mountAssetHold'));assert(main.includes('detail-navigation'));assert(main.includes('displayedItems=selected'));
+  const cards=main.slice(main.indexOf('function renderItems('),main.indexOf('function manageSeries('));assert(!cards.includes('openNavigationEditor'));assert(!cards.includes('card-actions'));assert(!cards.includes('data-details'));assert(!cards.includes('data-download='));assert(!cards.includes('data-delete='));assert(cards.includes('openAssetActions'));assert(main.includes('端末のダウンロードを解除'));assert(main.includes('サーバーから作品を削除'));assert(cards.includes('mountAssetHold'));assert(main.includes('detail-navigation'));assert(main.includes('displayedItems=selected'));
   assert(css.includes('.compact-library .library-overview{display:none}'));assert(css.includes('prefers-reduced-motion:reduce'));assert(css.includes('.native-app .pending-art .icon{animation:none}'));assert(!css.includes('infinite'));
 });

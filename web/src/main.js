@@ -36,6 +36,7 @@ import {showShelfMenu} from './shelf-menu.js';
 import {mountLibraryDrawer,mountAssetHold} from './library-interactions.js';
 import {downloadableSnapshot,runBulkDownloads} from './bulk-downloads.js';
 import './library-mobile.css';
+import './playback-dock.css';
 
 const theme = createTheme();
 document.documentElement.classList.toggle('native-app',native);
@@ -370,13 +371,10 @@ function renderItems(animate=false) {
     if(item.pending)return `<article class="media-card pending-card" aria-disabled="true"><div class="card-art pending-art">${icon(item.kind==='video'?'video':item.kind==='audio'?'audio':'book')}<span>${item.state==='uploading'?'アップロード中':esc(processingLabel(item.processing))}</span></div><div class="card-content"><span class="card-shelf">${esc(item.shelfName)}</span><h3>${esc(item.title)}</h3><p class="muted">処理が完了すると開けます</p><progress max="100" value="${Math.max(0,Math.min(100,Number(item.processing?.percent)||0))}" aria-label="後処理の進捗"></progress></div></article>`;
     const isBook = !isTimedKind(item.kind);
     const label = item.kind === 'image-book' ? `画像・${item.pageCount}ページ` : item.kind === 'epub' ? 'EPUB' : item.kind === 'pdf' ? 'PDF' : item.kind === 'audio' ? 'AAC / M4A' : item.mimeType === 'video/mp4' ? 'MP4' : 'WebM';
-    return `<article class="media-card"><button class="card-open" data-open="${item.id}" ${item.kind==='video' ? `data-preview-id="${item.id}"` : ''} aria-label="${esc(item.title)}を${isBook ? '読む' : '再生する'}"><div class="card-art actual-cover ${isBook ? 'book-cover' : item.kind==='audio' ? 'audio-cover' : 'video-cover'}"><img data-local-thumbnail="${item.id}" data-thumbnail="${esc(item.thumbnailUrl)}" alt="${esc(item.title)}のサムネイル"><span class="cover-placeholder">${icon(isBook ? 'book' : item.kind==='audio' ? 'audio' : 'video')}<span>表紙を読み込んでいます…</span></span><span class="media-type">${item.kind === 'image-book' ? 'IMAGE BOOK' : item.kind==='epub' ? 'EPUB' : isBook ? 'PDF' : item.kind==='audio' ? 'AUDIO' : 'VIDEO'}</span><span class="card-open-label">${isBook ? '本を開く' : '再生する'} ${icon('arrow')}</span></div><div class="card-content"><span class="card-shelf">${icon('shelf')}${esc(item.shelfName)}</span><h3>${esc(item.title)}</h3><div class="card-meta"><span>${label} <span class="meta-dot">·</span> ${bytes(item.size)}</span><span>${date(item.createdAt)}</span></div><div class="card-progress">${esc(progressLabel(item,item.progress))}</div></div></button><div class="card-actions"><button type="button" class="card-download icon-button" data-download="${item.id}" aria-label="${esc(item.title)}を暗号化ダウンロード">${icon('download')}</button>${item.role !== 'viewer' && !offlineLibrary ? `<button type="button" class="card-delete icon-button" data-delete="${item.id}" aria-label="${esc(item.title)}を削除">${icon('trash')}</button>` : ''}<button type="button" class="card-details icon-button" data-details="${item.id}" aria-label="${esc(item.title)}の詳細">${icon('more')}</button></div></article>`;
+    return `<article class="media-card"><button class="card-open" data-open="${item.id}" ${item.kind==='video' ? `data-preview-id="${item.id}"` : ''} aria-haspopup="dialog" aria-description="長押し、右クリック、またはShift+F10で作品メニューを開きます" aria-label="${esc(item.title)}を${isBook ? '読む' : '再生する'}"><div class="card-art actual-cover ${isBook ? 'book-cover' : item.kind==='audio' ? 'audio-cover' : 'video-cover'}"><img data-local-thumbnail="${item.id}" data-thumbnail="${esc(item.thumbnailUrl)}" alt="${esc(item.title)}のサムネイル"><span class="cover-placeholder">${icon(isBook ? 'book' : item.kind==='audio' ? 'audio' : 'video')}<span>表紙を読み込んでいます…</span></span><span class="media-type">${item.kind === 'image-book' ? 'IMAGE BOOK' : item.kind==='epub' ? 'EPUB' : isBook ? 'PDF' : item.kind==='audio' ? 'AUDIO' : 'VIDEO'}</span><span class="card-open-label">${isBook ? '本を開く' : '再生する'} ${icon('arrow')}</span></div><div class="card-content"><span class="card-shelf">${icon('shelf')}${esc(item.shelfName)}</span><h3>${esc(item.title)}</h3><div class="card-meta"><span>${label} <span class="meta-dot">·</span> ${bytes(item.size)}</span><span>${date(item.createdAt)}</span></div><div class="card-progress">${esc(progressLabel(item,item.progress))}</div></div></button></article>`;
   }).join('');
   node.querySelectorAll('[data-open]').forEach(button => { button.onclick = () => openViewer(items.find(i => i.id === button.dataset.open)); });
-  node.querySelectorAll('[data-download]').forEach(button=>button.onclick=()=>openDownload(items.find(item=>item.id===button.dataset.download)));
-  node.querySelectorAll('[data-details]').forEach(button=>button.onclick=()=>openAssetDetails(items.find(item=>item.id===button.dataset.details)));
-  cardGestures=mountAssetHold(node,id=>openAssetDetails(items.find(item=>item.id===id)));
-  node.querySelectorAll('[data-delete]').forEach(button => { button.onclick = () => deleteItem(items.find(i => i.id === button.dataset.delete)); });
+  cardGestures=mountAssetHold(node,id=>openAssetActions(items.find(item=>item.id===id)));
   node.querySelectorAll('.media-card').forEach(card=>{
     if(card.classList.contains('pending-card'))return;
     const id=card.querySelector('[data-open]').dataset.open;
@@ -642,6 +640,11 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false,background
         }catch{/* Audio remains usable when the cover request fails. */}
       }
       const video = player.video;
+      node.bindBackground(video,{key:progressServer+'|'+progressActor+'|'+item.id,id:item.id,loadArtwork:async(_state,signal)=>{
+        if(getSession()?.user.id!==progressActor||getEndpoint()!==progressServer)return null;
+        const saved=await downloadedThumbnail(item.id).catch(()=>null);if(signal.aborted||getSession()?.user.id!==progressActor||getEndpoint()!==progressServer)return null;
+        return saved||(!offlineLibrary?authenticatedBlob(item.thumbnailUrl??`/api/v1/items/${item.id}/thumbnail`,signal):null);
+      }});
         if(item.kind==='video')api(`/items/${item.id}/replay-heatmap`).then(value=>player.setHeatmap(value)).catch(()=>{/* Playback never depends on aggregate availability. */});
       const videoProgress=bindVideoProgress(video,progress);
       const stopNavigation=item.kind==='video'?loadVideoNavigation({id:item.id,api,blob:authenticatedBlob,set:player.setNavigation,isCurrent:()=>node.isConnected&&getSession()?.user.id===progressActor&&getEndpoint()===progressServer}):()=>{};
@@ -663,10 +666,29 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false,background
   } catch (error) { onError(error); }
 }
 async function updateDownloadButtons(){
-  const actor=getSession()?.user.id,endpoint=getEndpoint();
-  try{const rows=await listDownloads();if(getSession()?.user.id!==actor || getEndpoint()!==endpoint)return;
-    for(const button of document.querySelectorAll('[data-download]')){const row=rows.find(row=>row.assetId===button.dataset.download);const title=items.find(item=>item.id===button.dataset.download)?.title??'作品',label=row?.state==='ready'?'暗号化保存済み・ダウンロード設定':row?'ダウンロードを再開':'暗号化ダウンロード';button.innerHTML=icon(row?.state==='ready'?'check':'download');button.classList.toggle('download-ready',row?.state==='ready');button.setAttribute('aria-label',title+'：'+label);button.title=label;button.disabled=offlineLibrary;}
-  }catch{/* Online browsing still works without local storage. */}
+  await document.querySelector('.asset-action-menu')?.refreshDownloadState?.();
+}
+function openAssetActions(item){
+  if(!item||item.pending)return;
+  const actor=getSession(),endpoint=getEndpoint(),current=()=>getSession()?.token===actor?.token&&getEndpoint()===endpoint;
+  const editable=!offlineLibrary&&item.role!=='viewer';
+  const node=dialog(item.title,`<div class="modal-body asset-action-list"><button class="asset-action action-download" disabled>${icon('download')}<span>保存状態を確認しています…</span></button><button class="asset-action action-unregister" hidden>${icon('trash')}<span>端末のダウンロードを解除</span></button>${editable?`<button class="asset-action action-delete danger-text">${icon('trash')}<span>サーバーから作品を削除</span></button>`:''}<button class="asset-action action-details">${icon('more')}<span>詳細を表示</span></button><p class="muted action-status" role="status"></p></div>`,'asset-action-menu');
+  const download=node.querySelector('.action-download'),unregister=node.querySelector('.action-unregister'),status=node.querySelector('.action-status');
+  const act=fn=>()=>{node.close();if(current())fn();};
+  download.onclick=act(()=>openDownload(item));unregister.onclick=act(()=>removeAssetDownload(item));node.querySelector('.action-details').onclick=act(()=>openAssetDetails(item));
+  if(editable)node.querySelector('.action-delete').onclick=act(()=>deleteItem(item));
+  node.refreshDownloadState=async()=>{
+    try{const row=(await listDownloads()).find(row=>row.assetId===item.id);if(!node.isConnected||!current())return;
+      const ready=row?.state==='ready';download.hidden=ready;download.disabled=offlineLibrary;download.querySelector('span').textContent=row?'ダウンロードを再開':'暗号化ダウンロード';unregister.hidden=!row;
+      status.textContent=ready?'端末に暗号化保存済み':row?'取得途中のデータがあります。再開・解除できます。':offlineLibrary?'オフライン中は新しくダウンロードできません。':'';
+    }catch{if(node.isConnected&&current()){download.disabled=offlineLibrary;download.querySelector('span').textContent='暗号化ダウンロード';status.textContent='保存状態を確認できませんでした。';}}
+  };
+  node.refreshDownloadState();
+}
+function removeAssetDownload(item){
+  const actor=getSession(),endpoint=getEndpoint(),current=()=>getSession()?.token===actor?.token&&getEndpoint()===endpoint;
+  const node=dialog('端末のダウンロードを解除',`<div class="modal-body"><p>「${esc(item.title)}」の、この端末に保存した暗号化データを削除します。サーバーの原本・閲覧履歴は削除しません。</p><p class="muted">この保存データを再生中なら停止します。再取得にはサーバーへの接続が必要です。</p><p class="form-error" hidden role="alert"></p><div class="modal-actions"><button class="button danger confirm-unregister">端末の保存を解除</button></div></div>`);
+  node.querySelector('.confirm-unregister').onclick=async e=>{if(!current())return;e.currentTarget.disabled=true;try{await removeDownload(item.id);if(!current())return;node.close();await refreshNativePlayback();toast('この端末のダウンロードを解除しました。');}catch(error){if(node.isConnected&&current()){node.querySelector('.form-error').hidden=false;node.querySelector('.form-error').textContent=error.message;node.querySelector('.confirm-unregister').disabled=false;}}};
 }
 function openAssetDetails(item){
   if(!item||item.pending)return;

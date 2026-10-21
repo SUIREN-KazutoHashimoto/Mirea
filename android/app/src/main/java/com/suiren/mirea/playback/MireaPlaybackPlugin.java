@@ -16,6 +16,8 @@ public final class MireaPlaybackPlugin extends Plugin {
     private final BroadcastReceiver changed=new BroadcastReceiver(){public void onReceive(Context c,Intent i){if(visible)notifyListeners("playbackState",state());}};
     private JSObject state(){try{PlaybackService s=PlaybackService.current;return s==null?new JSObject().put("active",false):JSObject.fromJSONObject(s.status());}catch(Exception e){return new JSObject().put("active",false);}}
     @Override public void load(){cache=new PlaybackCache(getContext());ContextCompat.registerReceiver(getContext(),changed,new IntentFilter(PlaybackService.EVENT),ContextCompat.RECEIVER_NOT_EXPORTED);}
+    @PluginMethod public void play(PluginCall call){getActivity().runOnUiThread(()->{PlaybackService s=PlaybackService.current;if(s!=null)s.play();call.resolve(state());});}
+    @PluginMethod public void pause(PluginCall call){getActivity().runOnUiThread(()->{PlaybackService s=PlaybackService.current;if(s!=null)s.pause();call.resolve(state());});}
     @PluginMethod public void status(PluginCall call){call.resolve(state());}
     @PluginMethod public void open(PluginCall call){
         try{JSONObject data=new JSONObject(call.getData().toString());PlaybackApi validation=new PlaybackApi(data.getString("origin"),data.getString("token"),data.getString("userId"));validation.close();
