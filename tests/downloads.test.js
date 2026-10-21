@@ -102,3 +102,19 @@ test('thirty-day login and seven-day download leases are server-anchored, capped
   c.db.prepare('UPDATE sessions SET expires_at=1 WHERE user_id=?').run(c.viewer.user.id);
   assert.equal((await c.open(manifest.id)).statusCode,401);
 });
+
+test('Android empty POST form default is rejected; explicit JSON renews the same encrypted package without replacing keys or media',async t=>{
+  const c=await setup(t),{manifest}=(await c.create()).json(),url=`/api/v1/downloads/${manifest.id}/open`;
+  const headers={authorization:`Bearer ${c.viewer.token}`};
+  const original=(await c.open(manifest.id)).json(),chunk=(await c.part(manifest.id)).rawPayload;
+  // Android HttpURLConnection adds this type for POST even with no body.
+  const legacy=await c.app.inject({method:'POST',url,headers:{...headers,'content-type':'application/x-www-form-urlencoded','content-length':'0'},payload:''});
+  assert.equal(legacy.statusCode,415,legacy.body);
+  const response=await c.app.inject({method:'POST',url,headers:{...headers,'content-type':'application/json; charset=UTF-8'},payload:'{}'});
+  assert.equal(response.statusCode,200,response.body);const renewed=response.json();
+  assert.equal(renewed.manifest.id,manifest.id);assert.equal(renewed.key,original.key);assert.equal(renewed.expiresAt-renewed.serverTime,7*86400000);
+  assert.deepEqual(Buffer.from(await decryptDownloadChunk(await importDownloadKey(renewed.key),renewed.manifest,0,0,chunk)),c.bytes.subarray(0,1048576));
+  assert.equal(c.db.prepare('SELECT COUNT(*) n FROM encrypted_downloads').get().n,1);
+  const denied=await c.app.inject({method:'POST',url,headers:{authorization:`Bearer ${c.other.token}`,'content-type':'application/json'},payload:'{}'});
+  assert.equal(denied.statusCode,404);
+});

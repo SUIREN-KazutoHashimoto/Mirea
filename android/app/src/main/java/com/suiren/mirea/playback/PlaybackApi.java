@@ -34,8 +34,14 @@ public final class PlaybackApi {
         return path.matches("/api/v1/items/[0-9a-f-]{36}/(?:renditions/[0-9]{2,4}p/content|hls/(?:master\\.m3u8|[0-9]{2,4}p(?:\\.m3u8|-init\\.mp4|-[0-9]{5}\\.m4s)))\\?generation=(?:base|[0-9a-f-]{36})")||path.matches("/api/v1/items/[0-9a-f-]{36}/navigation/storyboard\\?revision=[0-9]{1,10}");
     }
     public JSONObject json(String path,String method,JSONObject body)throws Exception{
-        HttpURLConnection c=connection("/api/v1"+path,method);
+        return requestJson(connection("/api/v1"+path,method),body);
+    }
+    static JSONObject requestJson(HttpURLConnection c,JSONObject body)throws Exception{
         try{
+            // Android adds a form Content-Type even to an otherwise empty POST.
+            // Send a real JSON object so Fastify does not reject lease renewal
+            // with 415 (or reject an empty application/json body with 400).
+            if(body==null&&"POST".equals(c.getRequestMethod()))body=new JSONObject();
             if(body!=null){byte[] bytes=body.toString().getBytes(StandardCharsets.UTF_8);c.setDoOutput(true);c.setRequestProperty("Content-Type","application/json");c.setFixedLengthStreamingMode(bytes.length);try(OutputStream out=c.getOutputStream()){out.write(bytes);}}
             int status=c.getResponseCode();if(status<200||status>=300)throw new Failure(status);
             if(status==204)return new JSONObject();return new JSONObject(new String(read(c.getInputStream(),4*1024*1024),StandardCharsets.UTF_8));
