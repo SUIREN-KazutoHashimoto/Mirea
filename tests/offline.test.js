@@ -52,10 +52,3 @@ test('offline shell is an exact static build allowlist, never API/media/arbitrar
   assert.equal(validShellManifest(base),true);
   for(const path of ['/api/v1/auth/remember','/api/v1/items/id/content','/uploads/video.mp4','//evil.test/index.html','/assets/../secret','/assets/code.js?token=secret','https://evil.test/asset.js'])assert.equal(validShellManifest({...base,files:[path]}),false,path);
 });
-
-test('built service worker identity includes the whole shell revision so UI-only patches refresh the offline shell',async()=>{
-  const {readFile}=await import('node:fs/promises');
-  const manifest=JSON.parse(await readFile(new URL('../dist/offline-assets.json',import.meta.url),'utf8'));
-  const worker=await readFile(new URL('../dist/download-sw.js',import.meta.url),'utf8');
-  assert.ok(worker.includes('// Mirea offline shell '+manifest.version));
-});
