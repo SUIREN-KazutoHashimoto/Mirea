@@ -37,7 +37,7 @@ self.addEventListener('fetch',event=>{
   const url=new URL(event.request.url);if(url.origin!==self.location.origin)return;
   if(!url.pathname.startsWith(DOWNLOAD_PATH)){
     if(event.request.method!=='GET'||url.search||url.pathname.startsWith('/api/'))return;
-    if(event.request.mode==='navigate'||url.pathname.startsWith('/assets/')||url.pathname.startsWith('/pdf-assets/')||url.pathname==='/favicon.svg'){
+    if(event.request.mode==='navigate'||url.pathname.startsWith('/assets/')||url.pathname.startsWith('/pdf-assets/')||url.pathname==='/favicon.svg'||url.pathname.startsWith('/brand/')){
       event.respondWith((async()=>{
         try{return await fetch(event.request);}
         catch{
