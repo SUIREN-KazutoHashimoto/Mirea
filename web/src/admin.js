@@ -4,7 +4,7 @@ import {mountAdminJobs} from './admin-jobs-ui.js';
 import {mountAdminCleanup} from './admin-cleanup-ui.js';
 
 const states={queued:'待機中',running:'実行中',processing:'処理中',uploading:'受信中',complete:'完了',failed:'失敗',cancelled:'取消',rolled_back:'旧版へ復旧'};
-const kinds={'validate-image':'画像の検証',thumbnail:'サムネイル',preview:'動画プレビュー',transcode:'配信画質・HLS',backup_metadata:'メタデータバックアップ',backup_full:'全体バックアップ'};
+const kinds={'validate-image':'画像の検証',thumbnail:'サムネイル',preview:'動画プレビュー',transcode:'配信画質・HLS',navigation:'動画ナビゲーション',backup_metadata:'メタデータバックアップ',backup_full:'全体バックアップ'};
 export async function openAdmin({dialog,api,esc,bytes,onStatistics}){
   const actor=getSession();const access=await api('/admin/access');if(!access.isServerAdmin||getSession()!==actor)throw new Error('サーバー管理者のみ利用できます。');
   const tabs=[['overview','概要'],['jobs','ジョブ・再生成'],['cleanup','ファイル整理'],['users','アカウント'],['shelves','本棚の権限'],['statistics','統計'],['backups','バックアップ'],['updates','サーバー更新'],['audit','管理操作の記録']];

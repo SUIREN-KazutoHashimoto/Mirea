@@ -68,7 +68,9 @@ export function registerVideoStreams(app,{db,videoDir,authenticate,findItem}) {
       authorize(req);return reply.type('application/vnd.apple.mpegurl').send(req.method==='HEAD'?undefined:body);
     }
     const info=await stat(path);authorize(req);
-    reply.type(file.endsWith('.m4s')?'video/iso.segment':'video/mp4').header('Content-Length',info.size);
-    return req.method==='HEAD'?reply.send():reply.send(createReadStream(path));
+    let range;try{range=parseRange(req.headers.range,info.size);}catch(error){reply.header('Content-Range',`bytes */${info.size}`);throw error;}
+    reply.type(file.endsWith('.m4s')?'video/iso.segment':'video/mp4').header('Accept-Ranges','bytes').header('Content-Length',range?range.end-range.start+1:info.size);
+    if(range)reply.code(206).header('Content-Range',`bytes ${range.start}-${range.end}/${info.size}`);
+    return req.method==='HEAD'?reply.send():reply.send(createReadStream(path,range??{}));
   }});
 }

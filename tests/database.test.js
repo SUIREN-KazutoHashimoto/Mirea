@@ -35,7 +35,7 @@ test('real v11 MIME migration keeps all child rows, video metadata, keys and ser
     const tables=db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT IN ('schema_version','sqlite_sequence') ORDER BY name").all().map(row=>row.name);
     const before=tables.map(table=>db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());db.close();db=openDatabase(filename);
     tables.forEach((table,i)=>assert.deepEqual(db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),before[i],table));
-    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,13);
+    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,14);
     assert.throws(()=>db.prepare("UPDATE items SET shelf_id='other' WHERE id='v'").run(),/before moving/);
     db.exec(`INSERT INTO items VALUES('a','s','Audio','music.m4a','audio/mp4',100,'u',3,1,1);INSERT INTO audio_assets VALUES('a','{}',0);DELETE FROM items WHERE id='a';`);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM audio_assets').get().n,0);assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
@@ -67,7 +67,7 @@ test('version 1 migration preserves accounts, shelves, items, sessions and ticke
     `);
     db.close();
     db = openDatabase(filename);
-    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,13);
+    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,14);
     assert.equal(db.prepare('SELECT name FROM users').get().name, 'Existing user');
     assert.equal(db.prepare('SELECT title FROM items').get().title, 'Existing PDF');
     assert.equal(db.prepare('SELECT thumbnail_ready FROM items').get().thumbnail_ready, 0);
@@ -100,7 +100,7 @@ test('version 5 upgrade adds resume state without deleting detailed analytics',a
       INSERT INTO analytics_events(event_id,view_id,seq,event_type,client_at,received_at,elapsed_ms,interval_ms,visible_ms,active_ms,watch_ms,payload_json,payload_hash)
       VALUES('event','view',1,'open',1,1,0,0,0,0,0,'{}','hash');`);
     db.close();db=openDatabase(filename);
-    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,13);
+    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,14);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM asset_progress').get().n,0);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM analytics_events').get().n,1);
     assert.equal(db.prepare('SELECT asset_title FROM analytics_views').get().asset_title,'Preserved');
@@ -129,7 +129,7 @@ test('version 7 upgrade adds empty series without altering existing assets, prog
     const tables=['users','memberships','items','asset_progress','encrypted_downloads','analytics_views','analytics_events'];
     const before=tables.map(table=>db.prepare(`SELECT * FROM ${table}`).all());
     db.close();db=openDatabase(filename);
-    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,13);
+    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,14);
     tables.forEach((table,index)=>assert.deepEqual(db.prepare(`SELECT * FROM ${table}`).all(),before[index],table));
     assert.equal(db.prepare('SELECT COUNT(*) n FROM series').get().n,0);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM series_items').get().n,0);
@@ -166,7 +166,7 @@ for (const oldVersion of [8,9]) test(`real version ${oldVersion} item-table rebu
     const before=tables.map(table=>db.prepare(`SELECT * FROM ${table}`).all());
     db.close();db=openDatabase(filename);
     tables.forEach((table,index)=>assert.deepEqual(db.prepare(`SELECT * FROM ${table}`).all(),before[index],table));
-    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,13);
+    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,14);
     db.prepare("INSERT INTO items VALUES('epub','s','EPUB','book.epub','application/epub+zip',100,NULL,1,2,1)").run();
     assert.throws(()=>db.prepare("UPDATE items SET shelf_id='other' WHERE id='i'").run(),/before moving/);
     assert.throws(()=>db.prepare("UPDATE series SET shelf_id='other' WHERE id='series'").run(),/before moving/);
@@ -195,7 +195,7 @@ test('v10 to current preserves existing download IDs/manifests and upload retent
       INSERT INTO upload_sessions VALUES('upload','s','u','session','Old upload','[]',8388608,'uploading',NULL,1,9999999999999);
       UPDATE schema_version SET version=10;`);
     const items=db.prepare('SELECT * FROM items').all(),downloads=db.prepare('SELECT * FROM encrypted_downloads').all();db.close();db=openDatabase(filename);
-    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,13);
+    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,14);
     assert.deepEqual(db.prepare('SELECT * FROM items').all(),items);assert.deepEqual(db.prepare('SELECT * FROM encrypted_downloads').all(),downloads);
     assert.equal(db.prepare('SELECT retain_original FROM upload_sessions').get().retain_original,0);
     db.exec(`INSERT INTO encrypted_downloads VALUES('another-quality','u','i','{}',2)`);

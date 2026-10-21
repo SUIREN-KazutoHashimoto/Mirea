@@ -25,8 +25,13 @@ public final class PlaybackApi {
     }
     public static boolean uuid(String value){return value!=null&&value.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");}
     public HttpURLConnection connection(String path,String method)throws IOException{
-        if(closed||!path.startsWith("/api/v1/")||path.contains("..")||path.contains("?")||path.contains("#"))throw new IOException("Playback context closed");
-        HttpURLConnection c=(HttpURLConnection)new URL(origin+path).openConnection();c.setInstanceFollowRedirects(false);c.setConnectTimeout(10000);c.setReadTimeout(15000);c.setRequestMethod(method);c.setRequestProperty("Authorization","Bearer "+token);c.setRequestProperty("Cache-Control","no-store");return c;
+        if(closed||!safePath(path))throw new IOException("Playback context closed or invalid path");
+        HttpURLConnection c=(HttpURLConnection)new URL(origin+path).openConnection();c.setInstanceFollowRedirects(false);c.setConnectTimeout(10000);c.setReadTimeout(15000);c.setRequestMethod(method);c.setRequestProperty("Authorization","Bearer "+token);c.setRequestProperty("Cache-Control","no-store");c.setRequestProperty("Accept-Encoding","identity");return c;
+    }
+    static boolean safePath(String path){
+        if(path==null||!path.startsWith("/api/v1/")||path.contains("..")||path.contains("#")||path.contains("%")||path.contains("\\")||path.contains("\r")||path.contains("\n"))return false;
+        if(!path.contains("?"))return path.matches("/api/v1/[A-Za-z0-9_/-]+");
+        return path.matches("/api/v1/items/[0-9a-f-]{36}/(?:renditions/[0-9]{2,4}p/content|hls/(?:master\\.m3u8|[0-9]{2,4}p(?:\\.m3u8|-init\\.mp4|-[0-9]{5}\\.m4s)))\\?generation=(?:base|[0-9a-f-]{36})")||path.matches("/api/v1/items/[0-9a-f-]{36}/navigation/storyboard\\?revision=[0-9]{1,10}");
     }
     public JSONObject json(String path,String method,JSONObject body)throws Exception{
         HttpURLConnection c=connection("/api/v1"+path,method);

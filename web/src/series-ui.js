@@ -147,6 +147,7 @@ export function mountSeriesNavigation({node,body,item,api,esc,open,isCurrent,isA
     subscribe(fn){subscribers.add(fn);fn();return()=>subscribers.delete(fn);},
     bookState(state){book=state;render();},
     nextBook:()=>core.nextBook(),
+    navigate:direction=>core.navigate({direction,autoplay:true}),
     cancel:()=>core.cancel(),
     bindVideo(video,{autoplay=false}={}){
       videoCleanup?.();

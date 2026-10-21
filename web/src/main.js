@@ -17,7 +17,10 @@ import { createViewerScreen } from './viewer-shell.js';
 import { initializeNativePlayback,openNativePlayback,refreshNativePlayback } from './native-playback.js';
 import { nativePlayerAvailable } from './native-player-bridge.js';
 import { mountVideoPlayer } from './video-player.js';
-import {loadQualityPreference,saveQualityPreference} from './quality-preference.js';
+import {loadVideoNavigation} from './video-navigation.js';
+import './video-navigation.css';
+import {openNavigationEditor} from './video-navigation-editor.js';
+import {loadQualityPreference,saveQualityPreference,mountNetworkQuality} from './quality-preference.js';
 import { AUDIO_EXTENSIONS, isTimedKind } from '../../server/audio-types.js';
 import { VIDEO_EXTENSIONS } from '../../server/video-types.js';
 import { beginUpdateActivity } from './update-busy.js';
@@ -348,6 +351,7 @@ function renderItems() {
     const item=items.find(item=>item.id===id);
     if(item.series){const badge=document.createElement('button');badge.className='card-series';badge.textContent=`${item.series.title} · ${item.series.label||`${item.series.position}番目`}`;badge.setAttribute('aria-label',`${item.series.title}で絞り込み`);badge.onclick=()=>{activeSeries=item.series.id;filter='all';search='';document.querySelector('#search').value='';renderItems();};card.append(badge);}
     button.className='card-download';button.dataset.download=id;button.textContent='暗号化ダウンロード';button.onclick=()=>openDownload(items.find(item=>item.id===id));card.append(button);
+    if(item.kind==='video'&&item.role!=='viewer'){const edit=document.createElement('button');edit.type='button';edit.className='card-download';edit.textContent='チャプター・字幕';edit.onclick=()=>openNavigationEditor({item,api,dialog,esc});card.append(edit);}
   });
   updateDownloadButtons();
   loadThumbnails();
@@ -595,9 +599,9 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false,background
       if (!node.isConnected) return;
       const {attachVideoStream}=await import('./video-stream.js');
       if(!node.isConnected)return;
-      let stream;
+      let stream,stopNetworkQuality;
       const renew=()=>api(`/items/${item.id}/playback-ticket`,{method:'POST'});
-      const player=mountVideoPlayer(body,{onError,kind:item.kind,title:item.title,reconnect:async()=>{body.querySelector('.viewer-error')?.remove();if(downloaded)return downloaded.reconnect();await stream.reconnect();return null;}});
+      const player=mountVideoPlayer(body,{onError,kind:item.kind,title:item.title,onNavigate:direction=>seriesNavigation.navigate(direction),editNavigation:()=>openNavigationEditor({item,api,dialog,esc}),reconnect:async()=>{body.querySelector('.viewer-error')?.remove();if(downloaded)return downloaded.reconnect();await stream.reconnect();return null;}});
       let coverUrl;
       if(item.kind==='audio'){
         try{
@@ -609,7 +613,8 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false,background
       const video = player.video;
         if(item.kind==='video')api(`/items/${item.id}/replay-heatmap`).then(value=>player.setHeatmap(value)).catch(()=>{/* Playback never depends on aggregate availability. */});
       const videoProgress=bindVideoProgress(video,progress);
-      cleanup=()=>{videoProgress();stream?.dispose();player.dispose();if(coverUrl)URL.revokeObjectURL(coverUrl);};cleanup.restart=()=>videoProgress.restart();
+      const stopNavigation=item.kind==='video'?loadVideoNavigation({id:item.id,api,blob:authenticatedBlob,set:player.setNavigation,isCurrent:()=>node.isConnected&&getSession()?.user.id===progressActor&&getEndpoint()===progressServer}):()=>{};
+      cleanup=()=>{stopNetworkQuality?.();stopNavigation();videoProgress();stream?.dispose();player.dispose();if(coverUrl)URL.revokeObjectURL(coverUrl);};cleanup.restart=()=>videoProgress.restart();
       tracker?.video(video,player.surface);
       seriesNavigation.bindVideo(video,{autoplay});
       if(downloaded){
@@ -618,6 +623,7 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false,background
       }else {
         const qualityEndpoint=getEndpoint(),qualityUser=getSession()?.user.id;
         stream=attachVideoStream(video,{ticket,absoluteUrl,renew,onError,initialQuality:loadQualityPreference(qualityEndpoint,qualityUser),onChoose:value=>saveQualityPreference(qualityEndpoint,qualityUser,value),onQuality:value=>tracker?.quality(value),onOptions:options=>player.setQuality(options,value=>stream?.choose(value))});
+        if(item.kind==='video')stopNetworkQuality=mountNetworkQuality(body.querySelector('.player-controls'),qualityEndpoint,qualityUser,value=>stream?.choose(value));
       }
       if(downloaded)video.setAttribute('controlsList','nodownload');
     }

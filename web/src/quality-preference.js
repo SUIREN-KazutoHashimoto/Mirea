@@ -1,9 +1,15 @@
 export function resolveQualityPreference(qualities,value){
-  if(value==='auto')return 'auto';
+  if(['auto','higher','data'].includes(value))return value;
   if(!/^\d{2,4}p$/.test(value??''))return 'auto';
   const sorted=qualities.filter(q=>/^\d{2,4}p$/.test(q.quality)).map(q=>q.quality).sort((a,b)=>parseInt(b)-parseInt(a));
   return sorted.find(q=>parseInt(q)<=parseInt(value))??sorted.at(-1)??'auto';
 }
 const key=(endpoint,userId)=>'mirea-playback-quality:'+encodeURIComponent(endpoint)+':'+userId;
-export function loadQualityPreference(endpoint,userId,storage){try{const value=(storage??globalThis.localStorage)?.getItem(key(endpoint,userId));return value==='auto'||/^\d{2,4}p$/.test(value??'')?value:'auto';}catch{return 'auto';}}
-export function saveQualityPreference(endpoint,userId,value,storage){if(value!=='auto'&&!/^\d{2,4}p$/.test(value??''))return;try{(storage??globalThis.localStorage)?.setItem(key(endpoint,userId),value);}catch{/* Playback remains usable with private/full storage. */}}
+export function loadQualityPreference(endpoint,userId,storage){try{const store=storage??globalThis.localStorage,network=store?.getItem(key(endpoint,userId)+':network')??(globalThis.navigator?.connection?.type==='cellular'?'mobile':globalThis.navigator?.connection?.type==='wifi'?'wifi':'default'),value=store?.getItem(key(endpoint,userId)+(network==='default'?'':':'+network))??store?.getItem(key(endpoint,userId));return ['auto','higher','data'].includes(value)||/^\d{2,4}p$/.test(value??'')?value:'auto';}catch{return 'auto';}}
+export function saveQualityPreference(endpoint,userId,value,storage){if(!['auto','higher','data'].includes(value)&&!/^\d{2,4}p$/.test(value??''))return;try{(storage??globalThis.localStorage)?.setItem(key(endpoint,userId),value);}catch{/* Playback remains usable with private/full storage. */}}
+export function mountNetworkQuality(root,endpoint,userId,choose,{storage=globalThis.localStorage,doc=document}={}){
+  const host=doc.createElement('details');host.className='player-network-quality';const title=doc.createElement('summary');title.textContent='回線別の画質設定';host.append(title);let disposed=false;
+  host.addEventListener('toggle',()=>{if(host.open)for(const other of root.closest('.mirea-player')?.querySelectorAll('details')??[])if(other!==host)other.open=false;});
+  const active=doc.createElement('select');active.setAttribute('aria-label','今回使用する回線設定');for(const [v,t] of [['default','共通（回線不明の場合）'],['wifi','Wi-Fi設定を使用'],['mobile','モバイル通信設定を使用']]){const o=doc.createElement('option');o.value=v;o.textContent=t;active.append(o);}try{active.value=storage?.getItem(key(endpoint,userId)+':network')??'default';}catch{}active.onchange=()=>{try{storage?.setItem(key(endpoint,userId)+':network',active.value);}catch{}choose(loadQualityPreference(endpoint,userId,storage));};host.append(active);
+  for(const [network,label] of [['wifi','Wi-Fi'],['mobile','モバイル通信']]){const row=doc.createElement('label');row.textContent=label;const select=doc.createElement('select');select.setAttribute('aria-label',label+'の画質');for(const [v,t] of [['auto','自動'],['higher','高画質優先'],['data','データセーバー（480p以下）']]){const o=doc.createElement('option');o.value=v;o.textContent=t;select.append(o);}try{select.value=storage?.getItem(key(endpoint,userId)+':'+network)??'auto';}catch{}select.onchange=()=>{try{storage?.setItem(key(endpoint,userId)+':'+network,select.value);}catch{}if(active.value===network)choose(select.value);};row.append(select);host.append(row);}const note=doc.createElement('small');note.textContent='ブラウザーで回線を判定できない場合は、使用する設定を手動で選んでください。';host.append(note);root.append(host);return ()=>{if(!disposed){disposed=true;host.remove();}};
+}

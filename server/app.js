@@ -16,6 +16,7 @@ import { hashPassword, verifyPassword, hashToken, newToken, httpError, parseRang
 import { IMAGE_BOOK_MIME, IMAGE_TYPES, MAX_BOOK_PAGES, MAX_IMAGE_BYTES, imageExtension, createMediaProcessor, createThumbnailStore, removeItemDirectory } from './media.js';
 import { registerResumableUploads } from './resumable.js';
 import { registerVideoPreviews } from './video-previews.js';
+import { registerVideoNavigation } from './video-navigation.js';
 import { registerAnalytics } from './analytics.js';
 import { registerProgress, publicProgress } from './progress.js';
 import { registerDownloads } from './downloads.js';
@@ -235,6 +236,7 @@ export async function createApp(options = {}) {
   registerVideoStreams(app,{db,videoDir,authenticate,findItem});
   registerAccounts(app, { db, authenticate, membership, loginResult, cleanupUploads: uploads.cleanupUploads, rateLimit: options.rateLimit,adminAccess });
   const videoPreviews = await registerVideoPreviews(app, { db, media, dataDir, uploadDir, authenticate, findItem });
+    const navigation = await registerVideoNavigation(app,{db,uploadDir,originalDir,videoDir,authenticate,findItem,membership,maintenance,rateLimit:options.rateLimit,generateNavigation:options.generateNavigation});
   async function removeAssetFiles(item){return Promise.allSettled([
     item.mime_type===IMAGE_BOOK_MIME?removeItemDirectory(booksDir,item.id):unlink(join(uploadDir,item.id)),
     ...(item.mime_type===EPUB_MIME?[removeItemDirectory(booksDir,item.id)]:[]),unlink(join(thumbnailDir,item.id+'.jpg')),
@@ -243,7 +245,7 @@ export async function createApp(options = {}) {
   registerShelfManagement(app,{db,authenticate,membership,maintenance,removeFiles:removeAssetFiles,cleanupUploads:uploads.cleanupUploads,adminAccess,rateLimit:options.rateLimit});
   const adminJobs=await registerAdminJobs(app,{db,adminAccess,media,videoTranscoder,uploadDir,booksDir,thumbnailDir,previewDir,videoDir,originalDir,dataDir,uploads,maintenance,videoPreviews,ensureThumbnail,rateLimit:options.rateLimit});
   registerAdmin(app,{db,adminAccess,uploads,rateLimit:options.rateLimit});
-  maintenance.setBusy(()=>uploads.busy||adminJobs.busy||videoPreviews.busy||media.busy);
+  maintenance.setBusy(()=>uploads.busy||adminJobs.busy||videoPreviews.busy||navigation.busy||media.busy);
   await registerAdminCleanup(app,{db,dataDir,adminAccess,maintenance,options});
   await registerAdminBackups(app,{db,dataDir,adminAccess,maintenance,options});
   await registerServerUpdates(app,{adminAccess,maintenance,options});

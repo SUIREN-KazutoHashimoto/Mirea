@@ -1,30 +1,34 @@
-# YouTubeとの動画プレイヤー差分（2026-10-21）
+# YouTubeとの動画プレイヤー操作比較（0.5.0beta、2026-10-21）
 
-対象はMirea 0.4.4betaのWeb／ネイティブAPKの操作仕様です。YouTube公式ヘルプとソースを照合しました。YouTubeの実端末・Premium契約・段階的テストを網羅した実機比較ではありません。今回変更したのは再生頻度グラフの表示条件だけで、以下の不足機能を追加したわけではありません。
+0.4.4betaで報告した差分を追加・修正しました。YouTubeの全サービス、地域別／Premium限定／実験中の挙動まで同一にするものではありません。
 
-## 主な確認済み差分
+| 操作 | Mirea 0.5.0beta |
+| --- | --- |
+| Android左右ダブルタップ | 左半分で10秒戻る、右半分で10秒進む。ボタン・シーク操作は対象外。Webタッチも同様。 |
+| 精密シーク | 通常シーク中に場面画像。上へ約50pxスライドして場面列から選び、確定／取消。Webはメニューのボタンでも開始可能。 |
+| 動画内チャプター | 配信元の章情報を抽出、手動編集も可能。シークバーの区切りと章選択。シリーズの作品間移動とは別。 |
+| ピンチズーム | Web／APKは1～4倍。APKは拡大位置の移動／リセットも対応。 |
+| APKの自動画質 | Media3 HLSによるABR。自動／高画質優先／480p以下のデータセーバー／解像度固定。保存データは選択済みの1画質。 |
+| 回線別の画質 | APKはWi-Fi／モバイル別の初期設定。Webは判定不能なブラウザーで手動プロファイルを選択可能。 |
+| Webキーボード | Space/K、J/L、矢印、0～9、Home/End、<>速度、停止中の,/.、Shift+N/P、I、C、F、M、Ctrl+左右の章移動。選択中のシークバーの矢印も5秒。 |
+| 字幕 | 埋め込みのテキスト字幕、SRT／WebVTT追加。言語・オンオフ・文字サイズ。画像字幕や自動生成／翻訳は非対応。 |
+| Webダブルクリック | 全画面の開始／終了。通常クリックの再生操作と区別。 |
+| 速度 | Web／APKとも0.25～2倍の0.25刻み。長押し中だけ2倍、終了時に元の速度へ戻る。 |
 
-| 項目 | YouTubeの公式案内 | Mireaの現状・根拠 |
-| --- | --- | --- |
-| 左右ダブルタップ（Android） | 左右のダブルタップで10秒戻し／送り。[速度・移動](https://support.google.com/youtube/answer/7509567?co=GENIE.Platform%3DAndroid&hl=ja) | APKは10秒戻し／送りボタンのみ。映像タップは操作パネル切替、ダブルタップ検知なし。PlaybackScreen.onTouchEvent／PlaybackActivity.act。Webの映像クリックは再生／停止で、モバイル専用の左右ダブルタップもない。 |
-| サムネイル列を使う精密シーク | 再生ポイントを上へスライドしてサムネイル列から選択・取消。[精密シーク](https://support.google.com/youtube/answer/12825599?co=GENIE.Platform%3DAndroid&hl=ja) | Web／APKとも時刻表示と通常シークバーのみ。シーク用サムネイル列・場面画像・精密シークモードなし。一覧の画像／短時間動画プレビューは別の機能。video-player.js／PlaybackScreen.seek。 |
-| 動画内チャプター | バーの区切り、章タイトル、章選択に対応。[チャプター](https://support.google.com/youtube/answer/12825599?co=GENIE.Platform%3DAndroid&hl=ja) | Web／APKとも動画内の章データ・表示・ジャンプなし。シリーズ（作品間の連続再生）は動画内チャプターとは異なる。 |
-| ピンチズーム（Android） | アプリの全画面動画を2本指で拡大／縮小。[ピンチズーム](https://support.google.com/youtube/answer/12820428?hl=ja) | APKは縦横比を保った画面フィットのみ。2本指の拡大・ズーム位置移動なし。PlaybackPresentation.fit／PlaybackActivity.fitVideo。 |
-| 自動画質（特にAPK） | 環境に応じた自動調節、手動解像度、高画質／データセーバー等。[画質](https://support.google.com/youtube/answer/91449?co=GENIE.Platform%3DAndroid&hl=ja) | WebのHLSは自動ABR＋解像度固定あり。ただし高画質優先／データセーバー、Wi-Fi／モバイル別の設定はない。**APKはHLS ABRではなくMP4 Range再生で、標準／固定画質のみ**。「標準」は自動切替ではない。PlaybackQuality／PlaybackService.open／PlaybackActivity.qualities。 |
-| キーボード（Web） | J/Lで10秒、数字で割合移動、<>で速度変更、停止中の,/.でコマ送り等。[ショートカット](https://support.google.com/youtube/answer/7631406?hl=ja) | Space/K・M・F・プレイヤー領域の矢印操作は実装済み。J/L・数字・<>・コマ送り・Shift+N/P・I等は未実装。シークバー選択中はINPUTを既存キー処理から除外するため、矢印がYouTubeの5秒ではなくrangeのstep=0.01秒になる。video-player.js.keydown。 |
-| 字幕 | 字幕のある動画でオン／オフ、言語・表示設定。[字幕](https://support.google.com/youtube/answer/100078?hl=ja) | 配信用の別字幕トラック、字幕選択／言語メニューなし。動画に焼き込まれた字幕はそのまま映るが、切り替え可能な字幕とは異なる。Webのvideo要素／ネイティブの再生メニュー。 |
-| ダブルクリック（Web） | 全画面終了に動画ダブルクリックを利用可能。[全画面](https://support.google.com/youtube/answer/72689?co=GENIE.Platform%3DDesktop&hl=ja) | Webは全画面ボタン／Fキーを利用。dblclickハンドラーなし。連続クリックは再生／停止として処理される。video-player.js。 |
+## 意図的に異なる仕様・制約
 
-優先度の判断材料として、操作の慣れに直接関わるのは左右ダブルタップ・シークプレビュー・主要キー、自動で画質が変わるという期待との違いが大きいのはAPKのABR未対応です。追加実装は所有者の選択を待ちます。
+- 全画面基本、暗号化ダウンロード、開くたびのオンライン権限確認、シリーズ連続再生は所有者の依頼仕様を維持します。
+- 再生頻度グラフはシーク操作中のみ。各区間5人以上・当日除外の匿名集計が成立しなければ、本人だけの「自分の再生傾向」。YouTubeと同じ集計ではありません。
+- シーク画像は最大120点の代表キーフレーム。長尺では間隔が広くなり、正確なそのフレームを保証しません。コマ送りは配信用30fpsを基準とした位置移動です。
+- 高画質優先は最高の対応画質を優先するため帯域不足で待つ場合があります。自動画質を選ぶと帯域に追従します。動画に480p以下がなければ最小画質を使用。
+- 別字幕は動画再生画面のオーバーレイ。OS／ブラウザーPiPへの字幕合成や背景再生時の字幕表示は保証しません。元動画へ焼き込みません。
+- 元ファイルがすでに削除され、配信用動画に字幕／章が残っていない場合は復元できません。手動追加を利用してください。
+- 広告・コメント・投げ銭・Shorts・ライブ配信・TV／iOS・自動音声認識・翻訳・YouTube独自のおすすめ解析は今回の動画プレイヤー操作互換の対象外です。
 
-## 今回の修正と、意図的に異なる仕様
+## 一次資料
 
-- 再生頻度グラフは、Web／APKともシーク操作中だけ表示し、終了／取消／画面離脱で隠します。通常の再生や操作パネル表示だけでは出しません。YouTubeの[公式説明](https://support.google.com/youtube/answer/12825599?co=GENIE.Platform%3DAndroid&hl=ja)も、再生位置を移動させるとグラフが表示されると案内しています。YouTubeの各PC実験環境のhover条件まで同一だと保証するものではありません。
-- Mireaの匿名集計（各区間5人以上・当日除外）と、成立しない場合の「自分の再生傾向」は所有者承認の仕様です。YouTubeと同じ集計アルゴリズムだとは主張しません。保存・権限・本人限定の分離は維持します。
-- 全画面を基本に開くこと、シリーズ内の連続再生は既存の依頼仕様です。YouTubeに合わせるために解除しません。
-- 長押し中2倍速、PiP、背景再生、画質固定、続き位置は既存機能として維持。OS／ブラウザーの制約やAPKの固定MP4実装までYouTubeと同じという意味ではありません。
-- Mireaの速度選択はWeb6択（0.5/0.75/1/1.25/1.5/2）、APK5択（0.75なし）と両クライアント内でも差があります。YouTubeの契約・デバイス・地域で変わる速度上限や実験機能は、この比較で一律の必須仕様とはしていません。
+- [YouTubeの移動・速度](https://support.google.com/youtube/answer/7509567?co=GENIE.Platform%3DAndroid&hl=ja)、[精密シーク・チャプター・グラフ](https://support.google.com/youtube/answer/12825599?co=GENIE.Platform%3DAndroid&hl=ja)、[ピンチズーム](https://support.google.com/youtube/answer/12820428?hl=ja)
+- [YouTubeの画質](https://support.google.com/youtube/answer/91449?co=GENIE.Platform%3DAndroid&hl=ja)、[キーボード](https://support.google.com/youtube/answer/7631406?hl=ja)、[字幕](https://support.google.com/youtube/answer/100078?hl=ja)、[全画面](https://support.google.com/youtube/answer/72689?co=GENIE.Platform%3DDesktop&hl=ja)
+- [Media3のHLS](https://developer.android.com/media/media3/exoplayer/hls)、[トラック選択](https://developer.android.com/media/media3/exoplayer/track-selection)
 
-## 検証の限界
-
-グラフの開始・終了・キャンセルはNodeとAndroid Viewテストで検証します。Android実機での物理ジェスチャー／TalkBackは未検証です。APKのキー／支援技術からのシークはタッチの開始・終了コールバックに依存する実装で、別途確認が必要です。広告・コメント・投げ銭・YouTube独自コンテンツ解析・TV／iOS／ライブ／Shorts・Premium専用機能の全件比較は対象外です。
+実装の回帰テスト・隔離したブラウザー・Android Viewの描画検証は行いますが、実Android端末の物理ジェスチャー／TalkBack／回線切替を網羅した実機比較ではありません。

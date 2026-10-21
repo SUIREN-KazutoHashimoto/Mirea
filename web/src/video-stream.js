@@ -6,7 +6,7 @@ import {resolveQualityPreference} from './quality-preference.js';
 export function attachVideoStream(video,{ticket,absoluteUrl,renew,onQuality=()=>{},onOptions=()=>{},onError=()=>{},initialQuality='auto',onChoose=()=>{},HlsClass=Hls}) {
   let hls,disposed=false,selected=resolveQualityPreference(ticket.renditions??[],initialQuality),preferred=initialQuality,actual='unknown',refreshing,refreshTimer,streamKind='mp4',manifestReady=false;
   const restores=new Set();
-  const emit=()=>onQuality({selectedQuality:selected,actualQuality:actual,streamKind,
+  const emit=()=>onQuality({selectedQuality:['higher','data'].includes(selected)?'auto':selected,actualQuality:actual,streamKind,
     ...(Number.isFinite(hls?.bandwidthEstimate)?{bandwidthEstimate:Math.min(10000000000,Math.max(0,Math.round(hls.bandwidthEstimate)))}:{})});
   const qualities=()=>ticket.renditions??[];
   function options() { onOptions({qualities:selected==='legacy'?[]:qualities(),selected,actual,auto:Boolean(hls||video.canPlayType('application/vnd.apple.mpegurl'))}); }
@@ -21,6 +21,7 @@ export function attachVideoStream(video,{ticket,absoluteUrl,renew,onQuality=()=>
   function sourceUrl() {
     if(!ticket.hlsUrl||selected==='legacy')return absoluteUrl(ticket.url);
     if(selected==='auto'||hls)return absoluteUrl(ticket.hlsUrl);
+    if(['higher','data'].includes(selected)){const ordered=[...qualities()].sort((a,b)=>Math.min(b.width,b.height)-Math.min(a.width,a.height)),r=selected==='higher'?ordered[0]:ordered.find(q=>Math.min(q.width,q.height)<=480)??ordered.at(-1);return absoluteUrl(ticket.hlsUrl.replace('master.m3u8',`${r.quality}.m3u8`));}
     return absoluteUrl(ticket.hlsUrl.replace('master.m3u8',`${selected}.m3u8`));
   }
   function scheduleRefresh() {
@@ -33,14 +34,15 @@ export function attachVideoStream(video,{ticket,absoluteUrl,renew,onQuality=()=>
     return refreshing;
   }
   function choose(value) {
-    if(value!=='auto'&&!qualities().some(q=>q.quality===value))return;
+    if(!['auto','higher','data'].includes(value)&&!qualities().some(q=>q.quality===value))return;
     selected=value;preferred=value;onChoose(value);
     if(hls&&manifestReady){if(applyLevel())hls.startLoad();}
     else if(ticket.hlsUrl)restoreSource(sourceUrl());
-    actual=hls?actual:selected==='auto'?'unknown':selected;options();emit();
+    actual=hls?actual:['auto','higher','data'].includes(selected)?'unknown':selected;options();emit();
   }
   function applyLevel(){
-    if(selected==='auto'){hls.currentLevel=-1;return true;}
+    hls.autoLevelCapping=-1;
+    if(['auto','higher','data'].includes(selected)){if(selected==='higher')hls.currentLevel=hls.levels.length-1;else{if(selected==='data'){const levels=hls.levels.map((l,index)=>({index,size:Math.min(l.width,l.height)}));hls.autoLevelCapping=levels.filter(l=>l.size<=480).at(-1)?.index??0;}hls.currentLevel=-1;}return true;}
     const rendition=qualities().find(q=>q.quality===selected),index=hls.levels.findIndex(l=>l.width===rendition?.width&&l.height===rendition?.height);
     if(index<0){hls.stopLoad();onError(new Error('固定した画質が配信一覧に見つかりません。再接続するか別の画質を選択してください。'));return false;}
     // Never turn an unmatched manual choice into -1 (automatic ABR).
@@ -53,7 +55,7 @@ export function attachVideoStream(video,{ticket,absoluteUrl,renew,onQuality=()=>
     hls.on(HlsClass.Events.LEVEL_SWITCHED,(_event,data)=>{const level=hls.levels[data.level];actual=qualities().find(q=>q.width===level?.width&&q.height===level?.height)?.quality??'unknown';options();emit();});
     hls.on(HlsClass.Events.ERROR,(_event,data)=>{if(data.fatal&&!disposed)onError(new Error('配信を読み込めません。アクセス権と通信を確認し、再接続してください。'));});
     hls.attachMedia(video);hls.loadSource(absoluteUrl(ticket.hlsUrl));
-  }else if(ticket.hlsUrl&&video.canPlayType('application/vnd.apple.mpegurl')){streamKind='hls';video.src=sourceUrl();actual=selected==='auto'?'unknown':selected;}
+  }else if(ticket.hlsUrl&&video.canPlayType('application/vnd.apple.mpegurl')){streamKind='hls';video.src=sourceUrl();actual=['auto','higher','data'].includes(selected)?'unknown':selected;}
   else{selected='legacy';actual='legacy';video.src=absoluteUrl(ticket.url);}
   options();emit();scheduleRefresh();
   return {choose,reconnect,dispose(){disposed=true;clearTimeout(refreshTimer);for(const listener of restores)video.removeEventListener('loadedmetadata',listener);restores.clear();hls?.destroy();}};

@@ -11,7 +11,14 @@ import org.json.JSONObject;
 
 /** Responsive native presentation only. Playback, grants, progress and analytics stay in the service. */
 public final class PlaybackScreen extends FrameLayout {
-    public interface Actions {void perform(String action);void seek(long position);void scrub(boolean value);default void boost(boolean value){}}
+    public interface Actions {void perform(String action);void seek(long position);void scrub(boolean value);default void boost(boolean value){}default void zoom(float scale,float dx,float dy){}}
+    private GestureDetector taps;
+    private ScaleGestureDetector pinches;
+    private float zoom=1,lastPanX,lastPanY;
+    private final VideoSeekView preview;
+    private final TextView captions;
+    private long scrubOrigin;private boolean scrubPlaying;
+    private float scrubY;
     private final android.os.Handler holdHandler=new android.os.Handler(android.os.Looper.getMainLooper());
     private boolean holdPending,holdTriggered,holdConsumed;
     private float holdX,holdY;
@@ -37,6 +44,9 @@ public final class PlaybackScreen extends FrameLayout {
 
     public PlaybackScreen(Context context,Actions actions){
         super(context);this.actions=actions;setTag("playback-screen");setOnClickListener(v->{if(isVideo)actions.perform("toggle-chrome");});
+        taps=new GestureDetector(context,new GestureDetector.SimpleOnGestureListener(){public boolean onDown(MotionEvent e){return true;}public boolean onSingleTapConfirmed(MotionEvent e){if(isVideo&&!holdConsumed)actions.perform("toggle-chrome");return true;}public boolean onDoubleTap(MotionEvent e){cancelHold();holdConsumed=true;if(isVideo){actions.perform(e.getX()<getWidth()/2f?"rewind":"forward");}return true;}});
+        taps.setIsLongpressEnabled(false);
+        pinches=new ScaleGestureDetector(context,new ScaleGestureDetector.SimpleOnScaleGestureListener(){public boolean onScaleBegin(ScaleGestureDetector d){holdConsumed=true;cancelHold();return isVideo;}public boolean onScale(ScaleGestureDetector d){zoom=Math.max(1,Math.min(4,zoom*d.getScaleFactor()));actions.zoom(zoom,0,0);return true;}});
         audioBody=new FrameLayout(context);addView(audioBody,new LayoutParams(-1,-1));audioBody.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob)->{if(r-l!=or-ol||b-t!=ob-ot)post(this::layoutAudio);});
         artSpace=new FrameLayout(context);artSpace.setMinimumHeight(dp(156));
         artCard=new FrameLayout(context);artCard.setTag("audio-artwork");artCard.setBackground(round(0xff233356,18));artCard.setClipToOutline(true);artCard.setElevation(dp(8));
@@ -82,20 +92,31 @@ public final class PlaybackScreen extends FrameLayout {
         errorCard=column();errorCard.setGravity(Gravity.CENTER);errorCard.setPadding(dp(24),dp(20),dp(24),dp(20));errorCard.setBackground(round(0xee152038,18));errorCard.setTag("player-error");errorCard.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         errorText=text("",14,WHITE);errorText.setMaxWidth(dp(440));errorText.setGravity(Gravity.CENTER);errorCard.addView(errorText,linear(-2,-2));TextView retry=chip("再接続する","reconnect");LinearLayout.LayoutParams retryParams=linear(-2,dp(48));retryParams.topMargin=dp(12);errorCard.addView(retry,retryParams);LayoutParams errorParams=new LayoutParams(-2,-2,Gravity.CENTER);errorParams.setMargins(dp(24),dp(72),dp(24),dp(120));addView(errorCard,errorParams);
         boostBadge=text("▶▶ 2× 早送り",14,WHITE);boostBadge.setTag("hold-boost");boostBadge.setGravity(Gravity.CENTER);boostBadge.setBackground(round(0xdd152038,24));boostBadge.setPadding(dp(18),dp(8),dp(18),dp(8));boostBadge.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);LayoutParams badgeParams=new LayoutParams(-2,-2,Gravity.TOP|Gravity.CENTER_HORIZONTAL);badgeParams.topMargin=dp(84);addView(boostBadge,badgeParams);boostBadge.setVisibility(GONE);
+        captions=text("",20,WHITE);captions.setTag("player-captions");captions.setGravity(Gravity.CENTER);captions.setShadowLayer(dp(3),0,1,Color.BLACK);captions.setBackgroundColor(0x88000000);captions.setPadding(dp(8),dp(2),dp(8),dp(2));LayoutParams cp=new LayoutParams(-2,-2,Gravity.BOTTOM|Gravity.CENTER_HORIZONTAL);cp.setMargins(dp(24),0,dp(24),dp(160));addView(captions,cp);captions.setVisibility(GONE);
+        preview=new VideoSeekView(context,(commit,time)->finishPrecise(commit,time));LayoutParams pp=new LayoutParams(-1,-2,Gravity.BOTTOM);pp.setMargins(dp(20),0,dp(20),dp(155));addView(preview,pp);
         setSafeInsets(0,0,0,0);bind(new JSONObject(),null);setVideo(true);
     }
     private void beginHold(){if(holdPending){holdPending=false;holdTriggered=true;holdConsumed=true;setPressed(false);actions.boost(true);}}
     public void cancelHold(){holdHandler.removeCallbacks(holdStart);holdPending=false;if(holdTriggered){holdTriggered=false;actions.boost(false);}}
     @Override public boolean onTouchEvent(MotionEvent event){
         int action=event.getActionMasked();
+        pinches.onTouchEvent(event);
+        if(event.getPointerCount()>1){holdConsumed=true;cancelHold();MotionEvent cancel=MotionEvent.obtain(event);cancel.setAction(MotionEvent.ACTION_CANCEL);taps.onTouchEvent(cancel);cancel.recycle();return true;}
+        if(action==MotionEvent.ACTION_MOVE&&zoom>1){actions.zoom(zoom,event.getX()-lastPanX,event.getY()-lastPanY);}lastPanX=event.getX();lastPanY=event.getY();
         if(action==MotionEvent.ACTION_DOWN){cancelHold();holdConsumed=false;holdX=event.getX();holdY=event.getY();if(isVideo&&model.optBoolean("playing")&&!model.optBoolean("buffering")){holdPending=true;holdHandler.postDelayed(holdStart,ViewConfiguration.getLongPressTimeout());}}
         else if(action==MotionEvent.ACTION_MOVE){int slop=ViewConfiguration.get(getContext()).getScaledTouchSlop();if(Math.hypot(event.getX()-holdX,event.getY()-holdY)>slop){holdConsumed=true;cancelHold();}}
         else if(action==MotionEvent.ACTION_POINTER_DOWN){holdConsumed=true;cancelHold();}
         else if(action==MotionEvent.ACTION_UP||action==MotionEvent.ACTION_CANCEL){boolean consumed=holdConsumed;cancelHold();if(consumed||action==MotionEvent.ACTION_CANCEL){setPressed(false);cancelPendingInputEvents();return true;}}
-        return super.onTouchEvent(event);
+        if(!holdTriggered&&!holdConsumed)taps.onTouchEvent(event);
+        return true;
     }
     @Override protected void onDetachedFromWindow(){cancelHold();cancelScrub();super.onDetachedFromWindow();}
-    public void cancelScrub(){heatmap.setSeeking(false);if(scrubbing){scrubCancelled=true;scrubbing=false;actions.scrub(false);}}
+    public void cancelScrub(){heatmap.setSeeking(false);if(preview!=null&&preview.precise)finishPrecise(false,scrubOrigin);if(preview!=null)preview.hide();if(scrubbing){scrubCancelled=true;scrubbing=false;actions.scrub(false);}}
+    private void finishPrecise(boolean commit,long position){preview.hide();scrubbing=false;scrubCancelled=true;heatmap.setSeeking(false);actions.seek(commit?position:scrubOrigin);actions.scrub(false);if(scrubPlaying)actions.perform("resume-scrub");}
+    public void navigation(JSONObject nav,Bitmap sheet){preview.data(nav,sheet);if(videoSeek instanceof ChapterSeekBar)((ChapterSeekBar)videoSeek).chapters(nav);}
+    public void resetZoom(){zoom=1;}
+    public boolean cancelPrecise(){if(!preview.precise)return false;finishPrecise(false,scrubOrigin);return true;}
+    public boolean preciseSeek(){if(!isVideo||!preview.available()||!model.optBoolean("prepared"))return false;scrubOrigin=model.optLong("positionMs");scrubPlaying=model.optBoolean("playing");scrubbing=true;scrubCancelled=false;preview.show(scrubOrigin,true);heatmap.setSeeking(true);actions.scrub(true);actions.perform("pause-scrub");return true;}
     private int dp(int value){return Math.round(getResources().getDisplayMetrics().density*value);}
     private LinearLayout column(){LinearLayout value=new LinearLayout(getContext());value.setOrientation(LinearLayout.VERTICAL);return value;}
     private static LinearLayout.LayoutParams linear(int width,int height){return new LinearLayout.LayoutParams(width,height);}
@@ -107,9 +128,9 @@ public final class PlaybackScreen extends FrameLayout {
     }
     private TextView chip(String label,String action){TextView b=text(label,13,WHITE);b.setGravity(Gravity.CENTER);b.setPadding(dp(12),0,dp(12),0);b.setMinWidth(dp(48));b.setMinHeight(dp(48));b.setBackground(ripple(round(0x182f4265,12)));b.setContentDescription(label);b.setFocusable(true);b.setAccessibilityDelegate(new View.AccessibilityDelegate(){@Override public void onInitializeAccessibilityNodeInfo(View host,android.view.accessibility.AccessibilityNodeInfo info){super.onInitializeAccessibilityNodeInfo(host,info);info.setClassName(Button.class.getName());}});b.setOnClickListener(v->actions.perform(action));return b;}
     private void addWeighted(LinearLayout row,View view,int height){row.addView(view,new LinearLayout.LayoutParams(0,dp(height),1));}
-    private SeekBar seek(String tag){SeekBar value=new SeekBar(getContext());value.setTag(tag);value.setMax(10000);value.setContentDescription("再生位置");value.setProgressTintList(ColorStateList.valueOf(ACCENT));value.setThumbTintList(ColorStateList.valueOf(ACCENT));value.setProgressBackgroundTintList(ColorStateList.valueOf(0x554a5b7d));value.setPadding(dp(4),0,dp(4),0);
-        value.setOnTouchListener((v,event)->{if(event.getActionMasked()==MotionEvent.ACTION_DOWN)scrubCancelled=false;else if(event.getActionMasked()==MotionEvent.ACTION_CANCEL){scrubCancelled=true;cancelScrub();}return false;});
-        value.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){public void onStartTrackingTouch(SeekBar b){scrubbing=true;heatmap.setSeeking(isVideo&&b==videoSeek);actions.scrub(true);}public void onStopTrackingTouch(SeekBar b){boolean commit=!scrubCancelled;scrubbing=false;heatmap.setSeeking(false);if(commit)actions.seek(duration*b.getProgress()/10000);actions.scrub(false);}public void onProgressChanged(SeekBar b,int progress,boolean user){if(user){String label=PlaybackPresentation.time(duration*progress/10000)+" / "+PlaybackPresentation.time(duration);videoTime.setText(label);audioTime.setText(label);}}});return value;
+    private SeekBar seek(String tag){SeekBar value=tag.equals("video-seek")?new ChapterSeekBar(getContext()):new SeekBar(getContext());value.setTag(tag);value.setMax(10000);value.setContentDescription("再生位置");value.setProgressTintList(ColorStateList.valueOf(ACCENT));value.setThumbTintList(ColorStateList.valueOf(ACCENT));value.setProgressBackgroundTintList(ColorStateList.valueOf(0x554a5b7d));value.setPadding(dp(4),0,dp(4),0);
+        value.setOnTouchListener((v,event)->{if(event.getActionMasked()==MotionEvent.ACTION_DOWN){scrubCancelled=false;scrubY=event.getY();scrubOrigin=model.optLong("positionMs");scrubPlaying=model.optBoolean("playing");}else if(event.getActionMasked()==MotionEvent.ACTION_MOVE&&isVideo&&scrubbing&&!preview.precise&&scrubY-event.getY()>dp(48)&&preview.available()){preview.show(duration*value.getProgress()/10000,true);actions.perform("pause-scrub");}else if(event.getActionMasked()==MotionEvent.ACTION_CANCEL){scrubCancelled=true;cancelScrub();}return false;});
+        value.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){public void onStartTrackingTouch(SeekBar b){scrubbing=true;heatmap.setSeeking(isVideo&&b==videoSeek);actions.scrub(true);}public void onStopTrackingTouch(SeekBar b){if(preview.precise)return;boolean commit=!scrubCancelled;scrubbing=false;heatmap.setSeeking(false);preview.hide();if(commit)actions.seek(duration*b.getProgress()/10000);actions.scrub(false);}public void onProgressChanged(SeekBar b,int progress,boolean user){if(user){long time=duration*progress/10000;String label=PlaybackPresentation.time(time)+" / "+PlaybackPresentation.time(duration);videoTime.setText(label);audioTime.setText(label);if(isVideo&&scrubbing)preview.show(time,preview.precise);if(!scrubbing)actions.seek(time);}}});return value;
     }
     public void setSafeInsets(int left,int top,int right,int bottom){
         insetLeft=left;insetTop=top;insetRight=right;insetBottom=bottom;
@@ -133,8 +154,9 @@ public final class PlaybackScreen extends FrameLayout {
         JSONObject item=value.optJSONObject("item");String name=item==null?"Mirea":item.optString("title","Mirea");headerTitle.setText(video?name:"再生中");audioTitle.setText(name);
         if(artwork!=image){artwork=image;cover.setImageBitmap(image);}cover.setVisibility(image==null?GONE:VISIBLE);
         duration=value.optLong("durationMs");long position=value.optLong("positionMs");String label=PlaybackPresentation.time(position)+" / "+PlaybackPresentation.time(duration);if(!scrubbing){videoTime.setText(label);audioTime.setText(label);int p=duration>0?(int)Math.max(0,Math.min(10000,position*10000/duration)):0;videoSeek.setProgress(p);audioSeek.setProgress(p);}
+        String caption=value.optString("caption");captions.setText(caption);captions.setTextSize(value.optInt("captionSize",20));captions.setVisibility(video&&!caption.isEmpty()?VISIBLE:GONE);LayoutParams cp=(LayoutParams)captions.getLayoutParams();cp.bottomMargin=insetBottom+dp(chrome?170:36);captions.setLayoutParams(cp);
         for(ImageButton button:new ImageButton[]{videoPlay,audioPlay}){button.setEnabled(prepared);button.setAlpha(prepared?1f:.45f);button.setContentDescription(playing?"一時停止":"再生");button.setImageDrawable(new PlaybackIcon(playing?"pause":"play",button==audioPlay?0xff142039:WHITE));}
-        videoSeek.setEnabled(prepared);audioSeek.setEnabled(prepared);String selected=value.optString("quality","legacy"),qualityLabel=selected.equals("legacy")?"標準":selected+" 固定";quality.setText(qualityLabel);quality.setContentDescription("画質："+qualityLabel);quality.setVisibility(video&&!value.optBoolean("download")?VISIBLE:GONE);speed.setText(String.format(java.util.Locale.ROOT,"%s×",value.optDouble("rate",1)) .replace(".0×","×"));
+        videoSeek.setEnabled(prepared);audioSeek.setEnabled(prepared);videoSeek.setKeyProgressIncrement((int)Math.max(1,50000000/Math.max(1,duration)));audioSeek.setKeyProgressIncrement(videoSeek.getKeyProgressIncrement());String selected=value.optString("quality","legacy"),qualityLabel=selected.equals("legacy")?"標準":selected.equals("auto")?"自動":selected.equals("higher")?"高画質":selected.equals("data")?"省データ":selected+" 固定";quality.setText(qualityLabel);quality.setContentDescription("画質："+qualityLabel+" 現在 "+value.optString("actualQuality"));quality.setVisibility(video&&!value.optBoolean("download")?VISIBLE:GONE);speed.setText(String.format(java.util.Locale.ROOT,"%s×",value.optDouble("rate",1)) .replace(".0×","×"));
         String source=value.optBoolean("download")?"暗号化保存データ":"ストリーミング";audioMeta.setText(source+(busy?" · 読み込み中…":""));String notice=value.optString("notice");audioNote.setText(notice);audioNote.setVisibility(notice.isEmpty()?GONE:VISIBLE);videoNote.setText(notice);videoNote.setVisibility(notice.isEmpty()?GONE:VISIBLE);
         String error=value.optString("error");if(!error.equals(errorText.getText().toString()))errorText.setText(error);errorCard.setVisibility(error.isEmpty()?GONE:VISIBLE);loading.setVisibility(video&&busy&&error.isEmpty()?VISIBLE:GONE);videoPlay.setVisibility(busy?INVISIBLE:VISIBLE);videoTransport.setVisibility(error.isEmpty()&&!value.optBoolean("holdBoost")?VISIBLE:INVISIBLE);
     }

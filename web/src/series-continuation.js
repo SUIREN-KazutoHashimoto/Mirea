@@ -28,7 +28,7 @@ export function createSeriesContinuation({assetId,loadContext,move,isActive=()=>
       if(!target || target.id===assetId){message=targetId?'選択したアセットはシリーズから外されました。':'シリーズの端に到達しました。';return false;}
       // The viewer disposes old progress/analytics/media keys before opening the new asset.
       const allowed=()=>!disposed && revision===epoch && isActive() && (!continuous || enabled);
-      return (await move(target,{startAtBeginning:continuous,autoplay:continuous && autoplay},allowed))!==false;
+      return (await move(target,{startAtBeginning:continuous,autoplay},allowed))!==false;
     }catch(error){if(!disposed && revision===epoch)message=error.message || '次のアセットを開けません。接続を確認してもう一度お試しください。';return false;}
     finally{busy=false;if(!disposed)emit();}
   }

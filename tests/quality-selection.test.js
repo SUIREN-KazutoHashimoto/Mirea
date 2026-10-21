@@ -12,6 +12,9 @@ class Hls {
   attachMedia(){}loadSource(url){this.url=url;}startLoad(){this.startCalls++;}stopLoad(){this.stopCalls++;}destroy(){this.destroyed=true;}
 }
 const ticket={url:'/content',hlsUrl:'/hls/master.m3u8?ticket=first',renditions:[{quality:'720p',width:1280,height:720},{quality:'360p',width:640,height:360}]};
+test('high quality and data saving modes select valid levels and report analytics as auto, never invalid modes',()=>{
+ const reports=[],stream=attachVideoStream(new Video(),{ticket,HlsClass:Hls,absoluteUrl:p=>p,onQuality:q=>reports.push(q)}),hls=Hls.last;hls.emit('manifest');stream.choose('data');assert.equal(hls.autoLevelCapping,0);assert.equal(hls.manual,-1);assert.equal(reports.at(-1).selectedQuality,'auto');stream.choose('higher');assert.equal(hls.manual,1);stream.choose('auto');assert.equal(hls.manual,-1);assert.equal(hls.autoLevelCapping,-1);stream.dispose();
+});
 test('HLS fixed quality disables ABR, persists through renewed manifests and never silently maps a missing level to auto',async()=>{
   const video=new Video(),reports=[],errors=[],choices=[];const stream=attachVideoStream(video,{ticket,HlsClass:Hls,absoluteUrl:p=>p,initialQuality:'720p',renew:async()=>({...ticket,hlsUrl:'/hls/master.m3u8?ticket=second'}),onQuality:q=>reports.push(q),onError:e=>errors.push(e),onChoose:q=>choices.push(q)}),hls=Hls.last;
   assert.equal(hls.config.autoStartLoad,false);assert.equal(hls.startCalls,0);hls.emit('manifest');assert.equal(hls.manual,1);assert.equal(hls.autoLevelEnabled,false);
