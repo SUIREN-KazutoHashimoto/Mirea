@@ -48,6 +48,7 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
             public void perform(String action){act(action);}
             public void seek(long position){if(service()!=null)service().seek(position);}
             public void scrub(boolean value){scrubbing=value;chrome.interact(SystemClock.elapsedRealtime());render();}
+            public void boost(boolean value){if(service()!=null){if(value)service().startBoost();else service().endBoost();}chrome.interact(SystemClock.elapsedRealtime());render();}
         });root.addView(screen,new FrameLayout.LayoutParams(-1,-1));
         ViewCompat.setOnApplyWindowInsetsListener(root,(v,insets)->{
             Insets safe=insets.getInsetsIgnoringVisibility(WindowInsetsCompat.Type.systemBars()|WindowInsetsCompat.Type.displayCutout()),gestures=insets.getInsets(WindowInsetsCompat.Type.systemGestures());
@@ -57,7 +58,7 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
         ContextCompat.registerReceiver(this,changed,new IntentFilter(PlaybackService.EVENT),ContextCompat.RECEIVER_NOT_EXPORTED);handler.post(tick);
     }
     private void act(String action){
-        long now=SystemClock.elapsedRealtime();if(action.equals("toggle-chrome")){chrome.toggle(now);render();return;}chrome.interact(now);PlaybackService s=service();
+        screen.cancelHold();if(service()!=null)service().endBoost();long now=SystemClock.elapsedRealtime();if(action.equals("toggle-chrome")){chrome.toggle(now);render();return;}chrome.interact(now);PlaybackService s=service();
         switch(action){
             case "close":closePlayback();return;
             case "rotate":{
@@ -123,11 +124,11 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
     private void enterPip(){PlaybackService s=service();if(s==null||!s.video()||!canPip()){Toast.makeText(this,"この端末ではPiPを利用できません。",Toast.LENGTH_SHORT).show();return;}try{enterPictureInPictureMode(params(false));}catch(IllegalStateException|IllegalArgumentException e){Toast.makeText(this,"PiPに切り替えられません。",Toast.LENGTH_SHORT).show();}}
     @Override public void onUserLeaveHint(){super.onUserLeaveHint();PlaybackService s=service();if(Build.VERSION.SDK_INT<31&&!backgroundRequested&&s!=null&&s.video()&&s.playing())enterPip();}
     @Override public void onPictureInPictureModeChanged(boolean value,Configuration config){super.onPictureInPictureModeChanged(value,config);if(screen!=null)screen.setPip(value);chrome.interact(SystemClock.elapsedRealtime());if(service()!=null)service().visibility(!value&&visible,value);if(!value)applySystemBars();render();}
-    @Override public void onConfigurationChanged(Configuration config){super.onConfigurationChanged(config);chrome.interact(SystemClock.elapsedRealtime());fitVideo();render();ViewCompat.requestApplyInsets(root);}
-    @Override public void onWindowFocusChanged(boolean focus){super.onWindowFocusChanged(focus);if(focus&&root!=null)applySystemBars();}
+    @Override public void onConfigurationChanged(Configuration config){if(screen!=null)screen.cancelHold();super.onConfigurationChanged(config);chrome.interact(SystemClock.elapsedRealtime());fitVideo();render();ViewCompat.requestApplyInsets(root);}
+    @Override public void onWindowFocusChanged(boolean focus){super.onWindowFocusChanged(focus);if(!focus&&screen!=null)screen.cancelHold();if(focus&&root!=null)applySystemBars();}
     @Override public void onSaveInstanceState(Bundle out){out.putInt("orientationMode",orientation.manual());super.onSaveInstanceState(out);}
     @Override public void onResume(){super.onResume();visible=true;backgroundRequested=false;chrome.interact(SystemClock.elapsedRealtime());if(service()!=null)service().visibility(true,isInPictureInPictureMode());render();}
-    @Override public void onPause(){visible=false;if(service()!=null)service().visibility(false,isInPictureInPictureMode());super.onPause();}
+    @Override public void onPause(){if(screen!=null)screen.cancelHold();visible=false;if(service()!=null)service().visibility(false,isInPictureInPictureMode());super.onPause();}
     private void closePlayback(){preserve=false;stopService(new Intent(this,PlaybackService.class));finish();}
     @Override public void onDestroy(){destroyed=true;handler.removeCallbacks(tick);for(Dialog d:new ArrayList<>(dialogs))d.dismiss();try{unregisterReceiver(changed);}catch(IllegalArgumentException ignored){}if(isFinishing()&&!preserve)stopService(new Intent(this,PlaybackService.class));super.onDestroy();}
     private void attach(Surface surface){PlaybackService s=service();if(s==null)return;if(surfaceService!=null&&boundSurface!=null&&surfaceService!=s)surfaceService.clearSurface(boundSurface);surfaceService=s;boundSurface=surface;s.setSurface(surface);}

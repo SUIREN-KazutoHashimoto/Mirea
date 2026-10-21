@@ -18,6 +18,26 @@ import static org.junit.Assert.*;
 @Config(sdk=35,qualifiers="w800dp-h360dp-land-mdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 public class PlaybackActivityTest {
+    // Robolectric does not implement the native PlaybackParams accessor. Supply
+    // that narrow API contract, retaining its real MediaPlayer state machine.
+    @org.robolectric.annotation.Implements(android.media.MediaPlayer.class) public static class RatePlayer extends ShadowMediaPlayer {
+        private android.media.PlaybackParams params=new android.media.PlaybackParams().allowDefaults().setSpeed(1);
+        @org.robolectric.annotation.Implementation protected android.media.PlaybackParams getPlaybackParams(){return params;}
+        @org.robolectric.annotation.Implementation protected void setPlaybackParams(android.media.PlaybackParams value){params=value;}
+    }
+    @Test @Config(shadows=RatePlayer.class) public void temporaryBoostRestoresSelectedRateOnPauseBackgroundAndManualSpeedWithoutRestartingPausedMedia()throws Exception{
+        ServiceController<PlaybackService> controller=Robolectric.buildService(PlaybackService.class).create();PlaybackService service=controller.get();
+        try{
+            ShadowMediaPlayer.addMediaInfo(DataSource.toDataSource("boost-test.mp4"),new ShadowMediaPlayer.MediaInfo(120000,0));MediaPlayer player=new MediaPlayer();player.setDataSource("boost-test.mp4");player.prepare();player.start();ReflectionHelpers.setField(service,"player",player);ReflectionHelpers.setField(service,"prepared",true);ReflectionHelpers.setField(service,"foreground",true);ReflectionHelpers.setField(service,"item",new JSONObject().put("kind","video"));
+            // ShadowMediaPlayer has no initial PlaybackParams; real prepared
+            // MediaPlayer supplies defaults. Seed the documented default here.
+            player.setPlaybackParams(new android.media.PlaybackParams().allowDefaults().setSpeed(1));
+            service.speed(1.25f);assertTrue(service.startBoost());assertEquals(2f,player.getPlaybackParams().getSpeed(),.001f);assertEquals(1.25,service.status().getDouble("rate"),.001);service.endBoost();assertEquals(1.25f,player.getPlaybackParams().getSpeed(),.001f);
+            assertTrue(service.startBoost());service.speed(1.5f);service.endBoost();assertEquals(1.5f,player.getPlaybackParams().getSpeed(),.001f);
+            assertTrue(service.startBoost());service.pause();assertFalse(service.playing());assertFalse(service.startBoost());assertEquals(1.5f,player.getPlaybackParams().getSpeed(),.001f);
+            player.start();assertTrue(service.startBoost());service.visibility(false,false);assertEquals(1.5f,player.getPlaybackParams().getSpeed(),.001f);assertTrue(service.playing());assertFalse(service.startBoost());
+        }finally{controller.destroy();service.stopped.get(5,TimeUnit.SECONDS);}
+    }
     @Test public void orientationButtonAndConfigurationChangesKeepSamePlayerPositionAndPlayback()throws Exception{
         ServiceController<PlaybackService> serviceController=Robolectric.buildService(PlaybackService.class).create();PlaybackService service=serviceController.get();
         try{

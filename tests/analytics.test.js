@@ -116,6 +116,36 @@ test('disabled collection refuses ingest but keeps self history API available',a
   assert.equal((await c.req('GET','/analytics/me/events',c.viewer)).statusCode,200);
 });
 
+test('viewer replay graph enforces current ACL, per-bin anonymity, coarsening, fixed delay and bounded data without identities',async t=>{
+  const c=await setup(t),path=`/items/${c.video}/replay-heatmap`,yesterday=Date.now()-86400000;
+  c.db.prepare('INSERT INTO video_assets VALUES(?,?,1)').run(c.video,JSON.stringify({duration:60}));
+  assert.equal((await c.req('GET',path)).statusCode,401);
+  assert.equal((await c.req('GET',path,c.other)).statusCode,404);
+  assert.equal((await c.req('GET',`/items/${c.pdf}/replay-heatmap`,c.viewer)).statusCode,404);
+  assert.equal((await c.req('GET',path+'?userId=other',c.viewer)).statusCode,400);
+  const viewers=[];
+  for(let n=0;n<5;n++){
+    const user=n?await c.register('heat'+n):c.viewer;viewers.push(user);if(n)await c.member(user);
+    const view=c.view();assert.equal((await c.send(view,[c.start(),c.interval(2,{fromMs:0,toMs:1000})],user)).statusCode,200);
+    c.db.prepare('UPDATE analytics_video_bins SET media_ms=10000,watch_ms=5000 WHERE view_id=?').run(view.id);
+    c.db.prepare('UPDATE analytics_views SET last_received_at=? WHERE id=?').run(yesterday,view.id);
+    if(n===0)c.db.prepare('INSERT INTO analytics_video_bins VALUES(?,20000,1000000,1000000)').run(view.id);
+    const response=await c.req('GET',path,c.viewer);assert.equal(response.json().available,true);assert.equal(response.json().scope,n===4?'anonymous':'self');
+    if(n<4)assert.equal((await c.req('GET',path,c.owner)).json().available,false,'owner does not inherit another viewer’s personal fallback');
+    assert.equal(response.headers['cache-control'],'no-store');
+  }
+  let response=await c.req('GET',path,c.viewer),data=response.json();assert.equal(data.scope,'anonymous');assert.equal(data.binSizeMs,10000);assert.deepEqual(data.points,[1,null,null,null,null,null]);
+  for(const forbidden of [...viewers.map(v=>v.user.id),'userId','watchMs','mediaMs','uniqueViewers','viewId','email'])assert.ok(!response.body.includes(forbidden),forbidden);
+  c.db.prepare('UPDATE analytics_views SET last_received_at=? WHERE user_id=?').run(Date.now(),c.viewer.user.id);
+  assert.equal((await c.req('GET',path,c.viewer)).json().scope,'self','today excluded from anonymous, including old sessions still receiving events');
+  const newcomer=await c.register('newcomer');await c.member(newcomer);assert.equal((await c.req('GET',path,newcomer)).json().available,false,'no personal fallback can reveal anybody else’s history');
+  c.db.prepare('UPDATE analytics_views SET last_received_at=?').run(yesterday);
+  c.db.prepare('UPDATE video_assets SET metadata_json=?').run(JSON.stringify({duration:86400}));
+  assert.ok((await c.req('GET',path,c.viewer)).json().points.length<=200);
+  await c.req('DELETE',`/shelves/${c.shelf}/members/${c.viewer.user.id}`,c.owner);
+  assert.equal((await c.req('GET',path,c.viewer)).statusCode,404,'historical viewer loses graph access too');
+});
+
 test('actual recorder batches with fractional clock, seek, page changes and lifecycle pass server validation',async t=>{
   const c=await setup(t);
   for(const asset of [c.video,c.images]){

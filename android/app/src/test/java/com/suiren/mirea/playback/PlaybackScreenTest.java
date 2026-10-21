@@ -20,11 +20,27 @@ import static org.junit.Assert.*;
 public class PlaybackScreenTest {
     private final ArrayList<String> actions=new ArrayList<>();
     private PlaybackScreen create(Activity activity,boolean video)throws Exception{
-        activity.setTheme(com.suiren.mirea.R.style.MireaPlaybackTheme);PlaybackScreen screen=new PlaybackScreen(activity,new PlaybackScreen.Actions(){public void perform(String action){actions.add(action);}public void seek(long ms){actions.add("seek:"+ms);}public void scrub(boolean value){}});
+        activity.setTheme(com.suiren.mirea.R.style.MireaPlaybackTheme);PlaybackScreen screen=new PlaybackScreen(activity,new PlaybackScreen.Actions(){public void perform(String action){actions.add(action);}public void seek(long ms){actions.add("seek:"+ms);}public void scrub(boolean value){}public void boost(boolean value){actions.add("boost:"+value);}});
         activity.setContentView(screen);screen.setSafeInsets(16,24,16,24);screen.bind(new JSONObject().put("video",video).put("item",new JSONObject().put("title",video?"A quiet afternoon":"ネイビーブルー / A quiet afternoon")).put("prepared",true).put("playing",true).put("positionMs",65000).put("durationMs",203000).put("rate",1).put("quality","720p"),null);return screen;
     }
     private void layout(PlaybackScreen screen,int width,int height){for(int n=0;n<4;n++){screen.measure(View.MeasureSpec.makeMeasureSpec(width,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(height,View.MeasureSpec.EXACTLY));screen.layout(0,0,width,height);org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();}assertEquals("actual rendering width",width,screen.getWidth());assertEquals("actual rendering height",height,screen.getHeight());}
     private Rect bounds(View view,View root){Rect r=new Rect(0,0,view.getWidth(),view.getHeight());((ViewGroup)root).offsetDescendantRectToMyCoords(view,r);return r;}
+    private void touch(PlaybackScreen screen,int action,float x,float y){MotionEvent event=MotionEvent.obtain(0,android.os.SystemClock.uptimeMillis(),action,x,y,0);screen.dispatchTouchEvent(event);event.recycle();}
+    @Test @Config(qualifiers="w800dp-h360dp-land-mdpi") public void holdUsesOnlyEmptyVideoSurfaceAndRestoresOnReleaseCancelAndDetach()throws Exception{
+        try(ActivityController<Activity> controller=Robolectric.buildActivity(Activity.class).setup()){
+            PlaybackScreen screen=create(controller.get(),true);layout(screen,800,360);screen.setChromeVisible(false);layout(screen,800,360);
+            touch(screen,MotionEvent.ACTION_DOWN,100,150);Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(ViewConfiguration.getLongPressTimeout()+1));assertTrue(actions.contains("boost:true"));
+            touch(screen,MotionEvent.ACTION_UP,100,150);assertEquals("boost:false",actions.get(actions.size()-1));assertFalse(actions.contains("toggle-chrome"));actions.clear();
+            touch(screen,MotionEvent.ACTION_DOWN,100,150);touch(screen,MotionEvent.ACTION_MOVE,200,150);Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(1));touch(screen,MotionEvent.ACTION_UP,200,150);assertFalse(actions.contains("boost:true"));actions.clear();
+            screen.setChromeVisible(true);layout(screen,800,360);View button=screen.findViewWithTag("action-play");Rect b=bounds(button,screen);touch(screen,MotionEvent.ACTION_DOWN,b.centerX(),b.centerY());Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(1));touch(screen,MotionEvent.ACTION_UP,b.centerX(),b.centerY());assertFalse(actions.contains("boost:true"));
+        }
+    }
+    @Test @Config(qualifiers="w800dp-h360dp-land-mdpi") public void replayGraphAndBadgeFitAboveTimelineWithoutShrinkingVideo()throws Exception{
+        try(ActivityController<Activity> controller=Robolectric.buildActivity(Activity.class).setup()){
+            PlaybackScreen screen=create(controller.get(),true);JSONObject value=new JSONObject().put("video",true).put("prepared",true).put("playing",true).put("holdBoost",true).put("durationMs",60000).put("heatmap",new JSONObject().put("scope","anonymous").put("available",true).put("durationMs",60000).put("binSizeMs",10000).put("points",new org.json.JSONArray("[0.25,0.5,null,1,0.5,0.25]")));screen.bind(value,null);layout(screen,800,360);View graph=screen.findViewWithTag("replay-heatmap"),seek=screen.findViewWithTag("video-seek");assertEquals(View.VISIBLE,graph.getVisibility());assertTrue(bounds(graph,screen).bottom<=bounds(seek,screen).top);assertEquals(View.VISIBLE,screen.findViewWithTag("hold-boost").getVisibility());assertTrue(graph.getContentDescription().toString().contains("0:30"));capture(screen,"video-heatmap");
+            screen.bind(new JSONObject().put("video",true),null);assertEquals(View.GONE,graph.getVisibility());
+        }
+    }
     private void capture(PlaybackScreen screen,String name)throws Exception{Bitmap bitmap=Bitmap.createBitmap(screen.getWidth(),screen.getHeight(),Bitmap.Config.ARGB_8888);Canvas canvas=new Canvas(bitmap);canvas.drawColor(Color.rgb(9,15,28));screen.draw(canvas);File folder=new File("build/reports/playback-ui");assertTrue(folder.isDirectory()||folder.mkdirs());try(FileOutputStream out=new FileOutputStream(new File(folder,name+".png"))){assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG,100,out));}bitmap.recycle();}
     @Test @Config(qualifiers="w800dp-h360dp-land-mdpi") public void videoHasCompactNonOverlappingOverlayRotateButtonAndPipHidesEveryControl()throws Exception{
         try(ActivityController<Activity> controller=Robolectric.buildActivity(Activity.class).setup()){

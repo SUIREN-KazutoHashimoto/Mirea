@@ -11,7 +11,13 @@ import org.json.JSONObject;
 
 /** Responsive native presentation only. Playback, grants, progress and analytics stay in the service. */
 public final class PlaybackScreen extends FrameLayout {
-    public interface Actions {void perform(String action);void seek(long position);void scrub(boolean value);}
+    public interface Actions {void perform(String action);void seek(long position);void scrub(boolean value);default void boost(boolean value){}}
+    private final android.os.Handler holdHandler=new android.os.Handler(android.os.Looper.getMainLooper());
+    private boolean holdPending,holdTriggered,holdConsumed;
+    private float holdX,holdY;
+    private final Runnable holdStart=this::beginHold;
+    private final ReplayHeatmapView heatmap;
+    private final TextView boostBadge;
     private static final int WHITE=0xfff5f7ff,MUTED=0xffa6b0cb,ACCENT=0xffb3c2ff;
     private final Actions actions;
     private final LinearLayout header,videoFooter,videoTransport,audioDetails,audioTransport;
@@ -67,6 +73,7 @@ public final class PlaybackScreen extends FrameLayout {
 
         videoFooter=column();videoFooter.setTag("video-footer");videoFooter.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,new int[]{0x0007101a,0xe607101a}));
         videoNote=text("",12,ACCENT);videoFooter.addView(videoNote,linear(-1,-2));
+        heatmap=new ReplayHeatmapView(context);videoFooter.addView(heatmap,linear(-1,dp(36)));
         videoSeek=seek("video-seek");videoFooter.addView(videoSeek,linear(-1,dp(44)));
         LinearLayout videoBottom=new LinearLayout(context);videoBottom.setGravity(Gravity.CENTER_VERTICAL);videoTime=text("0:00 / 0:00",13,WHITE);videoTime.setTypeface(Typeface.MONOSPACE);videoTime.setMaxLines(1);videoTime.setEllipsize(TextUtils.TruncateAt.END);videoBottom.addView(videoTime,new LinearLayout.LayoutParams(0,-2,1));
         quality=chip("標準","quality");quality.setTag("player-quality");videoBottom.addView(quality,linear(-2,dp(48)));
@@ -74,8 +81,20 @@ public final class PlaybackScreen extends FrameLayout {
 
         errorCard=column();errorCard.setGravity(Gravity.CENTER);errorCard.setPadding(dp(24),dp(20),dp(24),dp(20));errorCard.setBackground(round(0xee152038,18));errorCard.setTag("player-error");errorCard.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         errorText=text("",14,WHITE);errorText.setMaxWidth(dp(440));errorText.setGravity(Gravity.CENTER);errorCard.addView(errorText,linear(-2,-2));TextView retry=chip("再接続する","reconnect");LinearLayout.LayoutParams retryParams=linear(-2,dp(48));retryParams.topMargin=dp(12);errorCard.addView(retry,retryParams);LayoutParams errorParams=new LayoutParams(-2,-2,Gravity.CENTER);errorParams.setMargins(dp(24),dp(72),dp(24),dp(120));addView(errorCard,errorParams);
+        boostBadge=text("▶▶ 2× 早送り",14,WHITE);boostBadge.setTag("hold-boost");boostBadge.setGravity(Gravity.CENTER);boostBadge.setBackground(round(0xdd152038,24));boostBadge.setPadding(dp(18),dp(8),dp(18),dp(8));boostBadge.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);LayoutParams badgeParams=new LayoutParams(-2,-2,Gravity.TOP|Gravity.CENTER_HORIZONTAL);badgeParams.topMargin=dp(84);addView(boostBadge,badgeParams);boostBadge.setVisibility(GONE);
         setSafeInsets(0,0,0,0);bind(new JSONObject(),null);setVideo(true);
     }
+    private void beginHold(){if(holdPending){holdPending=false;holdTriggered=true;holdConsumed=true;setPressed(false);actions.boost(true);}}
+    public void cancelHold(){holdHandler.removeCallbacks(holdStart);holdPending=false;if(holdTriggered){holdTriggered=false;actions.boost(false);}}
+    @Override public boolean onTouchEvent(MotionEvent event){
+        int action=event.getActionMasked();
+        if(action==MotionEvent.ACTION_DOWN){cancelHold();holdConsumed=false;holdX=event.getX();holdY=event.getY();if(isVideo&&model.optBoolean("playing")&&!model.optBoolean("buffering")){holdPending=true;holdHandler.postDelayed(holdStart,ViewConfiguration.getLongPressTimeout());}}
+        else if(action==MotionEvent.ACTION_MOVE){int slop=ViewConfiguration.get(getContext()).getScaledTouchSlop();if(Math.hypot(event.getX()-holdX,event.getY()-holdY)>slop){holdConsumed=true;cancelHold();}}
+        else if(action==MotionEvent.ACTION_POINTER_DOWN){holdConsumed=true;cancelHold();}
+        else if(action==MotionEvent.ACTION_UP||action==MotionEvent.ACTION_CANCEL){boolean consumed=holdConsumed;cancelHold();if(consumed||action==MotionEvent.ACTION_CANCEL){setPressed(false);cancelPendingInputEvents();return true;}}
+        return super.onTouchEvent(event);
+    }
+    @Override protected void onDetachedFromWindow(){cancelHold();super.onDetachedFromWindow();}
     private int dp(int value){return Math.round(getResources().getDisplayMetrics().density*value);}
     private LinearLayout column(){LinearLayout value=new LinearLayout(getContext());value.setOrientation(LinearLayout.VERTICAL);return value;}
     private static LinearLayout.LayoutParams linear(int width,int height){return new LinearLayout.LayoutParams(width,height);}
@@ -106,13 +125,14 @@ public final class PlaybackScreen extends FrameLayout {
     private void updateVisibility(){header.setVisibility(!isVideo||chrome?VISIBLE:GONE);center.setVisibility(isVideo&&chrome?VISIBLE:GONE);videoFooter.setVisibility(isVideo&&chrome?VISIBLE:GONE);}
     public void bind(JSONObject value,Bitmap image){
         model=value;boolean video=value.optBoolean("video"),prepared=value.optBoolean("prepared"),playing=value.optBoolean("playing"),busy=value.optBoolean("buffering");setVideo(video);
+        if(!video||!playing||busy||!value.optString("error").isEmpty())cancelHold();heatmap.bind(video?value.optJSONObject("heatmap"):null);boostBadge.setVisibility(video&&value.optBoolean("holdBoost")?VISIBLE:GONE);
         JSONObject item=value.optJSONObject("item");String name=item==null?"Mirea":item.optString("title","Mirea");headerTitle.setText(video?name:"再生中");audioTitle.setText(name);
         if(artwork!=image){artwork=image;cover.setImageBitmap(image);}cover.setVisibility(image==null?GONE:VISIBLE);
         duration=value.optLong("durationMs");long position=value.optLong("positionMs");String label=PlaybackPresentation.time(position)+" / "+PlaybackPresentation.time(duration);if(!scrubbing){videoTime.setText(label);audioTime.setText(label);int p=duration>0?(int)Math.max(0,Math.min(10000,position*10000/duration)):0;videoSeek.setProgress(p);audioSeek.setProgress(p);}
         for(ImageButton button:new ImageButton[]{videoPlay,audioPlay}){button.setEnabled(prepared);button.setAlpha(prepared?1f:.45f);button.setContentDescription(playing?"一時停止":"再生");button.setImageDrawable(new PlaybackIcon(playing?"pause":"play",button==audioPlay?0xff142039:WHITE));}
         videoSeek.setEnabled(prepared);audioSeek.setEnabled(prepared);String selected=value.optString("quality","legacy"),qualityLabel=selected.equals("legacy")?"標準":selected+" 固定";quality.setText(qualityLabel);quality.setContentDescription("画質："+qualityLabel);quality.setVisibility(video&&!value.optBoolean("download")?VISIBLE:GONE);speed.setText(String.format(java.util.Locale.ROOT,"%s×",value.optDouble("rate",1)) .replace(".0×","×"));
         String source=value.optBoolean("download")?"暗号化保存データ":"ストリーミング";audioMeta.setText(source+(busy?" · 読み込み中…":""));String notice=value.optString("notice");audioNote.setText(notice);audioNote.setVisibility(notice.isEmpty()?GONE:VISIBLE);videoNote.setText(notice);videoNote.setVisibility(notice.isEmpty()?GONE:VISIBLE);
-        String error=value.optString("error");if(!error.equals(errorText.getText().toString()))errorText.setText(error);errorCard.setVisibility(error.isEmpty()?GONE:VISIBLE);loading.setVisibility(video&&busy&&error.isEmpty()?VISIBLE:GONE);videoPlay.setVisibility(busy?INVISIBLE:VISIBLE);videoTransport.setVisibility(error.isEmpty()?VISIBLE:INVISIBLE);
+        String error=value.optString("error");if(!error.equals(errorText.getText().toString()))errorText.setText(error);errorCard.setVisibility(error.isEmpty()?GONE:VISIBLE);loading.setVisibility(video&&busy&&error.isEmpty()?VISIBLE:GONE);videoPlay.setVisibility(busy?INVISIBLE:VISIBLE);videoTransport.setVisibility(error.isEmpty()&&!value.optBoolean("holdBoost")?VISIBLE:INVISIBLE);
     }
     @Override protected void onSizeChanged(int w,int h,int oldw,int oldh){super.onSizeChanged(w,h,oldw,oldh);speed.setVisibility(w>=dp(480)&&getResources().getConfiguration().fontScale<1.5f?VISIBLE:GONE);post(this::layoutAudio);}
     @Override protected void onMeasure(int widthSpec,int heightSpec){super.onMeasure(widthSpec,heightSpec);if(isVideo&&chrome){int height=Math.max(0,getMeasuredHeight()-header.getMeasuredHeight()-videoFooter.getMeasuredHeight());center.measure(MeasureSpec.makeMeasureSpec(getMeasuredWidth(),MeasureSpec.EXACTLY),MeasureSpec.makeMeasureSpec(height,MeasureSpec.EXACTLY));}}
