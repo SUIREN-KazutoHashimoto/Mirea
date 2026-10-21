@@ -45,7 +45,7 @@ export function createViewerScreen({ title, kind, onClose, doc = document }) {
     if(minimized)return;
     if (event.key === 'Tab' && node.contains(doc.activeElement)) node.showChrome();
     if (event.key.toLowerCase() === 'i' && !['INPUT','SELECT','TEXTAREA'].includes(event.target.tagName)) { event.preventDefault(); toggle.click(); }
-    if (event.key === 'Escape' && !doc.fullscreenElement && !doc.querySelector('dialog[open]')) { event.preventDefault(); node.close(); }
+    if (event.key === 'Escape' && !doc.fullscreenElement && !doc.querySelector('dialog[open]')) { event.preventDefault(); node.requestReturn(); }
   };
   node.close = () => {
     if (closed) return; closed = true; node.open = false;
@@ -60,7 +60,8 @@ export function createViewerScreen({ title, kind, onClose, doc = document }) {
     node.dispatchEvent(new Event('close'));
     if (!doc.querySelector('.viewer-screen') && previousFocus?.isConnected) previousFocus.focus?.({ preventScroll: true });
   };
-  node.querySelector('.viewer-back').onclick = () => node.close(); node.querySelector('.viewer-fullscreen').onclick = fullscreen;
+  node.requestReturn=()=>{if(['audio','video'].includes(kind)&&node.onReturn)node.onReturn();else node.close();};
+  node.querySelector('.viewer-back').onclick = () => node.requestReturn(); node.querySelector('.viewer-fullscreen').onclick = fullscreen;
   doc.addEventListener('keydown', keydown); doc.body.append(node); if (app) app.inert = true; doc.body.style.overflow = 'hidden'; node.focus();
   return node;
 }

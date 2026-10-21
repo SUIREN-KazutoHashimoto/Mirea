@@ -70,7 +70,7 @@ public final class PlaybackScreen extends FrameLayout {
         TextView background=chip("バックグラウンドで再生","background");background.setCompoundDrawablePadding(dp(9));PlaybackIcon headphones=new PlaybackIcon("background",ACCENT);headphones.setBounds(0,0,dp(19),dp(19));background.setCompoundDrawables(headphones,null,null,null);background.setTag("audio-background");audioDetails.addView(background,linear(-1,dp(48)));
 
         header=new LinearLayout(context);header.setGravity(Gravity.CENTER_VERTICAL);header.setTag("player-header");
-        header.addView(icon("close","再生を終了して戻る","close",48),linear(dp(48),dp(48)));
+        header.addView(icon("close","ライブラリへ戻る（再生を継続）","library",48),linear(dp(48),dp(48)));
         headerTitle=text("Mirea",16,WHITE);headerTitle.setMaxLines(1);headerTitle.setEllipsize(TextUtils.TruncateAt.END);header.addView(headerTitle,new LinearLayout.LayoutParams(0,-2,1));
         rotate=icon("rotate","縦／横画面を切り替え","rotate",48);rotate.setTag("player-rotate");header.addView(rotate,linear(dp(48),dp(48)));
         ImageButton more=icon("more","再生オプション","options",48);more.setTag("player-options");header.addView(more,linear(dp(48),dp(48)));addView(header,new LayoutParams(-1,dp(72),Gravity.TOP));

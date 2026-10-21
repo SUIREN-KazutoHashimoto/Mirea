@@ -39,7 +39,7 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
     private PlaybackService service(){return PlaybackService.current;}
     @Override public void onCreate(Bundle saved){
         super.onCreate(saved);createdAt=SystemClock.elapsedRealtime();orientation=new PlaybackPresentation.Orientation(saved==null?0:saved.getInt("orientationMode"));
-        getOnBackPressedDispatcher().addCallback(this,new OnBackPressedCallback(true){public void handleOnBackPressed(){if(screen==null||!screen.cancelPrecise())closePlayback();}});
+        getOnBackPressedDispatcher().addCallback(this,new OnBackPressedCallback(true){public void handleOnBackPressed(){if(screen==null||!screen.cancelPrecise())returnToLibrary();}});
         setVolumeControlStream(android.media.AudioManager.STREAM_MUSIC);
         WindowCompat.setDecorFitsSystemWindows(getWindow(),false);getWindow().setStatusBarColor(Color.TRANSPARENT);getWindow().setNavigationBarColor(Color.TRANSPARENT);
         WindowManager.LayoutParams attributes=getWindow().getAttributes();attributes.layoutInDisplayCutoutMode=Build.VERSION.SDK_INT>=30?WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS:WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;getWindow().setAttributes(attributes);
@@ -80,8 +80,8 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
             case "resume-scrub":if(s!=null)s.play();break;
             case "zoom-reset":screen.resetZoom();zoom=1;panX=panY=0;applyZoom();break;
             case "pip":enterPip();break;
-            case "background":backgroundRequested=true;preserve=true;configurePip(false);moveTaskToBack(true);break;
-            case "library":preserve=true;configurePip(false);finish();return;
+            case "background":returnToLibrary();return;
+            case "library":returnToLibrary();return;
             case "play":if(s!=null){if(s.playing())s.pause();else s.play();}break;
             case "rewind":if(s!=null)s.seek(s.position()-10000);break;
             case "forward":if(s!=null)s.seek(s.position()+10000);break;
@@ -108,7 +108,7 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
     private void speeds(){PlaybackService s=service();float[] rates={.25f,.5f,.75f,1,1.25f,1.5f,1.75f,2};double rate=s==null?1:s.status().optDouble("rate",1);int selected=3;for(int i=0;i<rates.length;i++)if(Math.abs(rates[i]-rate)<.01)selected=i;
         show(new AlertDialog.Builder(this).setTitle("再生速度").setSingleChoiceItems(new String[]{"0.25×","0.5×","0.75×","1×（標準）","1.25×","1.5×","1.75×","2×"},selected,(d,index)->{if(service()!=null)service().speed(rates[index]);d.dismiss();}).setNegativeButton("閉じる",null).create());
     }
-    private void chapters(){PlaybackService s=service();JSONArray list=s==null||s.navigation==null?null:s.navigation.optJSONArray("chapters");if(list==null||list.length()==0){Toast.makeText(this,"チャプターがありません。ライブラリの「チャプター・字幕」から追加できます。",Toast.LENGTH_LONG).show();return;}String[] names=new String[list.length()];for(int n=0;n<names.length;n++){JSONObject c=list.optJSONObject(n);names[n]=PlaybackPresentation.time(c.optLong("startMs"))+" "+c.optString("title");}show(new AlertDialog.Builder(this).setTitle("チャプター").setItems(names,(d,n)->{if(service()!=null)service().seek(list.optJSONObject(n).optLong("startMs"));}).setNegativeButton("閉じる",null).create());}
+    private void chapters(){PlaybackService s=service();JSONArray list=s==null||s.navigation==null?null:s.navigation.optJSONArray("chapters");if(list==null||list.length()==0){Toast.makeText(this,"チャプターがありません。アセットの詳細にある「チャプター・字幕を編集」から追加できます。",Toast.LENGTH_LONG).show();return;}String[] names=new String[list.length()];for(int n=0;n<names.length;n++){JSONObject c=list.optJSONObject(n);names[n]=PlaybackPresentation.time(c.optLong("startMs"))+" "+c.optString("title");}show(new AlertDialog.Builder(this).setTitle("チャプター").setItems(names,(d,n)->{if(service()!=null)service().seek(list.optJSONObject(n).optLong("startMs"));}).setNegativeButton("閉じる",null).create());}
     private void captions(){PlaybackService s=service();JSONArray list=s==null||s.navigation==null?null:s.navigation.optJSONArray("captions");ArrayList<String> names=new ArrayList<>(),ids=new ArrayList<>();names.add("字幕なし");ids.add("off");if(list!=null)for(int n=0;n<list.length();n++){JSONObject c=list.optJSONObject(n);if(c!=null){names.add(c.optString("label"));ids.add(c.optString("id"));}}show(new AlertDialog.Builder(this).setTitle("字幕（準備中は後で再表示）").setItems(names.toArray(new String[0]),(d,n)->{if(service()!=null)service().captions(ids.get(n));}).setNegativeButton("閉じる",null).create());}
     private void captionSizes(){show(new AlertDialog.Builder(this).setTitle("字幕の文字サイズ").setItems(new String[]{"小","標準","大","特大"},(d,n)->{if(service()!=null)service().captionSize(new int[]{16,20,26,32}[n]);}).setNegativeButton("閉じる",null).create());}
     private void networkQualities(){show(new AlertDialog.Builder(this).setTitle("どの回線の初期画質を変更しますか？").setItems(new String[]{"Wi-Fi","モバイル通信"},(d,n)->show(new AlertDialog.Builder(this).setTitle(n==0?"Wi-Fiの画質":"モバイル通信の画質").setItems(new String[]{"自動","高画質優先","データセーバー"},(dialog,i)->{if(service()!=null)service().networkPreference(n==0?"wifi":"mobile",new String[]{"auto","higher","data"}[i]);}).setNegativeButton("閉じる",null).create())).setNegativeButton("閉じる",null).create());}
@@ -146,6 +146,16 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
     @Override public void onSaveInstanceState(Bundle out){out.putInt("orientationMode",orientation.manual());super.onSaveInstanceState(out);}
     @Override public void onResume(){super.onResume();visible=true;backgroundRequested=false;chrome.interact(SystemClock.elapsedRealtime());if(service()!=null)service().visibility(true,isInPictureInPictureMode());render();}
     @Override public void onPause(){if(screen!=null){screen.cancelHold();screen.cancelScrub();}visible=false;if(service()!=null)service().visibility(false,isInPictureInPictureMode());super.onPause();}
+    private void returnToLibrary(){
+        PlaybackService s=service();preserve=true;backgroundRequested=true;configurePip(false);
+        if(s!=null&&s.video()&&canPip()){
+            try{if(isInPictureInPictureMode()||enterPictureInPictureMode(params(false))){preserve=false;showLibrary();return;}}catch(IllegalArgumentException|IllegalStateException ignored){}
+            Toast.makeText(this,"PiPを利用できないため、バックグラウンドで再生を続けます。",Toast.LENGTH_LONG).show();
+        }
+        showLibrary();finish();
+    }
+    private void showLibrary(){startActivity(new Intent(this,com.suiren.mirea.MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_REORDER_TO_FRONT));}
+    @Override public void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);preserve=false;backgroundRequested=false;chrome.interact(SystemClock.elapsedRealtime());render();}
     private void closePlayback(){preserve=false;stopService(new Intent(this,PlaybackService.class));finish();}
     @Override public void onDestroy(){destroyed=true;handler.removeCallbacks(tick);for(Dialog d:new ArrayList<>(dialogs))d.dismiss();try{unregisterReceiver(changed);}catch(IllegalArgumentException ignored){}if(isFinishing()&&!preserve)stopService(new Intent(this,PlaybackService.class));super.onDestroy();}
     private void attach(Surface surface){PlaybackService s=service();if(s==null)return;if(surfaceService!=null&&boundSurface!=null&&surfaceService!=s)surfaceService.clearSurface(boundSurface);surfaceService=s;boundSurface=surface;s.setSurface(surface);}

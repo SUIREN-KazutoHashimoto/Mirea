@@ -84,15 +84,21 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
     const intent=playerKey(event,{paused:video.paused,seekFocused:focused});if(!intent)return;event.preventDefault();const [action,value]=intent;
     if(action==='play')play();else if(action==='seek'||action==='frame')seekVideo(video,video.currentTime+value/(action==='frame'?30:1));
     else if(action==='fraction')seekVideo(video,video.duration*value);else if(action==='volume')video.volume=Math.min(1,Math.max(0,video.volume+value));
-    else if(action==='mute')video.muted=!video.muted;else if(action==='fullscreen')fullscreen();else if(action==='minimize')root.closest('.viewer-screen')?.minimize?.();
+    else if(action==='mute')video.muted=!video.muted;else if(action==='fullscreen')fullscreen();else if(action==='minimize')leavePlayer();
     else if(action==='speed'){hold?.cancel();video.playbackRate=Math.min(2,Math.max(.25,video.playbackRate+value));root.querySelector('.player-speed select').value=String(video.playbackRate);}
     else if(action==='navigate')onNavigate(value);else if(action==='chapter')navigation?.chapter(value);else if(action==='captions')navigation?.cycleCaptions();
     if(focused&&['seek','frame','fraction','chapter'].includes(action)){seek.value=String(video.currentTime);navigation?.scrub(seekInteraction.active);update();}
     showControls();
   });
-  root.querySelector('.player-background').onclick=()=>{seekInteraction.cancel();root.closest('.viewer-screen')?.minimize?.();};
+  root.querySelector('.player-background').onclick=()=>leavePlayer();
   const mediaSession=mountMediaSession(video,{title,kind,artwork:coverUrl,stop:()=>root.closest('.viewer-screen')?.close(),onError,document:doc});
   const pipButton=root.querySelector('.player-pip');pipButton.hidden=!mediaSession.supportsPip;pipButton.onclick=()=>mediaSession.pip().catch(()=>onError(new Error('PiPに切り替えられません。動画を読み込んでから再試行してください。')));
+  const screen=root.closest('.viewer-screen');
+  async function leavePlayer(){
+    seekInteraction.cancel();
+    await mediaSession.background(()=>{if(!disposed)screen?.minimize?.();});
+  }
+  if(screen)screen.onReturn=leavePlayer;
   update(); root.focus();
   return { video, surface:audioMode?root.querySelector('.audio-art'):video, setNavigation:(value,url)=>navigation?.set(value,url), setHeatmap(value) {
     if(disposed||audioMode)return;const geometry=heatmapGeometry(value);hasHeatmap=Boolean(geometry);heatmap.replaceChildren();heatmap.hidden=!hasHeatmap||!seekInteraction.active;if(!geometry)return;
@@ -107,5 +113,5 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
     if(select.dataset.levels!==key){select.replaceChildren(...values.map(value=>{const option=doc.createElement('option');option.value=value.value;option.textContent=value.text;return option;}));select.dataset.levels=key;}
     else for(const value of values){const option=[...select.options].find(o=>o.value===value.value);if(option)option.textContent=value.text;}
     select.value=selected;select.onchange=()=>{hold?.cancel();choose(select.value);};
-  }, dispose() { hold?.dispose();navigation?.dispose();seekInteraction.dispose();playbackPreferences={muted:video.muted,volume:video.volume,rate:video.playbackRate};disposed = true; mediaSession.dispose(); clearTimeout(timer);clearTimeout(clickTimer); for (const remove of listeners) remove(); video.pause(); video.removeAttribute('src'); video.load(); root.remove(); } };
+  }, dispose() { hold?.dispose();navigation?.dispose();seekInteraction.dispose();playbackPreferences={muted:video.muted,volume:video.volume,rate:video.playbackRate};disposed = true;if(screen?.onReturn===leavePlayer)screen.onReturn=null; mediaSession.dispose(); clearTimeout(timer);clearTimeout(clickTimer); for (const remove of listeners) remove(); video.pause(); video.removeAttribute('src'); video.load(); root.remove(); } };
 }

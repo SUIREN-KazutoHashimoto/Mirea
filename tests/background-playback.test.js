@@ -23,6 +23,22 @@ test('video PiP detects actual browser support and safely exits when the viewer 
   const binding=mountMediaSession(media,{kind:'video',document:doc,navigator:{}});assert.equal(binding.supportsPip,true);await binding.pip();assert.equal(doc.pictureInPictureElement,media);await binding.pip();assert.equal(doc.pictureInPictureElement,null);await binding.pip();binding.dispose();assert.equal(doc.pictureInPictureElement,null);
   const absent=mountMediaSession(new Media(),{kind:'video',document:{},navigator:{}});assert.equal(absent.supportsPip,false);await assert.rejects(absent.pip());absent.dispose();
 });
+test('returning to library keeps audio/video playback and exact position, enters PiP once and falls back on refusal',async()=>{
+  for(const kind of ['audio','video']){
+    const media=new Media();await media.play();let minimized=0,requests=0;const doc={pictureInPictureEnabled:true,pictureInPictureElement:null,async exitPictureInPicture(){this.pictureInPictureElement=null;}};
+    media.requestPictureInPicture=async()=>{requests++;doc.pictureInPictureElement=media;};
+    const session=mountMediaSession(media,{kind,document:doc,navigator:{}});await session.background(()=>minimized++);assert.equal(media.paused,false);assert.equal(media.currentTime,20);assert.equal(minimized,1);assert.equal(requests,kind==='video'?1:0);
+    await session.background(()=>minimized++);assert.equal(requests,kind==='video'?1:0);assert.equal(minimized,2);
+    session.dispose();assert.equal(doc.pictureInPictureElement,null);
+  }
+  const media=new Media();await media.play();let minimized=false;media.requestPictureInPicture=async()=>{throw Error('PiP denied');};const binding=mountMediaSession(media,{kind:'video',document:{pictureInPictureEnabled:true},navigator:{}});
+  await binding.background(()=>{minimized=true;});assert(minimized);assert.equal(media.paused,false);binding.dispose();
+});
+test('a late PiP result after closing never restores a disposed player',async()=>{
+  const media=new Media();let finish,exits=0;const doc={pictureInPictureEnabled:true,pictureInPictureElement:null,async exitPictureInPicture(){exits++;this.pictureInPictureElement=null;}};
+  media.requestPictureInPicture=()=>new Promise(resolve=>{finish=()=>{doc.pictureInPictureElement=media;resolve();};});
+  const binding=mountMediaSession(media,{kind:'video',document:doc,navigator:{}});const pending=binding.background(()=>assert.fail('disposed mini-player'));binding.dispose();finish();await pending;assert.equal(exits,1);
+});
 test('background and PiP measure actual progression separately from visible/focused time; throttled gaps, paused time and seeks are not invented',()=>{
   let now=0,state={visible:false,focused:false,idle:false,backgroundPlayback:true,pictureInPicture:false,playing:true,seeking:false,buffering:false,rate:1,toMs:0};const events=[];
   const recorder=createViewRecorder({view:{id:randomUUID()},clock:()=>now,snapshot:()=>({...state}),emit:(_,event)=>events.push(event)});

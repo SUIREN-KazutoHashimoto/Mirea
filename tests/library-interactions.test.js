@@ -1,0 +1,70 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {swipeDirection,mountAssetHold,mountLibraryDrawer} from '../web/src/library-interactions.js';
+import {downloadableSnapshot,runBulkDownloads} from '../web/src/bulk-downloads.js';
+
+const event=(type,props={})=>{const e=new Event(type,{cancelable:true});for(const [key,value] of Object.entries(props))Object.defineProperty(e,key,{value});return e;};
+class Node extends EventTarget{
+  constructor(doc){super();this.doc=doc;this.isConnected=true;this.hidden=false;this.disabled=false;this.attrs=new Map();this.classes=new Set();this.classList={add:n=>this.classes.add(n),remove:n=>this.classes.delete(n),toggle:(n,value)=>value?this.classes.add(n):this.classes.delete(n)};}
+  setAttribute(k,v){this.attrs.set(k,v);}removeAttribute(k){this.attrs.delete(k);}focus(){this.doc.activeElement=this;}getClientRects(){return this.hidden?[]:[{}];}
+  append(button){button.parent=this;}closest(){return this;}
+}
+test('drawer swipes require deliberate horizontal movement and reject scrolls, opposite direction and slow drags',()=>{
+  const start={x:70,y:300,at:100};assert(swipeDirection(start,{x:180,y:310,at:300}));assert(!swipeDirection(start,{x:180,y:390,at:300}));assert(!swipeDirection(start,{x:120,y:300,at:300}));assert(!swipeDirection(start,{x:180,y:300,at:1100}));assert(!swipeDirection(start,{x:0,y:300,at:300}));assert(swipeDirection({x:220,y:300,at:100},{x:100,y:310,at:300},-1));
+});
+test('drawer is inert when closed, traps focus while open, restores overflow and moves the same action nodes at responsive breakpoints',()=>{
+  const doc=new EventTarget();doc.body={style:{overflow:'scroll'}};doc.querySelector=()=>null;const layout=new Node(doc),panel=new Node(doc),main=new Node(doc),opener=new Node(doc),closer=new Node(doc),backdrop=new Node(doc),slot=new Node(doc),home=new Node(doc),add=new Node(doc),series=new Node(doc);
+  const media=new EventTarget();media.matches=false;panel.querySelector=()=>slot;panel.querySelectorAll=()=>[closer,add,series];doc.activeElement=opener;
+  const drawer=mountLibraryDrawer({layout,panel,main,opener,closer,backdrop,actions:[add,series],actionHome:home,media,doc});
+  assert.equal(opener.hidden,true);assert.equal(panel.inert,false);assert.equal(add.parent,home);drawer.show();assert.equal(drawer.isOpen(),false);
+  media.matches=true;media.dispatchEvent(new Event('change'));assert.equal(add.parent,slot);assert.equal(series.parent,slot);assert.equal(panel.inert,true);
+  opener.dispatchEvent(new Event('click'));assert.equal(drawer.isOpen(),true);assert.equal(main.inert,true);assert.equal(panel.attrs.get('aria-modal'),'true');assert.equal(doc.activeElement,closer);assert.equal(doc.body.style.overflow,'hidden');
+  doc.dispatchEvent(event('keydown',{key:'Tab',shiftKey:true}));assert.equal(doc.activeElement,series);doc.dispatchEvent(event('keydown',{key:'Tab',shiftKey:false}));assert.equal(doc.activeElement,closer);
+  doc.dispatchEvent(event('keydown',{key:'Escape'}));assert.equal(drawer.isOpen(),false);assert.equal(panel.inert,true);assert.equal(main.inert,false);assert.equal(doc.activeElement,opener);assert.equal(doc.body.style.overflow,'scroll');
+  const target={closest:()=>null};
+  layout.dispatchEvent(event('pointerdown',{target,button:0,isPrimary:true,pointerId:7,clientX:25,clientY:200,timeStamp:100}));
+  layout.dispatchEvent(event('pointerup',{target,pointerId:7,clientX:150,clientY:210,timeStamp:350}));assert.equal(drawer.isOpen(),true,'right swipe opens');
+  layout.dispatchEvent(event('pointerdown',{target,button:0,isPrimary:true,pointerId:7,clientX:220,clientY:200,timeStamp:400}));
+  layout.dispatchEvent(event('pointerup',{target,pointerId:7,clientX:50,clientY:210,timeStamp:600}));assert.equal(drawer.isOpen(),false,'left swipe closes');
+  layout.dispatchEvent(event('pointerdown',{target,button:0,isPrimary:true,pointerId:7,clientX:25,clientY:200,timeStamp:700}));
+  layout.dispatchEvent(event('pointermove',{target,pointerId:7,clientX:35,clientY:260,timeStamp:800}));
+  layout.dispatchEvent(event('pointerup',{target,pointerId:7,clientX:150,clientY:260,timeStamp:850}));assert.equal(drawer.isOpen(),false,'vertical scroll cancels');
+  drawer.show();media.matches=false;media.dispatchEvent(new Event('change'));assert.equal(drawer.isOpen(),false);assert.equal(add.parent,home);assert.equal(panel.inert,false);assert.equal(main.inert,false);
+  drawer.dispose();opener.dispatchEvent(new Event('click'));assert.equal(drawer.isOpen(),false);
+});
+test('asset hold opens once, suppresses release click, cancels on scroll/multitouch/blur/disposal and leaves keyboard clicks available',()=>{
+  let now=0,id=0;const timers=new Map(),doc=new EventTarget();doc.defaultView=new EventTarget();const root=new EventTarget();root.ownerDocument=doc;const button={isConnected:true,dataset:{open:'asset'},contains:target=>target===button,closest:()=>button};
+  const options={now:()=>now,setTimer:(fn,ms)=>{timers.set(++id,{fn,at:now+ms});return id;},clearTimer:key=>timers.delete(key)},advance=ms=>{now+=ms;for(const [key,t] of [...timers])if(t.at<=now){timers.delete(key);t.fn();}},opened=[];
+  const hold=mountAssetHold(root,asset=>opened.push(asset),options),pointer=(type,extra={})=>root.dispatchEvent(event(type,{target:button,button:0,isPrimary:true,pointerId:1,clientX:10,clientY:20,...extra}));
+  pointer('pointerdown');advance(500);assert.deepEqual(opened,['asset']);pointer('pointerup');const click=event('click',{target:button,detail:1});root.dispatchEvent(click);assert.equal(click.defaultPrevented,true);
+  const keyboard=event('click',{target:button,detail:0});root.dispatchEvent(keyboard);assert.equal(keyboard.defaultPrevented,false);
+  for(const cancel of ['move','multi','blur','pointercancel','visibility']){
+    pointer('pointerdown');if(cancel==='move')pointer('pointermove',{clientY:50});else if(cancel==='multi')pointer('pointermove',{pointerId:2});else if(cancel==='blur')doc.defaultView.dispatchEvent(new Event('blur'));else if(cancel==='visibility')doc.dispatchEvent(new Event('visibilitychange'));else pointer(cancel);advance(600);
+  }
+  assert.equal(opened.length,1);pointer('pointerdown');hold.dispose();advance(600);assert.equal(opened.length,1);assert.equal(timers.size,0);
+});
+test('bulk downloads snapshot only ready visible assets, skip saved packages, run serially and continue per-item failures',async()=>{
+  const items=[{id:'a',title:'A',size:20},{id:'p',pending:true},{id:'a'},{id:'b',title:'B',size:30},{id:'c',title:'C',size:40},{id:'d',title:'D',size:50}];
+  const snapshot=downloadableSnapshot(items);items[0].title='changed';assert.equal(snapshot[0].title,'A');assert.deepEqual(snapshot.map(i=>i.id),['a','b','c','d']);
+  let active=0;const calls=[],states=[];const result=await runBulkDownloads(snapshot,{list:async()=>[{assetId:'a',state:'ready'},{assetId:'b',state:'downloading'}],download:async(item,progress)=>{
+    assert.equal(active++,0);calls.push(item.id);await Promise.resolve();progress({received:10,total:20});active--;if(item.id==='c')throw Error('test failed');
+  },changed:value=>states.push({...value})});
+  assert.deepEqual(calls,['b','c','d']);assert.equal(result.completed,2);assert.equal(result.skipped,1);assert.equal(result.failed[0].id,'c');assert.equal(result.total,4);assert.equal(result.cancelled,false);
+  const tick=states.find(v=>v.received===10);assert.equal(tick.total,4);assert.equal(tick.totalBytes,20);
+});
+test('bulk cancellation, account changes and authorization/storage failure stop future work without deleting saved data',async()=>{
+  const items=[{id:'a'},{id:'b'}];
+  for(const mode of ['abort','identity','auth','space']){
+    const controller=new AbortController();let valid=true,calls=0;
+    const result=await runBulkDownloads(items,{list:async()=>[],signal:controller.signal,isCurrent:()=>valid,download:async()=>{
+      calls++;if(mode==='abort'){controller.abort();throw new DOMException('stop','AbortError');}if(mode==='identity'){valid=false;return;}if(mode==='auth')throw Object.assign(Error('expired'),{status:401});throw Object.assign(Error('full'),{name:'QuotaExceededError'});
+    }});
+    assert.equal(calls,1,mode);assert.equal(result.cancelled,true,mode);
+  }
+});
+test('library integration removes chapter/subtitle action from cards, keeps editable details and respects reduced motion',async()=>{
+  const main=await readFile(new URL('../web/src/main.js',import.meta.url),'utf8'),css=await readFile(new URL('../web/src/library-mobile.css',import.meta.url),'utf8');
+  const cards=main.slice(main.indexOf('function renderItems('),main.indexOf('function manageSeries('));assert(!cards.includes('openNavigationEditor'));assert(cards.includes('card-actions'));assert(cards.includes('data-details'));assert(cards.includes('mountAssetHold'));assert(main.includes('detail-navigation'));assert(main.includes('displayedItems=selected'));
+  assert(css.includes('.compact-library .library-overview{display:none}'));assert(css.includes('prefers-reduced-motion:reduce'));assert(css.includes('.native-app .pending-art .icon{animation:none}'));assert(!css.includes('infinite'));
+});

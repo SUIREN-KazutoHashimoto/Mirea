@@ -38,6 +38,30 @@ public class PlaybackActivityTest {
             player.start();assertTrue(service.startBoost());service.visibility(false,false);assertEquals(1.5f,player.getPlaybackParams().getSpeed(),.001f);assertTrue(service.playing());assertFalse(service.startBoost());
         }finally{controller.destroy();service.stopped.get(5,TimeUnit.SECONDS);}
     }
+    @Test public void audioReturnKeepsServicePlayerAndPositionWhileExplicitStopRemainsSeparate()throws Exception{
+        ServiceController<PlaybackService> serviceController=Robolectric.buildService(PlaybackService.class).create();PlaybackService service=serviceController.get();
+        try{
+            ShadowMediaPlayer.addMediaInfo(DataSource.toDataSource("audio-return.m4a"),new ShadowMediaPlayer.MediaInfo(120000,0));MediaPlayer player=new MediaPlayer();player.setDataSource("audio-return.m4a");player.prepare();Shadows.shadowOf(player).setCurrentPosition(42000);player.start();
+            ReflectionHelpers.setField(service,"player",player);ReflectionHelpers.setField(service,"prepared",true);ReflectionHelpers.setField(service,"item",new JSONObject().put("id","aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").put("title","Return test").put("kind","audio"));
+            ActivityController<PlaybackActivity> controller=Robolectric.buildActivity(PlaybackActivity.class).setup();PlaybackActivity activity=controller.get();
+            activity.getWindow().getDecorView().findViewWithTag("action-library").performClick();assertTrue(activity.isFinishing());assertTrue(service.playing());assertSame(player,ReflectionHelpers.getField(service,"player"));assertTrue(service.position()>=42000);
+            android.content.Intent library=Shadows.shadowOf(activity).getNextStartedActivity();assertEquals("com.suiren.mirea.MainActivity",library.getComponent().getClassName());assertTrue((library.getFlags()&android.content.Intent.FLAG_ACTIVITY_NEW_TASK)!=0);
+            controller.pause().stop().destroy();assertSame(service,PlaybackService.current);assertTrue(service.playing());assertTrue((Boolean)ReflectionHelpers.getField(activity,"preserve"));
+        }finally{serviceController.destroy();service.stopped.get(5,TimeUnit.SECONDS);}
+    }
+    @Test public void videoBackEntersPipAndReturnsToLibraryWithoutRecreatingOrPausingPlayer()throws Exception{
+        Shadows.shadowOf(RuntimeEnvironment.getApplication().getPackageManager()).setSystemFeature(android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE,true);
+        ServiceController<PlaybackService> serviceController=Robolectric.buildService(PlaybackService.class).create();PlaybackService service=serviceController.get();
+        try{
+            ShadowMediaPlayer.addMediaInfo(DataSource.toDataSource("video-return.mp4"),new ShadowMediaPlayer.MediaInfo(120000,0));MediaPlayer player=new MediaPlayer();player.setDataSource("video-return.mp4");player.prepare();Shadows.shadowOf(player).setCurrentPosition(37000);player.start();
+            ReflectionHelpers.setField(service,"player",player);ReflectionHelpers.setField(service,"prepared",true);ReflectionHelpers.setField(service,"item",new JSONObject().put("id","aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").put("title","PiP return test").put("kind","video"));
+            try(ActivityController<PlaybackActivity> controller=Robolectric.buildActivity(PlaybackActivity.class).setup()){
+                PlaybackActivity activity=controller.get();activity.getOnBackPressedDispatcher().onBackPressed();assertTrue(activity.isInPictureInPictureMode());assertFalse(activity.isFinishing());assertTrue(service.playing());assertSame(player,ReflectionHelpers.getField(service,"player"));assertTrue(service.position()>=37000);
+                android.content.Intent library=Shadows.shadowOf(activity).getNextStartedActivity();assertEquals("com.suiren.mirea.MainActivity",library.getComponent().getClassName());
+                activity.onPictureInPictureModeChanged(true,activity.getResources().getConfiguration());assertEquals(android.view.View.GONE,activity.getWindow().getDecorView().findViewWithTag("playback-screen").getVisibility());assertFalse((Boolean)ReflectionHelpers.getField(activity,"preserve"));
+            }
+        }finally{serviceController.destroy();service.stopped.get(5,TimeUnit.SECONDS);}
+    }
     @Test public void orientationButtonAndConfigurationChangesKeepSamePlayerPositionAndPlayback()throws Exception{
         ServiceController<PlaybackService> serviceController=Robolectric.buildService(PlaybackService.class).create();PlaybackService service=serviceController.get();
         try{
