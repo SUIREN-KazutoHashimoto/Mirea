@@ -8,7 +8,7 @@ import {brandMarkup} from './brand.js';
 import './workspace.css';
 import './immersive.css';
 import './audio-player.css';
-import { api, isOfflineSession, markSessionOffline, reconnectSession, rememberOfflineConfig, native, getEndpoint, setEndpoint, getSession, setSession, initializeSession, upload, absoluteUrl, authenticatedBlob } from './api.js';
+import { api, sessionRevision, isOfflineSession, markSessionOffline, reconnectSession, rememberOfflineConfig, native, getEndpoint, setEndpoint, getSession, setSession, initializeSession, upload, absoluteUrl, authenticatedBlob } from './api.js';
 import { openImageBook } from './image-reader.js';
 import { App } from '@capacitor/app';
 import { mountVideoPreviews } from './video-previews.js';
@@ -44,6 +44,8 @@ import {showShelfMenu} from './shelf-menu.js';
 import {mountLibraryDrawer,mountAssetHold} from './library-interactions.js';
 import {downloadableSnapshot,runBulkDownloads} from './bulk-downloads.js';
 import './library-mobile.css';
+import {pollLibrary,mountLibraryRefresh,shouldRefreshCatalog} from './library-refresh.js';
+import './library-refresh.css';
 import './playback-dock.css';
 
 const theme = createTheme({changed:syncAppearance});
@@ -72,6 +74,7 @@ const icons = {
   trash: '<path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="m9 3-1 3-3 1-2 5 2 5 3 1 1 3h6l1-3 3-1 2-5-2-5-3-1-1-3z"/>',
+  refresh: '<path d="M20 7v5h-5M4 17v-5h5M6 8a7 7 0 0 1 12-2l2 3M4 15l2 3a7 7 0 0 0 12-2"/>',
   download: '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>'
 };
 function icon(name, className = '') { return `<svg class="icon ${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.library}</svg>`; }
@@ -81,7 +84,7 @@ const date = timestamp => new Intl.DateTimeFormat('ja-JP', { year: 'numeric', mo
 let config = { allowRegistration: true, maxUploadBytes: 2147483648, maxBookPages: 500, maxImageBytes: 25 * 1024 * 1024 };
 let shelves = [], items = [], activeShelf = null, filter = 'all', search = '', sort = 'recent', loadGeneration = 0;
 let series=[],activeSeries='',seriesReturnView;
-let libraryPoll,refreshBusy=false,librarySnapshot='',offlineLibrary=false,synchronizing;
+let libraryPoll,pullRefresh,refreshBusy=false,librarySnapshot='',offlineLibrary=false,synchronizing;
 let seriesContinuous=true,appDrawer,cardGestures,displayedItems=[];
 let thumbnailRequest, thumbnailObserver, thumbnailUrls = [], videoPreviews;
 let nativeAppActive = true, nativeStateRevision = 0;
@@ -175,7 +178,7 @@ function dialog(title, body, extraClass = '') {
 
 function renderAuth(register = false) {
   appDrawer?.dispose();appDrawer=null;
-  clearInterval(libraryPoll);librarySnapshot='';
+  libraryPoll?.();libraryPoll=null;pullRefresh?.dispose();pullRefresh=null;librarySnapshot='';
   document.querySelectorAll('.viewer-screen').forEach(node => node.close());
   series=[];activeSeries='';seriesContinuous=true;
   closeDownloads();
@@ -226,7 +229,7 @@ function renderAuth(register = false) {
 
 function renderShell() {
   appDrawer?.dispose();appDrawer=null;
-  clearInterval(libraryPoll);librarySnapshot='';
+  libraryPoll?.();libraryPoll=null;pullRefresh?.dispose();pullRefresh=null;librarySnapshot='';
   clearThumbnails();
   const user = getSession().user;
   root.innerHTML = `<div class="app-layout"><aside class="sidebar" id="library-drawer" aria-label="ライブラリメニュー"><button type="button" class="icon-button drawer-close" aria-label="メニューを閉じる">${icon('close')}</button><a class="brand" href="/" aria-label="Mirea ホーム">${brandMarkup()}</a>
@@ -239,7 +242,7 @@ function renderShell() {
     <div class="drawer-backdrop" hidden></div><main class="main-content"><header class="topbar"><button id="open-drawer" class="icon-button menu-opener" aria-label="ライブラリメニューを開く" aria-controls="library-drawer" aria-expanded="false">${icon('menu')}</button><div class="breadcrumb"><span class="workspace-prefix">ワークスペース</span> <span>/</span> <strong id="breadcrumb-title">ライブラリ</strong></div><span class="topbar-label">YOUR PERSONAL COLLECTION</span><button id="mobile-settings" class="icon-button mobile-settings" aria-label="設定">${icon('settings')}</button><button id="mobile-logout" class="icon-button mobile-logout" aria-label="ログアウト">${icon('logout')}</button></header>
     <div class="content-wrap">
     <section class="library-overview" aria-label="ライブラリの概要"><div class="overview-message"><div class="overview-icon">${icon('shelf')}</div><div><span class="eyebrow">YOUR COLLECTION</span><h2 id="overview-title">すべてのコンテンツ</h2><p id="overview-description">本棚を選んで、コレクションを楽しみましょう。</p></div></div><div class="overview-actions"><button class="button primary" id="open-upload">${icon('plus')}コンテンツを追加</button><button class="button secondary" id="add-series">${icon('plus')}シリーズを追加</button></div><div class="stats"><div><strong id="stat-total">—</strong><span>コンテンツ</span></div><div><strong id="stat-book">—</strong><span>本</span></div><div><strong id="stat-video">—</strong><span>動画</span></div><div><strong id="stat-audio">—</strong><span>音声・音楽</span></div><div><button id="upload-jobs" class="upload-stat" aria-label="アップロード処理を開く"><strong id="stat-upload">0</strong></button><span>アップロード中</span></div></div><small id="analytics-delivery" role="status"></small></section>
-    <section class="collection"><div class="collection-toolbar"><div class="tabs" role="group" aria-label="種類で絞り込み"><button data-filter="all" class="tab active">すべて <span id="count-all">0</span></button><button data-filter="book" class="tab">${icon('book')}本 <span id="count-book">0</span></button><button data-filter="video" class="tab">${icon('video')}動画 <span id="count-video">0</span></button><button data-filter="audio" class="tab">${icon('audio')}音声 <span id="count-audio">0</span></button></div><div class="collection-tools"><label class="search-field">${icon('search')}<input id="search" type="search" placeholder="タイトルで検索" aria-label="タイトルで検索"></label><label class="sr-only" for="sort">並び順</label><select id="sort"><option value="recent">追加が新しい順</option><option value="name">タイトル順</option></select></div></div><div class="collection-caption"><h2 id="collection-title" tabindex="-1">すべてのコンテンツ</h2><span id="result-count"></span><button id="bulk-download" type="button" class="button secondary bulk-download-button" disabled>${icon('download')}<span>表示中を一括DL</span></button></div><div id="items" class="item-grid" aria-live="polite"><p class="loading-state">ライブラリを読み込んでいます…</p></div></section>
+    <section class="collection"><div class="collection-toolbar"><div class="tabs" role="group" aria-label="種類で絞り込み"><button data-filter="all" class="tab active">すべて <span id="count-all">0</span></button><button data-filter="book" class="tab">${icon('book')}本 <span id="count-book">0</span></button><button data-filter="video" class="tab">${icon('video')}動画 <span id="count-video">0</span></button><button data-filter="audio" class="tab">${icon('audio')}音声 <span id="count-audio">0</span></button></div><div class="collection-tools"><label class="search-field">${icon('search')}<input id="search" type="search" placeholder="タイトルで検索" aria-label="タイトルで検索"></label><label class="sr-only" for="sort">並び順</label><select id="sort"><option value="recent">追加が新しい順</option><option value="name">タイトル順</option></select></div></div><div class="collection-caption"><h2 id="collection-title" tabindex="-1">すべてのコンテンツ</h2><span id="result-count"></span><button id="refresh-library" type="button" class="collection-refresh" aria-label="コンテンツ一覧を更新" title="コンテンツ一覧を更新">${icon('refresh')}</button><button id="bulk-download" type="button" class="button secondary bulk-download-button" disabled>${icon('download')}<span>表示中を一括DL</span></button></div><div id="items" class="item-grid" aria-live="polite"><p class="loading-state">ライブラリを読み込んでいます…</p></div></section>
     <footer class="library-footer"><span class="footer-brand" role="img" aria-label="Mirea">${brandMarkup()}</span><span>あなたの物語が、ここにある。</span></footer></div></main></div>`;
   document.querySelector('#add-shelf').onclick = openCreateShelf;
   document.querySelector('#nav-all').onclick = () => selectShelf(null);
@@ -265,7 +268,9 @@ function renderShell() {
   document.querySelector('#sort').onchange = e => { sort = e.target.value; renderItems(true); };
   document.querySelectorAll('[data-filter]').forEach(button => { button.onclick = () => { filter = button.dataset.filter; renderItems(true); }; });
   appDrawer=mountLibraryDrawer({layout:root.querySelector('.app-layout'),panel:root.querySelector('.sidebar'),main:root.querySelector('.main-content'),opener:root.querySelector('#open-drawer'),closer:root.querySelector('.drawer-close'),backdrop:root.querySelector('.drawer-backdrop'),actions:[root.querySelector('#open-upload'),root.querySelector('#add-series')],actionHome:root.querySelector('.overview-actions'),native});
-  libraryPoll=setInterval(()=>{if(!document.hidden&&!refreshBusy&&getSession()&&!isOfflineSession())refresh({background:true});},5000);
+  pullRefresh=mountLibraryRefresh({main:root.querySelector('.main-content'),button:root.querySelector('#refresh-library'),onRefresh:refreshManually,
+    blocked:()=>refreshBusy||!getSession()||appDrawer?.isOpen()||Boolean(document.querySelector('dialog[open],.viewer-screen:not([style*="display: none"])'))});
+  libraryPoll=pollLibrary(()=>refresh({background:true}),{allowed:()=>!document.hidden&&!refreshBusy&&!pullRefresh?.active&&Boolean(getSession())&&!isOfflineSession()});
 }
 
 function showSettings() {
@@ -296,21 +301,21 @@ async function openRecentHistory(){
 async function refresh({background=false,signal=AbortSignal.timeout(2500)}={}) {
   const generation = ++loadGeneration;
   const node = document.querySelector('#items');
-  if (!node) return;
+  if (!node) return {status:'cancelled'};
   refreshBusy=true;
   if(!background){clearThumbnails();node.innerHTML = '<p class="loading-state">ライブラリを読み込んでいます…</p>';}
   try {
     const [response,uploadStatus] = await Promise.all([api('/shelves',{signal}),api('/uploads',{signal})]);
-    if (generation !== loadGeneration) return;
+    if (generation !== loadGeneration) return {status:'cancelled'};
     offlineLibrary=false;shelves = response.shelves;
     if (activeShelf && !shelves.some(s => s.id === activeShelf)) activeShelf = null;
     const targets = activeShelf ? shelves.filter(s => s.id === activeShelf) : shelves;
     const results = await Promise.all(targets.map(s => api(`/shelves/${s.id}/items`,{signal})));
-    if (generation !== loadGeneration) return;
+    if (generation !== loadGeneration) return {status:'cancelled'};
     const snapshot=JSON.stringify([activeShelf,response,results,uploadStatus.activeCount]);
     document.querySelector('#stat-upload').textContent=uploadStatus.activeCount??0;
     document.querySelector('#drawer-upload-count').textContent=uploadStatus.activeCount??0;
-    if(background&&snapshot===librarySnapshot)return;
+    if(background&&snapshot===librarySnapshot)return {status:'updated'};
     librarySnapshot=snapshot;
     items = results.flatMap(result => [...result.items,...(result.pendingUploads??[])].map(item => ({ ...item, shelfName: result.shelf.name, role: result.shelf.role })));
     series=results.flatMap(result=>result.series.map(s=>({...s,shelfName:result.shelf.name,role:result.shelf.role})));
@@ -318,13 +323,30 @@ async function refresh({background=false,signal=AbortSignal.timeout(2500)}={}) {
     renderNav();
     renderItems(!background);
     rememberOfflineConfig(config);
+    return {status:'updated'};
   } catch (error) {
-    if (generation !== loadGeneration || !getSession()) return;
-    if(background){if(!error.status&&!offlineLibrary)await renderOfflineLibrary();return;}
-    if(!error.status||error.status>=500){if(await renderOfflineLibrary())return;}
+    if (generation !== loadGeneration || !getSession()) return {status:'cancelled'};
+    if(background){if(!error.status&&!offlineLibrary)await renderOfflineLibrary();return {status:offlineLibrary?'offline':'failed'};}
+    if(!error.status||error.status>=500){if(await renderOfflineLibrary())return {status:'offline'};}
     node.innerHTML = `<div class="empty-state"><h3>ライブラリを読み込めませんでした</h3><p>${esc(error.message)}</p><button class="button secondary" id="retry-library">もう一度読み込む</button></div>`;
     node.querySelector('button').onclick = refresh;
+    return {status:'failed'};
   }finally{if(generation===loadGeneration)refreshBusy=false;}
+}
+async function refreshManually(){
+  const revision=sessionRevision(),server=getEndpoint();
+  const current=()=>getSession()&&revision===sessionRevision()&&server===getEndpoint();
+  if(refreshBusy||!current())return {status:'cancelled'};
+  const budget=connectionBudget({ms:2500});
+  try{
+    if(isOfflineSession()&&!await reconnectSession({signal:budget.signal}))return {status:'offline'};
+    if(!current())return {status:'cancelled'};
+    const result=await refresh({background:true,signal:budget.signal});
+    if(!current())return {status:'cancelled'};
+    if(result?.status==='updated')synchronizeConnection({refreshLibrary:false});
+    return result;
+  }catch(error){return {status:current()&&!error.status?'offline':'failed'};}
+  finally{budget.dispose();}
 }
 function selectShelf(id) {
   activeShelf = id;
@@ -730,28 +752,29 @@ async function renderOfflineLibrary(){
   const session=getSession();if(!session)return false;
   const identity=await offlineIdentity(getEndpoint(),session.user.id);if(!identity)return false;
   const rows=(await listDownloads()).filter(row=>row.state==='ready');if(!rows.length)return false;
-  offlineLibrary=true;await markSessionOffline();shelves=[];series=[];activeShelf=null;activeSeries='';seriesReturnView=null;
+  offlineLibrary=true;librarySnapshot='';await markSessionOffline();shelves=[];series=[];activeShelf=null;activeSeries='';seriesReturnView=null;
   items=rows.map(row=>{const m=row.manifest;return {id:row.assetId,title:m.title,kind:m.kind,mimeType:m.files[0].mime,pageCount:m.pageCount,size:m.files.reduce((sum,f)=>sum+f.size,0),createdAt:row.savedAt,shelfName:'端末のダウンロード',role:'viewer'};});
   renderNav();renderItems();return true;
 }
-function synchronizeConnection(){
+function synchronizeConnection({refreshLibrary=true}={}){
   if(synchronizing||!getSession())return synchronizing;
   synchronizing=(async()=>{
+    const wasOffline=isOfflineSession()||offlineLibrary;
     const budget=connectionBudget({ms:1800});
     try{if(!await reconnectSession({signal:budget.signal}))return;
-      await loadConfig({signal:budget.signal});await refresh({background:!offlineLibrary,signal:budget.signal});
+      await loadConfig({signal:budget.signal});
+      if(shouldRefreshCatalog({requested:refreshLibrary,wasOffline})&&!pullRefresh?.active&&!refreshBusy)await refresh({background:!offlineLibrary,signal:budget.signal});
     }finally{budget.dispose();}
     if(isOfflineSession())return;
     ensureDownloadWorker().catch(()=>{});
     await Promise.all([syncDownloads({items}),syncStoredProgress(),flushProgress(),flushAnalytics(),
       nativePlayerAvailable()?NativePlayer.synchronize({origin:getEndpoint(),token:getSession().token,userId:getSession().user.id}):null]);
-    if(offlineLibrary){offlineLibrary=false;await refresh();}
   })().catch(error=>{if([401,403].includes(error.status)){window.dispatchEvent(new Event('mirea:unauthorized'));}}).finally(()=>{synchronizing=null;});
   return synchronizing;
 }
 window.addEventListener('online',()=>synchronizeConnection());
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)synchronizeConnection();});
-setInterval(()=>synchronizeConnection(),30000);
+setInterval(()=>synchronizeConnection({refreshLibrary:false}),30000);
 async function loadConfig({signal}={}) {
   if (native && !getEndpoint()) return;
   try { if(isOfflineSession()){const cached=await offlineIdentity(getEndpoint(),getSession()?.user.id);config={...config,...cached?.config};}else config = { ...config, ...await api('/config',{signal}) }; configureAnalytics(config.analytics); await rememberOfflineConfig(config); } catch { /* the login action presents connection errors */ }
@@ -772,7 +795,7 @@ async function bootstrapLogin(){
   const budget=connectionBudget();
   try{await initializeSession({signal:budget.signal});await loadConfig({signal:budget.signal});if(getSession()){await startAnalytics();renderShell();if(isOfflineSession()){if(!await renderOfflineLibrary())throw new Error('有効な保存済みコンテンツがありません。オンラインで接続してください。');}else await refresh({signal:budget.signal});synchronizeConnection();}else renderAuth();}
   catch(error){
-    clearInterval(libraryPoll);clearThumbnails();
+    libraryPoll?.();libraryPoll=null;pullRefresh?.dispose();pullRefresh=null;clearThumbnails();
     root.innerHTML=`<main class="reconnect-screen"><section><h1>サーバーに再接続</h1><p>${esc(error.message)}</p><p class="muted">通信に失敗しても、保持したログインは解除しません。オンラインで認証を確認してからライブラリを開きます。</p><button class="button primary retry-connection">もう一度接続する</button><button class="button secondary show-login">ログイン画面を開く</button></section></main>`;
     root.querySelector('.retry-connection').onclick=()=>bootstrapLogin();root.querySelector('.show-login').onclick=()=>renderAuth();
   }finally{budget.dispose();finishAppLaunch();}
