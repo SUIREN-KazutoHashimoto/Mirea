@@ -79,7 +79,7 @@ export function openDatabase(filename) {
         UPDATE schema_version SET version = 2;
       `));
     } finally { db.exec('PRAGMA foreign_keys = ON'); }
-  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
+  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
   if (version < 10) {
     // v10 adds EPUB while retaining v9's nullable uploader attribution.
     // Account deletion removes attribution, not another member's shared assets.
@@ -352,6 +352,20 @@ export function openDatabase(filename) {
       session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE
     );
   `);
+  db.exec(`CREATE TABLE IF NOT EXISTS video_navigation (
+    item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE, revision INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL CHECK(state IN ('queued','running','ready','failed')), job_id TEXT REFERENCES admin_jobs(id) ON DELETE SET NULL,
+    requester_id TEXT REFERENCES users(id) ON DELETE SET NULL, duration_ms INTEGER NOT NULL DEFAULT 0,
+    chapters_json TEXT NOT NULL DEFAULT '[]', chapters_manual INTEGER NOT NULL DEFAULT 0,
+    captions_json TEXT NOT NULL DEFAULT '[]', storyboard_json TEXT, storyboard BLOB, error TEXT, updated_at INTEGER NOT NULL
+  ); UPDATE schema_version SET version=14;`);
+  db.exec(`CREATE TABLE IF NOT EXISTS analytics_replay_bins (
+    view_id TEXT NOT NULL REFERENCES analytics_views(id) ON DELETE CASCADE,
+    start_ms INTEGER NOT NULL,media_ms REAL NOT NULL,PRIMARY KEY(view_id,start_ms)
+  );CREATE TABLE IF NOT EXISTS analytics_replay_state (
+    view_id TEXT PRIMARY KEY REFERENCES analytics_views(id) ON DELETE CASCADE,state_json TEXT NOT NULL
+  );CREATE INDEX IF NOT EXISTS analytics_events_view_arrival ON analytics_events(view_id,row_id);
+  UPDATE schema_version SET version=15;`);
   if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Database foreign key validation failed');
   return db;
 }

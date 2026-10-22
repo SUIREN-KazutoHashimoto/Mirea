@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createPlaybackOrder} from '../web/src/playback-order.js';
 import { createSeriesContinuation,advanceBook,bindContinuationVideo } from '../web/src/series-continuation.js';
 
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
@@ -86,4 +87,10 @@ test('autoplay policy rejection is recoverable without retry loops; hidden/dispo
   denied.event('canplay');await settle();denied.event('canplay');await settle();assert.equal(denied.video.plays,1);assert.deepEqual(denied.events,['policy']);denied.dispose();
   const hidden=videoHarness({autoplay:true,canAutoplay:()=>false});hidden.event('canplay');await settle();assert.equal(hidden.video.plays,0);assert.deepEqual(hidden.events,['inactive']);hidden.dispose();
   const closed=videoHarness({autoplay:true});closed.event('canplay');closed.dispose();await settle();assert.equal(closed.video.plays,0);
+});
+
+test('media series repeat wraps after a short countdown, respects mode cancellation and still refreshes ACL before moving',async()=>{
+  const order=createPlaybackOrder({modes:{repeat:'series'}}),ctx={...context(['b','a'],'series','a'),items:[{id:'b',kind:'audio'},{id:'a',kind:'video'}]};
+  const h=harness({order});h.c.setContext(ctx);h.fresh=ctx;h.c.videoEnded();assert.equal(h.c.state.canContinue,true);await h.advance(250);assert.equal(h.loadCount,1);assert.equal(h.moves[0].id,'b');h.c.dispose();
+  const k=harness({order:createPlaybackOrder({modes:{repeat:'series'}})});k.c.setContext(ctx);k.fresh=ctx;k.c.videoEnded();k.c.setEnabled(false);await k.advance(1000);assert.equal(k.moves.length,0);k.c.dispose();
 });

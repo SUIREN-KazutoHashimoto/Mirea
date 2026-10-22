@@ -42,12 +42,12 @@ test('outbox survives a lost acknowledgement, keeps exact IDs on retry and batch
   assert.deepEqual(sent[0],sent[1]);assert.ok(sent.every(body=>body.events.length<=40));assert.equal((await store.list()).length,0);
   await box.dispose();
 });
-test('outbox isolates accounts, reopens pending storage, bounds age/count and removes rejected batches',async()=>{
+test('outbox isolates accounts, reopens pending storage, keeps old/high-count offline events and removes rejected batches',async()=>{
   const store=memoryStore(),statuses=[];let now=10*86400000;
   await store.put({key:'other-user',partition:'other',queuedAt:now,view:{id:'other'},event:{id:'other',seq:1}});
   for(let i=0;i<10005;i++)await store.put({key:`p|${i}`,partition:'p',queuedAt:i===10004?0:now,view:{id:'v'},event:{id:String(i),seq:i+1}});
   const box=createOutbox({store,partition:'p',now:()=>now,status:s=>statuses.push(s),send:async()=>({ok:false,status:422})});
-  await box.flush();assert.ok(statuses.includes('pending-dropped'));assert.ok(statuses.includes('batch-rejected'));assert.ok((await store.list()).length<10000);await box.dispose();
+  await box.flush();assert.ok(!statuses.includes('pending-dropped'));assert.ok(statuses.includes('batch-rejected'));assert.equal((await store.list()).length,9606,'only the 400 explicitly rejected events are removed');await box.dispose();
   assert.ok((await store.list()).some(row=>row.partition==='other'),'other account pending events stay isolated');
   const first=createOutbox({store,partition:'p',now:()=>now,send:async()=>({ok:false,status:401})});first.enqueue({id:'pending'},{id:'pending',seq:1});await first.flush();await first.dispose();
   const reopened=createOutbox({store,partition:'p',now:()=>now,send:async()=>({ok:true,status:200})});await reopened.flush();assert.ok((await store.list()).length>0,'bounded work per flush');await reopened.dispose();

@@ -14,3 +14,4 @@ android/app/src/main/assets/capacitor.plugins.json
 test-results/
 .local/
 releases/
+.codex-remote-attachments/

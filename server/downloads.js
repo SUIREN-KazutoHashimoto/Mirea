@@ -90,7 +90,10 @@ export async function registerDownloads(app,{db,dataDir,uploadDir,booksDir,video
     const {row,item}=authorize(req),manifest=await validateSource(row,item);
     authenticate(req);authorize(req);
     const key=keyFor(row);
-    try{return {manifest:publicManifest(row,manifest),key:key.toString('base64'),expiresAt:req.session.expires_at};}finally{key.fill(0);}
+    const serverTime=Date.now();
+    // Only an authenticated check of THIS asset renews its offline lease.
+    // Unchanged legacy sessions keep their original deadline.
+    try{return {manifest:publicManifest(row,manifest),userId:req.user.id,key:key.toString('base64'),serverTime,expiresAt:Math.min(req.session.expires_at,serverTime+7*86400000)};}finally{key.fill(0);}
   });
   app.get('/api/v1/downloads/:id/files/:file/parts/:part',{onRequest:transferAuth,config:{rateLimit:options.rateLimit===false?false:{hook:'preHandler',max:600,timeWindow:'1 minute',keyGenerator:req=>req.user.id}}},async(req,reply)=>{
     const {row,item}=authorize(req),manifest=JSON.parse(row.manifest_json);

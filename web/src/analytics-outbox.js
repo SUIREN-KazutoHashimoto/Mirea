@@ -1,4 +1,5 @@
-const MAX_PENDING = 10000, MAX_AGE = 7 * 86400000;
+// Offline sessions can queue seven full days of detailed records. Never evict
+// accepted local events merely because of age/count; report storage failure.
 
 export function memoryStore() {
   const rows = new Map();
@@ -9,10 +10,12 @@ export async function browserStore(partition) {
   if (!globalThis.indexedDB) return memoryStore();
   try {
     const db = await new Promise((resolve, reject) => {
-      const request = indexedDB.open('mirea-analytics-v1', 1);
+      const request = indexedDB.open('mirea-analytics-v1', 2);
       request.onupgradeneeded = () => {
-        const store=request.result.createObjectStore('events', { keyPath: 'key' });
-        store.createIndex('partition', 'partition'); store.createIndex('queuedAt','queuedAt');
+        let store;
+        if(request.result.objectStoreNames.contains('events'))store=request.transaction.objectStore('events');
+        else{store=request.result.createObjectStore('events',{keyPath:'key'});store.createIndex('partition','partition');store.createIndex('queuedAt','queuedAt');}
+        store.createIndex('pending',['partition','queuedAt']);
       };
       request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
     });
@@ -21,14 +24,8 @@ export async function browserStore(partition) {
       const request = run(store);
       tx.oncomplete = () => resolve(request?.result); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error);
     });
-    // Expire stale pending records from all accounts whenever this origin opens
-    // an outbox, including accounts that no longer sign in on this device.
-    await transact('readwrite',store=>{
-      const cursor=store.index('queuedAt').openCursor(IDBKeyRange.upperBound(Date.now()-MAX_AGE));
-      cursor.onsuccess=()=>{ if(cursor.result){cursor.result.delete();cursor.result.continue();} };
-    });
     return {
-      async list() { return transact('readonly', store => store.index('partition').getAll(partition)); },
+      async list() { return transact('readonly', store => store.index('pending').getAll(IDBKeyRange.bound([partition,0],[partition,Number.MAX_SAFE_INTEGER]),400)); },
       put: row => transact('readwrite', store => store.put(row)),
       remove: keys => transact('readwrite', store => { keys.forEach(key => store.delete(key)); }),
       close: () => db.close()
@@ -37,7 +34,7 @@ export async function browserStore(partition) {
 }
 
 export function createOutbox({ store, partition, send, now = Date.now, status = () => {} }) {
-  let writes = Promise.resolve(), running, stopped = false, retryAt = 0, failures = 0;
+  let followup,writes = Promise.resolve(), running, stopped = false, retryAt = 0, failures = 0;
   const enqueue = (view, event) => {
     if (stopped) return;
     writes = writes.then(async () => {
@@ -46,12 +43,12 @@ export function createOutbox({ store, partition, send, now = Date.now, status = 
   };
   async function flush() {
     if (running) return running;
+    clearTimeout(followup);
     if (stopped || now() < retryAt) return;
     running = (async () => {
       await writes;
       let rows = (await store.list()).filter(row=>row.partition===partition).sort((a,b) => a.queuedAt - b.queuedAt || a.event.seq - b.event.seq);
-      const expired = rows.filter((row,index) => row.queuedAt < now()-MAX_AGE || index < rows.length-MAX_PENDING);
-      if (expired.length) { await store.remove(expired.map(row=>row.key)); status('pending-dropped'); rows = rows.filter(row=>!expired.includes(row)); }
+      const fullPage=rows.length>=400;
       // Bound work per flush; preserve single-view batches and <64 KiB request size.
       for (let batchNumber=0; rows.length && batchNumber<10 && !stopped; batchNumber++) {
         const view = rows[0].view, batch = [];
@@ -69,8 +66,9 @@ export function createOutbox({ store, partition, send, now = Date.now, status = 
         }
         const keys = new Set(batch.map(row=>row.key)); rows = rows.filter(row=>!keys.has(row.key));
       }
+      if(fullPage&&!stopped&&!retryAt)followup=setTimeout(()=>flush(),100);
     })().catch(() => { failures++; retryAt=now()+Math.min(60000,1000*2**Math.min(failures,6)); status('pending'); }).finally(() => { running=null; });
     return running;
   }
-  return { enqueue, flush, async dispose() { stopped=true; await writes; await running; store.close?.(); } };
+  return { enqueue, flush, async dispose() { stopped=true;clearTimeout(followup); await writes; await running; store.close?.(); } };
 }

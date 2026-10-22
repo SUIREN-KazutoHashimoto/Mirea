@@ -20,7 +20,10 @@ export async function startAnalytics() {
     const controller = new AbortController();
     const outbox = createOutbox({ store, partition,
       status: state => window.dispatchEvent(new CustomEvent('mirea:analytics-status', { detail: state })),
-      send: body => fetch(`${endpoint}/api/v1/analytics/events`, { method: 'POST', headers: { Authorization: `Bearer ${session.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body), cache: 'no-store', signal: AbortSignal.any([controller.signal,AbortSignal.timeout(15000)]), keepalive: true })
+      send: body => {
+        const current=getSession();if(!current?.token||current.user.id!==session.user.id||getEndpoint()!==endpoint)throw new Error('記録はこのアカウントの再接続を待っています。');
+        return fetch(`${endpoint}/api/v1/analytics/events`, { method: 'POST', headers: { Authorization: `Bearer ${current.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body), cache: 'no-store', signal: AbortSignal.any([controller.signal,AbortSignal.timeout(15000)]), keepalive: true });
+      }
     });
     const timer = setInterval(() => outbox.flush(), 5000);
     transport = { outbox, controller, timer };

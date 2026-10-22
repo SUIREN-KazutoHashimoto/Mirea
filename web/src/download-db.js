@@ -4,10 +4,11 @@ let opening;
 export function openDownloadDb(){
   return opening??=(new Promise((resolve,reject)=>{
     if(!globalThis.indexedDB)return reject(new Error('この環境では暗号化ダウンロードを保存できません。'));
-    const request=indexedDB.open('mirea-encrypted-downloads-v1',1);
+    const request=indexedDB.open('mirea-encrypted-downloads-v1',2);
     request.onupgradeneeded=()=>{
-      request.result.createObjectStore('packages',{keyPath:'key'}).createIndex('partition','partition');
-      request.result.createObjectStore('chunks',{keyPath:'key'}).createIndex('downloadId','downloadId');
+      if(!request.result.objectStoreNames.contains('packages'))request.result.createObjectStore('packages',{keyPath:'key'}).createIndex('partition','partition');
+      if(!request.result.objectStoreNames.contains('chunks'))request.result.createObjectStore('chunks',{keyPath:'key'}).createIndex('downloadId','downloadId');
+      request.result.createObjectStore('vault');
     };
     request.onsuccess=()=>{request.result.onversionchange=()=>request.result.close();resolve(createDownloadStore(request.result));};
     request.onerror=()=>reject(request.error);
@@ -24,6 +25,10 @@ export function createDownloadStore(db){
     request.onsuccess=()=>{const cursor=request.result;if(cursor){store.delete(cursor.primaryKey);cursor.continue();}};
   };
   return {
+    vaultGet:key=>run(['vault'],'readonly',(tx,done)=>{const r=tx.objectStore('vault').get(key);r.onsuccess=()=>done(r.result);}),
+    vaultInit:(key,value)=>run(['vault'],'readwrite',(tx,done)=>{const s=tx.objectStore('vault'),r=s.get(key);r.onsuccess=()=>{if(r.result)done(r.result);else{s.put(value,key);done(value);}};}),
+    vaultPut:(key,value)=>run(['vault'],'readwrite',tx=>{tx.objectStore('vault').put(value,key);}),
+    vaultDelete:key=>run(['vault'],'readwrite',tx=>{tx.objectStore('vault').delete(key);}),
     getPackage:key=>run(['packages'],'readonly',(tx,done)=>{const r=tx.objectStore('packages').get(key);r.onsuccess=()=>done(r.result);}),
     list:partition=>run(['packages'],'readonly',(tx,done)=>{const r=tx.objectStore('packages').index('partition').getAll(partition);r.onsuccess=()=>done(r.result);}),
     savePackage:(key,partition,manifest)=>run(['packages','chunks'],'readwrite',(tx,done)=>{

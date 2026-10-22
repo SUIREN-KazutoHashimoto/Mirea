@@ -24,6 +24,13 @@ public final class PlaybackJournal implements AutoCloseable {
         if(body==null){db.delete("progress","partition=? AND asset=?",new String[]{partition,asset});return;}
         ContentValues v=new ContentValues();v.put("partition",partition);v.put("asset",asset);v.put("body",body.toString());if(db.insertWithOnConflict("progress",null,v,SQLiteDatabase.CONFLICT_REPLACE)==-1)throw new android.database.sqlite.SQLiteException("Playback progress outbox could not be saved");
     }
+    public void synchronizeProgress(PlaybackApi api)throws Exception{
+        List<String> assets=new ArrayList<>();synchronized(this){try(Cursor c=db.rawQuery("SELECT asset FROM progress WHERE partition=?",new String[]{api.partition})){while(c.moveToNext())assets.add(c.getString(0));}}
+        for(String id:assets){
+            PlaybackService active=PlaybackService.current;if(active!=null&&active.ownsProgress(api.partition,id))continue;
+            try{PlaybackProgress progress=new PlaybackProgress(api,this,id);progress.flush();}catch(PlaybackApi.Failure failure){if(failure.status==401)throw failure;if(!failure.denied()&&failure.status!=409)throw failure;}
+        }
+    }
     public void flush(PlaybackApi api)throws Exception{
         JSONArray events=new JSONArray();JSONObject view=null;List<Long> ids=new ArrayList<>();String first=null;
         synchronized(this){try(Cursor c=db.rawQuery("SELECT id,view_id,body FROM events WHERE partition=? ORDER BY id LIMIT 40",new String[]{api.partition})){

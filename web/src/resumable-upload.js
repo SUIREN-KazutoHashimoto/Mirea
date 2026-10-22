@@ -3,7 +3,7 @@ const digest = async bytes => hex(await crypto.subtle.digest('SHA-256', bytes));
 const abortError = () => new Error('アップロードをキャンセルしました。');
 const transient = status => !status || [408, 409, 425, 429].includes(status) || status >= 500;
 
-export function createResumableUpload({ endpoint, token, userId, unauthorized }, shelfId, files, title, onProgress, {retainOriginal=false}={}) {
+export function createResumableUpload({ endpoint, token, userId, unauthorized }, shelfId, files, title, onProgress, {retainOriginal=true}={}) {
   const controller = new AbortController();
   const { signal } = controller;
   let xhr, uploadId, storageKey, cancelled = false, processing = false;

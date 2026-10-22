@@ -9,6 +9,32 @@ import javax.crypto.*;
 import javax.crypto.spec.*;
 
 public class PlaybackTest {
+    @Test public void offlineLeaseClockUsesRealElapsedTimeAndRejectsRollbackAcrossRestart()throws Exception{
+        long wall=1800000000000L;
+        JSONObject record=new JSONObject().put("wall",wall).put("lastWall",wall+1000).put("elapsed",10000).put("lastElapsed",11000).put("grant",new JSONObject().put("serverTime",wall).put("expiresAt",wall+OfflineLease.WINDOW));
+        assertEquals(OfflineLease.WINDOW-1000,OfflineLease.remaining(record,wall+1000,11000));
+        assertEquals(0,OfflineLease.remaining(record,wall+1000,10000+OfflineLease.WINDOW));
+        assertEquals(OfflineLease.WINDOW-86400000,OfflineLease.remaining(record,wall+86400000,500));
+        try{OfflineLease.remaining(record,wall-2000,12000);fail();}catch(IllegalStateException expected){}
+    }
+    @Test public void offlineProgressReopensWithoutNetworkAndPreservesPendingIdsForAutomaticReconnect()throws Exception{
+        final JSONObject[] saved={new JSONObject().put("revision",3).put("last",new JSONObject().put("positionMs",2000).put("durationMs",10000))};final boolean[] online={false};List<JSONObject> sent=new ArrayList<>();
+        PlaybackProgress.Store store=new PlaybackProgress.Store(){public JSONObject load(){return saved[0];}public void save(JSONObject row){saved[0]=row;}};
+        PlaybackProgress.Transport transport=(method,body)->{if(!online[0])throw new java.io.IOException("offline");if(method.equals("GET"))return new JSONObject().put("revision",3);sent.add(new JSONObject(body.toString()));return new JSONObject().put("progress",new JSONObject().put("revision",4).put("positionMs",5000).put("durationMs",10000));};
+        PlaybackProgress offline=new PlaybackProgress(transport,store);assertEquals(2000,offline.initial().getLong("positionMs"));offline.update(5000,10000);try{offline.flush();fail();}catch(java.io.IOException expected){}
+        String pending=saved[0].getJSONObject("pending").getString("updateId");
+        PlaybackProgress restarted=new PlaybackProgress(transport,store);assertEquals(5000,restarted.initial().getLong("positionMs"));
+        online[0]=true;restarted.flush();assertEquals(pending,sent.get(0).getString("updateId"));assertEquals(3,sent.get(0).getLong("revision"));assertEquals(4,saved[0].getLong("revision"));
+    }
+    @Test public void knownOfflineStartupDoesNotEvenAttemptProgressTransportAndRetainsPendingRevision()throws Exception{
+        String id=UUID.randomUUID().toString();final JSONObject[] saved={new JSONObject().put("revision",7).put("pending",new JSONObject().put("updateId",id).put("revision",7).put("positionMs",4500).put("durationMs",10000))};final int[] calls={0};
+        PlaybackProgress progress=new PlaybackProgress((method,body)->{calls[0]++;return new JSONObject().put("progress",new JSONObject().put("revision",8).put("positionMs",4500).put("durationMs",10000));},new PlaybackProgress.Store(){public JSONObject load(){return saved[0];}public void save(JSONObject value){saved[0]=value;}},true);
+        assertEquals(0,calls[0]);assertEquals(4500,progress.initial().getLong("positionMs"));assertEquals(id,saved[0].getJSONObject("pending").getString("updateId"));progress.flush();assertEquals(1,calls[0]);assertEquals(8,saved[0].getLong("revision"));
+    }
+    @Test public void fixedQualityPersistsAsACompatibleResolutionWithoutClaimingNativeAbr()throws Exception{
+        JSONArray q=new JSONArray().put(new JSONObject().put("quality","360p")).put(new JSONObject().put("quality","720p"));
+        assertEquals("720p",PlaybackQuality.resolve(q,"1080p"));assertEquals("360p",PlaybackQuality.resolve(q,"480p"));assertEquals("360p",PlaybackQuality.resolve(q,"144p"));assertEquals("legacy",PlaybackQuality.resolve(q,"legacy"));assertEquals("legacy",PlaybackQuality.resolve(new JSONArray(),"720p"));assertEquals("legacy",PlaybackQuality.resolve(q,"../../original"));
+    }
     @Test public void contextsRequireHttpsAndNeverPutCredentialsInPaths()throws Exception{
         PlaybackApi api=new PlaybackApi("https://mirea.example:3443/","a".repeat(43),"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");assertEquals(64,api.partition.length());assertEquals("https://mirea.example:3443",api.origin);
         for(String origin:new String[]{"http://mirea.example","https://user:password@mirea.example","https://mirea.example/path","https://mirea.example/?token=abc"}){try{new PlaybackApi(origin,"a".repeat(43),api.userId);fail(origin);}catch(IllegalArgumentException expected){}}

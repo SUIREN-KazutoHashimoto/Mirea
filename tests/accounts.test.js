@@ -8,6 +8,43 @@ import { join } from 'node:path';
 import { createApp } from '../server/app.js';
 
 const password='account-test-password';
+const cookieOf=response=>response.headers['set-cookie'].split(';')[0];
+
+test('remembered browser sessions persist without renewing, remain HttpOnly and never authorize other APIs',async t=>{
+  const c=await setup(t),response=await c.req('POST','/auth/login',null,{email:c.owner.user.email,password}),value=response.json(),cookie=cookieOf(response),header=response.headers['set-cookie'];
+  for(const attribute of ['Path=/api/v1','Secure','HttpOnly','SameSite=Strict','Expires='])assert.ok(header.includes(attribute),header);
+  assert.ok(!/Domain=/i.test(header));assert.ok(Number(header.match(/Max-Age=(\d+)/)[1])<=2592000);
+  const count=c.db.prepare('SELECT COUNT(*) n FROM sessions').get().n;
+  for(let i=0;i<2;i++){
+    const restored=await c.app.inject({url:'/api/v1/auth/remember',headers:{cookie}});assert.equal(restored.statusCode,200,restored.body);assert.deepEqual(restored.json(),value);assert.match(restored.headers['cache-control'],/no-store/);
+  }
+  assert.equal(c.db.prepare('SELECT COUNT(*) n FROM sessions').get().n,count);
+  assert.equal((await c.app.inject({url:'/api/v1/shelves',headers:{cookie}})).statusCode,401);
+  assert.equal((await c.app.inject({method:'POST',url:'/api/v1/auth/remember',headers:{cookie}})).statusCode,401);
+  assert.equal((await c.app.inject({url:'/api/v1/auth/remember',headers:{cookie,'sec-fetch-site':'cross-site'}})).statusCode,403);
+  assert.equal((await c.app.inject({url:'/api/v1/auth/remember',headers:{cookie:cookie+'; '+cookie}})).statusCode,401);
+  const optedOut=await c.req('POST','/auth/login',null,{email:c.owner.user.email,password,remember:false});assert.match(optedOut.headers['set-cookie'],/Max-Age=0/);
+  const enabled=await c.req('POST','/auth/remember',value);assert.equal(cookieOf(enabled),cookie);
+  const unmatched=await c.app.inject({method:'DELETE',url:'/api/v1/auth/remember',headers:{cookie},payload:{token:c.member.token}});assert.equal(unmatched.statusCode,204);assert.equal(unmatched.headers['set-cookie'],undefined);
+  const forgotten=await c.app.inject({method:'DELETE',url:'/api/v1/auth/remember',headers:{cookie},payload:{token:value.token}});assert.equal(forgotten.statusCode,204);assert.match(forgotten.headers['set-cookie'],/Max-Age=0/);
+  await c.app.close();c.app=await createApp(c.options);
+  assert.equal((await c.app.inject({url:'/api/v1/auth/remember',headers:{cookie}})).statusCode,200,'survives server restart');
+  const logout=await c.req('POST','/auth/logout',value);assert.equal(logout.statusCode,204);assert.match(logout.headers['set-cookie'],/Max-Age=0/);
+  assert.equal((await c.app.inject({url:'/api/v1/auth/remember',headers:{cookie}})).statusCode,401);
+});
+
+test('remembered sessions reject expiry, disabled accounts and revoked credentials; account edits rotate remembered cookies',async t=>{
+  const c=await setup(t),login=await c.req('POST','/auth/login',null,{email:c.owner.user.email,password}),cookie=cookieOf(login);
+  const changed=await c.app.inject({method:'PATCH',url:'/api/v1/account',headers:{authorization:'Bearer '+login.json().token,cookie},payload:{name:'Updated',currentPassword:password}});
+  assert.equal(changed.statusCode,200,changed.body);const next=cookieOf(changed);assert.notEqual(next,cookie);
+  assert.equal((await c.app.inject({url:'/api/v1/auth/remember',headers:{cookie}})).statusCode,401);
+  assert.equal((await c.app.inject({url:'/api/v1/auth/remember',headers:{cookie:next}})).json().user.name,'Updated');
+  c.db.prepare('UPDATE sessions SET expires_at=1 WHERE user_id=?').run(c.owner.user.id);
+  assert.equal((await c.app.inject({url:'/api/v1/auth/remember',headers:{cookie:next}})).statusCode,401);
+  const other=await c.req('POST','/auth/login',null,{email:c.member.user.email,password});
+  c.db.prepare("INSERT INTO user_access(user_id,server_role,disabled) VALUES(?,'user',1)").run(c.member.user.id);
+  assert.equal((await c.app.inject({url:'/api/v1/auth/remember',headers:{cookie:cookieOf(other)}})).statusCode,401);
+});
 async function setup(t){
   const dataDir=await mkdtemp(join(tmpdir(),'mirea-accounts-')),options={dataDir,rateLimit:false};
   const c={dataDir,options,app:await createApp(options)};

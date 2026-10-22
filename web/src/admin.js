@@ -1,21 +1,23 @@
 import {saveBackup} from './admin-downloads.js';
 import {getSession} from './api.js';
+import {mountAdminJobs} from './admin-jobs-ui.js';
+import {mountAdminCleanup} from './admin-cleanup-ui.js';
 
 const states={queued:'待機中',running:'実行中',processing:'処理中',uploading:'受信中',complete:'完了',failed:'失敗',cancelled:'取消',rolled_back:'旧版へ復旧'};
-const kinds={'validate-image':'画像の検証',thumbnail:'サムネイル',preview:'動画プレビュー',transcode:'配信画質・HLS',backup_metadata:'メタデータバックアップ',backup_full:'全体バックアップ'};
+const kinds={'validate-image':'画像の検証',thumbnail:'サムネイル',preview:'動画プレビュー',transcode:'配信画質・HLS',navigation:'動画ナビゲーション',backup_metadata:'メタデータバックアップ',backup_full:'全体バックアップ'};
 export async function openAdmin({dialog,api,esc,bytes,onStatistics}){
   const actor=getSession();const access=await api('/admin/access');if(!access.isServerAdmin||getSession()!==actor)throw new Error('サーバー管理者のみ利用できます。');
-  const tabs=[['overview','概要'],['jobs','ジョブ・再生成'],['users','アカウント'],['shelves','本棚の権限'],['statistics','統計'],['backups','バックアップ'],['updates','サーバー更新'],['audit','管理操作の記録']];
+  const tabs=[['overview','概要'],['jobs','ジョブ・再生成'],['cleanup','ファイル整理'],['users','アカウント'],['shelves','本棚の権限'],['statistics','統計'],['backups','バックアップ'],['updates','サーバー更新'],['audit','管理操作の記録']];
   const node=dialog('サーバー管理',`<div class="admin-layout"><nav class="admin-nav" aria-label="サーバー管理"><span class="eyebrow">SERVER ADMINISTRATION</span>${tabs.map(([id,label])=>`<button type="button" data-admin-tab="${id}" aria-current="false">${label}</button>`).join('')}</nav><section class="admin-panel" aria-live="polite"></section></div>`,'admin-modal');
   const panel=node.querySelector('.admin-panel');let active='',revision=0,disposed=false,poll;
   const current=()=>!disposed&&getSession()===actor;
   node.addEventListener('close',()=>{disposed=true;revision++;clearInterval(poll);},{once:true});
   const status=error=>{if(current()){let box=panel.querySelector('.admin-status');if(!box){box=document.createElement('p');box.className='admin-status';box.setAttribute('role','status');panel.append(box);}box.textContent=error.message??error;}};
-  function confirm(title,description,fields,submit){
-    const modal=dialog(title,`<form class="modal-body admin-confirm"><p>${esc(description)}</p>${fields}<label>現在の管理者パスワード<input name="currentPassword" type="password" autocomplete="current-password" maxlength="128" required></label><label class="confirm-row"><input name="confirmed" type="checkbox" required>操作内容を確認しました</label><p class="form-error" role="alert" hidden></p><button class="button primary" type="submit">実行する</button></form>`);
+  function confirm(title,description,fields,submit,{password=true}={}){
+    const modal=dialog(title,`<form class="modal-body admin-confirm"><p>${esc(description)}</p>${fields}${password?'<label>現在の管理者パスワード<input name="currentPassword" type="password" autocomplete="current-password" maxlength="128" required></label>':''}<label class="confirm-row"><input name="confirmed" type="checkbox" required>操作内容を確認しました</label><p class="form-error" role="alert" hidden></p><button class="button primary" type="submit">実行する</button></form>`);
     const form=modal.querySelector('form');form.onsubmit=async event=>{event.preventDefault();if(!current()){modal.close();return;}const button=form.querySelector('button');button.disabled=true;
-      try{await submit(Object.fromEntries(new FormData(form)));form.reset();modal.close();if(current())await select(active);}
-      catch(error){form.elements.currentPassword.value='';const box=form.querySelector('.form-error');box.textContent=error.message;box.hidden=false;button.disabled=false;}
+      try{const result=await submit(Object.fromEntries(new FormData(form)));form.reset();modal.close();if(current()){await select(active);if(result?.message)status(result.message);}}
+      catch(error){if(form.elements.currentPassword)form.elements.currentPassword.value='';const box=form.querySelector('.form-error');box.textContent=error.message;box.hidden=false;button.disabled=false;}
     };
   }
   const action=(button,work)=>{button.onclick=async()=>{button.disabled=true;try{await work();}catch(error){status(error);}finally{if(current())button.disabled=false;}};};
@@ -29,11 +31,10 @@ export async function openAdmin({dialog,api,esc,bytes,onStatistics}){
         const data=await api('/admin/overview');if(!valid())return;
         panel.innerHTML=`<span class="eyebrow">MIREA CONTROL ROOM</span><h3>サーバーの状態</h3><p class="muted">サーバー管理権限は、本棚への閲覧権限とは別です。個人の閲覧ログは表示しません。</p><div class="admin-metrics"><article><strong>${data.accounts}</strong><small>登録アカウント</small></article><article><strong>${data.shelves}</strong><small>本棚</small></article><article><strong>${data.assets.reduce((n,a)=>n+a.count,0)}</strong><small>アセット</small></article><article><strong>${bytes(data.assets.reduce((n,a)=>n+a.canonicalBytes,0))}</strong><small>基本メディアの合計（派生データ除外）</small></article></div><h4>アップロード</h4>${data.uploads.map(row=>`<p>${esc(states[row.state])}: ${row.count}件</p>`).join('')||'<p>処理はありません。</p>'}<p class="muted">データベーススキーマ v${data.schema}</p>`;
       }else if(tab==='jobs'){
-        panel.innerHTML='<h3>ジョブと再生成</h3><p class="muted">アップロード後処理・画像生成を確認できます。再生成中も既存配信は保持します。配信画質の再生成は保持原本を優先し、なければ既存MP4から作成するため再圧縮になります。基本MP4は置き換えません。</p><form class="admin-toolbar asset-search"><input name="q" aria-label="アセット検索" placeholder="タイトルで検索"><button class="button secondary">検索</button></form><div class="admin-assets"></div><h4>実行状況（最新100件ずつ）</h4><div class="admin-job-list"></div>';
-        const list=panel.querySelector('.admin-job-list');
-        const loadJobs=async()=>{const data=await api('/admin/jobs');if(!valid())return;list.innerHTML=[...data.jobs,...data.uploads.map(row=>({...row,upload:true})),...data.previews,...data.thumbnails,...(data.processors??[])].map(jobCard).join('')||'<p>処理はありません。</p>';list.querySelectorAll('[data-retry-upload]').forEach(b=>b.onclick=()=>confirm('失敗したアップロードを再試行','保存されている転送原本から処理をやり直します。','',fields=>api(`/admin/uploads/${b.dataset.retryUpload}/retry`,{method:'POST',body:{currentPassword:fields.currentPassword}})));};
-        const search=panel.querySelector('.asset-search');search.onsubmit=async event=>{event.preventDefault();try{const data=await api('/admin/assets?q='+encodeURIComponent(search.elements.q.value));if(!valid())return;const box=panel.querySelector('.admin-assets');box.innerHTML=data.assets.map(item=>`<article class="admin-card"><strong>${esc(item.title)}</strong><small>${esc(item.shelf)} · ${esc(item.mimeType)}</small><div class="admin-actions"><button class="button secondary" data-asset="${esc(item.id)}" data-kind="thumbnail">表紙を再生成</button>${item.mimeType.startsWith('video/')?`<button class="button secondary" data-asset="${esc(item.id)}" data-kind="preview">プレビューを再生成</button><button class="button secondary" data-asset="${esc(item.id)}" data-kind="transcode">配信画質・HLSを再生成</button>`:''}</div></article>`).join('')||'<p>見つかりません。</p>';box.querySelectorAll('[data-asset]').forEach(b=>b.onclick=()=>confirm(kinds[b.dataset.kind]+'を再生成','既存の配信データを残して新しく生成します。','',fields=>api(`/admin/assets/${b.dataset.asset}/regenerate`,{method:'POST',body:{kind:b.dataset.kind,currentPassword:fields.currentPassword}})));}catch(error){status(error);}};
-        await loadJobs();poll=setInterval(()=>loadJobs().catch(status),4000);
+        const loadJobs=await mountAdminJobs({panel,api,esc,bytes,confirm,valid,status});
+        if(valid())poll=setInterval(()=>loadJobs().catch(status),4000);
+      }else if(tab==='cleanup'){
+        mountAdminCleanup({panel,api,esc,bytes,confirm,valid,status});
       }else if(tab==='users'){
         panel.innerHTML='<h3>アカウント管理</h3><p class="muted">権限・認証情報を変更すると対象アカウントの全端末をログアウトします。最後の有効な管理者は停止・削除できません。</p><form class="admin-toolbar user-search"><input name="q" aria-label="アカウント検索" placeholder="名前・メールで検索"><button class="button secondary">検索</button><button type="button" class="button primary create-user">新規作成</button></form><div class="admin-users"></div><button class="button secondary next-users" hidden>次の100件</button>';
         let next='';const search=panel.querySelector('.user-search');

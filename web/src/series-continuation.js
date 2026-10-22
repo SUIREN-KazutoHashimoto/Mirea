@@ -1,9 +1,10 @@
 // No media or keys are cached here. Each transition fetches current series membership.
-export function createSeriesContinuation({assetId,loadContext,move,isActive=()=>true,enabled=true,changed=()=>{},delayMs=5000,now=Date.now,schedule=setTimeout,unschedule=clearTimeout}){
+export function createSeriesContinuation({assetId,loadContext,move,isActive=()=>true,enabled=true,changed=()=>{},delayMs=5000,now=Date.now,schedule=setTimeout,unschedule=clearTimeout,order}){
   let context=null,anchor=null,disposed=false,busy=false,timer,deadline=0,epoch=0,message='';
+  const activeOrder=()=>order&&(order.modes.shuffle||order.modes.repeat==='series');
   const next=()=>context?.items?.[context.currentIndex+1]??null;
   const state=()=>({context,enabled,busy,message,countdown:deadline?Math.max(0,Math.ceil((deadline-now())/1000)):null,
-    canContinue:!disposed && !busy && enabled && isActive() && Boolean(next())});
+    canContinue:!disposed && !busy && enabled && isActive() && Boolean(activeOrder()?order.canMove(context,assetId):next())});
   const emit=()=>changed(state());
   function cancel(text=''){
     epoch++;unschedule(timer);timer=undefined;deadline=0;message=text;if(!disposed)emit();
@@ -23,12 +24,13 @@ export function createSeriesContinuation({assetId,loadContext,move,isActive=()=>
         message='シリーズの構成が変わりました。閉じて開き直してください。';return false;
       }
       accept(fresh);
+      const planned=activeOrder()&&!targetId?order.plan(fresh,assetId,direction):null;
       const index=targetId?fresh.items.findIndex(item=>item.id===targetId):fresh.currentIndex+direction;
-      const target=fresh.items[index];
-      if(!target || target.id===assetId){message=targetId?'選択したアセットはシリーズから外されました。':'シリーズの端に到達しました。';return false;}
+      const target=activeOrder()&&!targetId?planned?.target:fresh.items[index];
+      if(!target || target.id===assetId&&!(order&&continuous&&order.modes.repeat==='series')){message=targetId?'選択したアセットはシリーズから外されました。':'シリーズの端に到達しました。';return false;}
       // The viewer disposes old progress/analytics/media keys before opening the new asset.
-      const allowed=()=>!disposed && revision===epoch && isActive() && (!continuous || enabled);
-      return (await move(target,{startAtBeginning:continuous,autoplay:continuous && autoplay},allowed))!==false;
+      let committed=false;const allowed=()=>{if(disposed||revision!==epoch||!isActive()||continuous&&!enabled)return false;if(planned&&!committed){if(!planned.commit())return false;committed=true;}return true;};
+      return (await move(target,{startAtBeginning:continuous,autoplay},allowed))!==false;
     }catch(error){if(!disposed && revision===epoch)message=error.message || '次のアセットを開けません。接続を確認してもう一度お試しください。';return false;}
     finally{busy=false;if(!disposed)emit();}
   }
@@ -49,8 +51,8 @@ export function createSeriesContinuation({assetId,loadContext,move,isActive=()=>
     videoEnded(){
       if(disposed || busy || deadline)return;
       if(!enabled || !isActive())return;
-      if(!next()){message='シリーズの最後のアセットです。';emit();return;}
-      message='';deadline=now()+delayMs;tick();
+      if(!(activeOrder()?order.canMove(context,assetId):next())){message='シリーズの最後のアセットです。';emit();return;}
+      message='';deadline=now()+(order&&(order.modes.shuffle||order.modes.repeat==='series')?250:delayMs);tick();
     },
     dispose(){if(disposed)return;disposed=true;cancel();}
   };

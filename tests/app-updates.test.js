@@ -41,10 +41,12 @@ test('public Android update endpoints fail closed and support exact HEAD and res
   r=await app.inject({url:'/api/v1/app-updates/android/apk/4',headers:{range:'bytes=5-9'}});assert.equal(r.statusCode,206);assert.deepEqual(r.rawPayload,bytes.subarray(5,10));assert.equal(r.headers['content-range'],`bytes 5-9/${bytes.length}`);
   r=await app.inject({method:'HEAD',url:'/api/v1/app-updates/android/apk/4'});assert.equal(Number(r.headers['content-length']),bytes.length);assert.equal(r.body,'');
   assert.equal((await app.inject('/api/v1/app-updates/android/apk/3')).statusCode,404);
+  r=await app.inject({url:'/api/v1/app-updates/android/latest.apk',headers:{range:'bytes=5-9'}});assert.equal(r.statusCode,206);assert.deepEqual(r.rawPayload,bytes.subarray(5,10));
   assert.equal((await app.inject('/api/v1/app-updates/android/apk/..%5Csecret')).statusCode,404);
   assert.equal((await app.inject({url:'/api/v1/app-updates/android/apk/4',headers:{range:'bytes=99999-'}})).statusCode,416);
   await writeFile(join(dir,'mirea-android-4.apk'),Buffer.alloc(bytes.length,0));
   r=await app.inject('/api/v1/app-updates/android/manifest');assert.equal(r.statusCode,503);assert.ok(!r.body.includes(dir));
+  assert.equal((await app.inject('/api/v1/app-updates/android/latest.apk')).statusCode,503);
   await writeFile(join(dir,'mirea-android-4.apk'),bytes);
   await writeFile(join(dir,'manifest.json'),unchecked({...payload(),expiresAt:now-1}));
   assert.equal((await app.inject('/api/v1/app-updates/android/manifest')).statusCode,503);

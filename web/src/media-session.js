@@ -26,7 +26,14 @@ export function mountMediaSession(media,{title='',kind='video',artwork,previous,
     if(media.requestPictureInPicture)return media.requestPictureInPicture();
     media.webkitSetPresentationMode('picture-in-picture');
   }
+  async function background(minimize){
+    if(kind==='video'&&supportsPip&&doc.pictureInPictureElement!==media&&media.webkitPresentationMode!=='picture-in-picture'){
+      try{await pip();}catch{/* The existing tab mini-player remains a safe fallback. */}
+    }
+    if(!disposed)minimize();
+    else if(doc?.pictureInPictureElement===media)doc.exitPictureInPicture?.().catch(()=>{});
+  }
   for(const event of ['play','pause','ended','loadedmetadata','timeupdate','ratechange','seeked'])listen(media,event,update);
   update();
-  return {supportsPip,pip,dispose(){disposed=true;listeners.forEach(remove=>remove());for(const action of actions){try{session?.setActionHandler(action,null);}catch{}}if(session){session.playbackState='none';session.metadata=null;try{session.setPositionState?.();}catch{}}if(doc?.pictureInPictureElement===media)doc.exitPictureInPicture?.().catch(()=>{});else if(media.webkitPresentationMode==='picture-in-picture')media.webkitSetPresentationMode?.('inline');}};
+  return {supportsPip,pip,background,dispose(){disposed=true;listeners.forEach(remove=>remove());for(const action of actions){try{session?.setActionHandler(action,null);}catch{}}if(session){session.playbackState='none';session.metadata=null;try{session.setPositionState?.();}catch{}}if(doc?.pictureInPictureElement===media)doc.exitPictureInPicture?.().catch(()=>{});else if(media.webkitPresentationMode==='picture-in-picture')media.webkitSetPresentationMode?.('inline');}};
 }
