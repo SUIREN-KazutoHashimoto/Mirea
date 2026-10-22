@@ -7,7 +7,7 @@ import {transaction} from './database.js';
 
 const UUID=/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 const uuid={type:'string',pattern:UUID.source};
-const groupNames=['uploads','uploads/books','uploads/staging','uploads/transfers','videos','originals','previews','thumbnails'];
+const groupNames=['uploads','uploads/books','uploads/staging','uploads/transfers','videos','originals','previews','thumbnails','thumbnails/custom'];
 
 // No arbitrary paths from HTTP. Only these media roots and UUID-named children
 // are considered; DB/keys/backups/update packages/work directories are excluded.
@@ -30,7 +30,7 @@ export async function registerAdminCleanup(app,{db,dataDir,adminAccess:a,mainten
     try{await visit(path);}catch(error){if(error.code==='ENOENT')return null;throw error;}
     return {path,bytes,files,latest,fingerprint:hash.digest('hex')};
   }
-  const assetPaths=id=>groupNames.map(name=>join(base,name,id+(name==='previews'?'.mp4':name==='thumbnails'?'.jpg':'')));
+  const assetPaths=id=>groupNames.map(name=>join(base,name,id+(name==='previews'?'.mp4':name.startsWith('thumbnails')?'.jpg':'')));
   async function describe(candidate){
     const parts=[];let item;
     if(candidate.kind==='asset'){
@@ -38,6 +38,7 @@ export async function registerAdminCleanup(app,{db,dataDir,adminAccess:a,mainten
       if(!item||hasReader(item.id)||protectedUpload(item.id))return null;
       for(const path of assetPaths(item.id)){const part=await tree(path);if(part)parts.push(part);}
     }else{
+      if(candidate.custom&&db.prepare('SELECT 1 FROM thumbnail_overrides WHERE image_id=?').get(candidate.assetId))return null;
       if(db.prepare('SELECT 1 FROM items WHERE id=?').get(candidate.assetId)||protectedUpload(candidate.assetId))return null;
       const part=await tree(candidate.path);if(!part||part.latest>Date.now()-graceMs)return null;parts.push(part);
     }
@@ -58,10 +59,11 @@ export async function registerAdminCleanup(app,{db,dataDir,adminAccess:a,mainten
         const directory=await opendir(join(base,name)).catch(error=>{if(error.code==='ENOENT')return null;throw error;});if(!directory)continue;
         for await(const file of directory){const entry=file.name;
           if(++budget>20000||candidates.length>=200){limited=true;break outer;}
-          const id=(name==='previews'?entry.replace(/\.mp4$/,''):name==='thumbnails'?entry.replace(/\.jpg$/,''):entry);
-          if(!UUID.test(id)||name==='previews'&&!entry.endsWith('.mp4')||name==='thumbnails'&&!entry.endsWith('.jpg'))continue;
+          const id=(name==='previews'?entry.replace(/\.mp4$/,''):name.startsWith('thumbnails')?entry.replace(/\.jpg$/,''):entry);
+          if(!UUID.test(id)||name==='previews'&&!entry.endsWith('.mp4')||name.startsWith('thumbnails')&&!entry.endsWith('.jpg'))continue;
+          if(name==='thumbnails/custom'&&db.prepare('SELECT 1 FROM thumbnail_overrides WHERE image_id=?').get(id))continue;
           if(db.prepare('SELECT 1 FROM items WHERE id=?').get(id)||protectedUpload(id))continue;
-          await add({kind:'orphan',assetId:id,path:join(base,name,entry),title:name+'/'+entry});
+          await add({kind:'orphan',custom:name==='thumbnails/custom',assetId:id,path:join(base,name,entry),title:name+'/'+entry});
         }
       }
       a.requireAdmin(req);const scanId=randomUUID(),expiresAt=Date.now()+600000;

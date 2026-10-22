@@ -28,8 +28,10 @@ test('upload component renders mixed jobs, editable titles and page controls, th
 test('upload component retry freezes prior choices and never resends a completed asset',async()=>{
  const calls=[];let failure=true;const ui=mount({upload:(_,files)=>{calls.push(files[0].name);return {promise:failure&&files[0].name==='one.pdf'?Promise.reject(Error('network fixture')):Promise.resolve()};}});ui.select([file('one.pdf'),file('two.pdf')]);await ui.submit();assert.equal(ui.node.isConnected,true);assert.equal(ui.node.querySelector('form').elements.file.disabled,true);assert.equal(ui.node.querySelector('[type="submit"]').textContent,'未完了だけ再試行');assert(ui.node.querySelector('.upload-entry-status').textContent.includes('network fixture'));failure=false;await ui.submit();assert.deepEqual(calls,['one.pdf','two.pdf','one.pdf']);assert.equal(ui.node.isConnected,false);
 });
-test('closing upload component during its asynchronous preflight never starts a transfer afterwards',async()=>{
- const preflight=deferred();let starts=0;const ui=mount({api:()=>preflight.promise,upload:()=>{starts++;assert.fail('late upload');}});ui.select([file('one.pdf')]);const done=ui.submit();ui.node.close();preflight.resolve({uploads:[]});await done;assert.equal(starts,0);
+test('closing upload dialog during preflight or active transfer does not cancel its queue',async()=>{
+ const preflight=deferred(),transfer=deferred();let starts=0,aborts=0;
+ const ui=mount({api:path=>path==='/uploads'?preflight.promise:Promise.resolve({series:[]}),upload:()=>{starts++;return {promise:transfer.promise,abort(){aborts++;},detach(){aborts++;}};}});
+ ui.select([file('one.pdf')]);const done=ui.submit();await tick();ui.node.close();preflight.resolve({uploads:[]});await tick();assert.equal(starts,1);assert.equal(aborts,0);transfer.resolve();await done;assert(ui.changes>0);
 });
 
 

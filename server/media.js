@@ -10,6 +10,7 @@ import { isAudio } from './audio-types.js';
 import { audioPlaceholder } from './audio-art.js';
 import { mediaBinary } from './media-binary.js';
 
+import {customThumbnail} from './custom-thumbnails.js';
 export const IMAGE_BOOK_MIME = 'application/vnd.mirea.image-book';
 export const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 export const imageExtension = mime => ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' })[mime];
@@ -134,6 +135,7 @@ export function createMediaProcessor() {
 export function createThumbnailStore(db, media, uploadDir, thumbnailDir) {
   const pending = new Map();
   const ensureThumbnail=async function(item) {
+    const override=customThumbnail(db,thumbnailDir,item.id);if(override)return override;
     const destination = join(thumbnailDir, `${item.id}.jpg`);
     try { await access(destination); return destination; } catch { /* create missing or legacy thumbnails */ }
     if (!pending.has(item.id)) {

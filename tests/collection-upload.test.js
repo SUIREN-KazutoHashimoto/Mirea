@@ -37,7 +37,7 @@ test('parallel batch holds at most three slots through processing, advances queu
  pending[0].resolve({item:{}});await tick();assert.equal(started.length,4);pending[1].reject(Error('fixture failure'));await tick();assert.equal(started.length,5);pending[2].resolve();await tick();assert.equal(started.length,6);pending.slice(3).forEach(d=>d.resolve());const result=await batch.promise;assert.equal(max,3);assert.equal(result.rows.filter(r=>r.state==='complete').length,5);assert.equal(result.rows[1].state,'failed');assert.match(result.rows[1].error,/fixture/);
  const retries=[];await createUploadBatch(result.rows.filter(r=>r.state!=='complete').map(r=>r.job),{start:job=>{retries.push(job.key);return {promise:Promise.resolve()};}}).promise;assert.deepEqual(retries,[jobs[1].key]);
 });
-test('closing stops queued/transferring work but detaches processing without deleting its server job; identity changes and 429 stop new starts',async()=>{
+test('explicit cancellation stops queued/transferring work but detaches processing without deleting its server job; identity changes and 429 stop new starts',async()=>{
  const jobs=planUploads(Array.from({length:5},(_,i)=>file(i+'.pdf'))),pending=[],actions=[];
  const batch=createUploadBatch(jobs,{start:job=>{const d=deferred();pending.push(d);const processing=pending.length===1;return {processing,promise:d.promise,detach(){actions.push('detach');d.reject(Error('detached'));},abort(){actions.push('abort');d.reject(Error('aborted'));}};}});
  await tick();batch.cancel();const result=await batch.promise;assert.deepEqual(actions,['detach','abort','abort']);assert.equal(pending.length,3);assert.equal(result.cancelled,true);assert.equal(result.rows[0].state,'detached');assert.equal(result.rows[3].state,'queued');
@@ -46,5 +46,5 @@ test('closing stops queued/transferring work but detaches processing without del
 });
 test('UI groups only display entries while retaining real assets for downloads, and freezes successful uploads on retry',async()=>{
  const main=await readFile(new URL('../web/src/main.js',import.meta.url),'utf8'),ui=await readFile(new URL('../web/src/upload-ui.js',import.meta.url),'utf8');assert(main.includes('collectionEntries(selected,series'));assert(main.includes('displayedItems=selected'));assert(main.includes('data-open-series'));assert(main.includes('seriesReturnView'));
- assert(ui.includes("results.get(job.key)?.state!=='complete'"));assert(ui.includes('isCurrent:alive'));assert(ui.includes('activeBatch?.cancel()'));assert(ui.includes('retainOriginal:form.elements.retainOriginal.checked'));assert(ui.includes('maxUploadBytes'));assert(ui.includes('data-page-up'));
+ assert(ui.includes("results.get(job.key)?.state!=='complete'"));assert(ui.includes('eager:nativeTransfersAvailable(),isCurrent'));assert(ui.includes('activeBatch?.cancel()'));assert(ui.includes('retainOriginal:requested.retainOriginal'));assert(ui.includes('maxUploadBytes'));assert(ui.includes('data-page-up'));
 });

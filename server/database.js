@@ -79,7 +79,7 @@ export function openDatabase(filename) {
         UPDATE schema_version SET version = 2;
       `));
     } finally { db.exec('PRAGMA foreign_keys = ON'); }
-  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
+  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
   if (version < 10) {
     // v10 adds EPUB while retaining v9's nullable uploader attribution.
     // Account deletion removes attribution, not another member's shared assets.
@@ -386,6 +386,7 @@ export function openDatabase(filename) {
       CREATE TRIGGER IF NOT EXISTS series_parent_changed AFTER UPDATE OF parent_id ON series WHEN OLD.parent_id IS NOT NEW.parent_id BEGIN UPDATE series SET revision=revision+1,updated_at=CAST(unixepoch('subsec')*1000 AS INTEGER) WHERE id=NEW.id;END;
       UPDATE schema_version SET version=16;`);
   });
+  db.exec(`CREATE TABLE IF NOT EXISTS thumbnail_overrides(asset_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,image_id TEXT NOT NULL,updated_at INTEGER NOT NULL);CREATE INDEX IF NOT EXISTS thumbnail_image ON thumbnail_overrides(image_id);UPDATE schema_version SET version=17;`);
   if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Database foreign key validation failed');
   return db;
 }

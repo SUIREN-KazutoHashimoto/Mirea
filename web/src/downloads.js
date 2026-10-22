@@ -5,7 +5,37 @@ import { NativePlayer,nativePlayerAvailable } from './native-player-bridge.js';
 import { beginUpdateActivity } from './update-busy.js';
 import {rememberDownloadProgress} from './progress.js';
 import {offlineVault} from './offline-vault.js';
+import {nativeTransfersAvailable,NativeTransfer,nativeTransferTask} from './native-transfers.js';
+import {trackTransfer} from './transfer-manager.js';
 
+let nativeImport;
+export function syncNativeDownloads(){
+  if(!nativeTransfersAvailable()||!getSession()?.token)return Promise.resolve();
+  if(nativeImport)return nativeImport;
+  nativeImport=(async()=>{
+    const ctx=context(),args={origin:ctx.endpoint,token:ctx.token,userId:ctx.userId},store=await openDownloadDb();
+    const completed=await NativeTransfer.completed(args);
+    for(const incoming of completed.manifests??[]){
+      if(!current(ctx))return;const manifest=validateManifest(incoming),key=packageKey(ctx,manifest.assetId),existing=await store.getPackage(key);
+      if(existing?.manifest.id!==manifest.id||existing.state!=='ready'){
+        await ensureDownloadWorker();await store.savePackage(key,ctx.partition,manifest);
+        for(const file of manifest.files)for(let part=0;part<file.chunks;part++){
+          if(!current(ctx))return;
+          const old=await store.getChunk(manifest.id,file.index,part),length=Math.min(manifest.chunkSize,file.size-part*manifest.chunkSize)+28;
+          if(old?.bytes.byteLength===length&&await ciphertextHash(old.bytes)===old.sha256)continue;
+          const chunk=await NativeTransfer.readChunk({...args,id:manifest.id,file:file.index,part}),bytes=Uint8Array.from(atob(chunk.bytes),c=>c.charCodeAt(0)).buffer;
+          if(bytes.byteLength!==length||await ciphertextHash(bytes)!==chunk.sha256)throw Error('バックグラウンド転送の保存データを検証できません。');
+          if(!current(ctx))return;await store.putChunk(key,manifest.id,file.index,part,bytes,chunk.sha256);
+        }
+      }
+      const grant=await NativeTransfer.lease({...args,id:manifest.id});if(!current(ctx))return;
+      const vault=await offlineVault();await vault.saveLease(ctx.partition,grant,ctx.userId);grant.key='';
+      if(grant.cover&&['image/jpeg','image/png','image/webp'].includes(grant.cover.mime)&&typeof grant.cover.bytes==='string'&&grant.cover.bytes.length<=350000)await vault.seal(ctx.partition,'cover:'+manifest.assetId,grant.cover);
+      await store.complete(key,manifest.id);
+      if(current(ctx)){await NativeTransfer.remove({...args,id:manifest.id});if(!isOfflineSession())saveThumbnail(ctx,manifest.assetId);}
+    }
+  })().finally(()=>{nativeImport=null;});return nativeImport;
+}
 const grants=new Map(),tasks=new Set();let workerReady;
 const scriptPath=()=>import.meta.env.DEV?'/src/download-sw.js':'/download-sw.js';
 const readyWithin=promise=>new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('暗号化キャッシュの準備がタイムアウトしました。再読み込みして再試行してください。')),10000);promise.then(value=>{clearTimeout(timer);resolve(value);},error=>{clearTimeout(timer);reject(error);});});
@@ -24,7 +54,7 @@ export function closeDownloads(){
   for(const controller of tasks)controller.abort();tasks.clear();
   for(const [id,grant] of [...grants]){lock(id);grant.onLock?.();}
 }
-export function downloadsNativeState(active){if(!active)closeDownloads();}
+export function downloadsNativeState(active){if(!active){for(const [id,grant]of [...grants]){lock(id);grant.onLock?.();}}}
 if(typeof window!=='undefined'){
   window.addEventListener('pagehide',closeDownloads);
   navigator.serviceWorker?.addEventListener('message',event=>{
@@ -49,7 +79,7 @@ export function ensureDownloadWorker(){
     return registration;
   })().catch(error=>{workerReady=null;throw error;});
 }
-export async function listDownloads(){const ctx=context(),store=await openDownloadDb();const rows=await store.list(ctx.partition);return current(ctx)?rows:[];}
+export async function listDownloads(){await syncNativeDownloads().catch(()=>{});const ctx=context(),store=await openDownloadDb();const rows=await store.list(ctx.partition);return current(ctx)?rows:[];}
 export async function downloadedThumbnail(assetId){
   const ctx=context(),store=await openDownloadDb(),row=await store.getPackage(packageKey(ctx,assetId));
   if(row?.state!=='ready')return null;
@@ -60,23 +90,37 @@ export async function downloadedThumbnail(assetId){
 }
 async function saveThumbnail(ctx,assetId){
   try{
-    const blob=await authenticatedBlob(`/api/v1/items/${assetId}/thumbnail`);if(!current(ctx)||blob.size>262144||!['image/jpeg','image/png','image/webp'].includes(blob.type))return;
+    const blob=await authenticatedBlob(`/api/v1/items/${assetId}/thumbnail`,AbortSignal.timeout(2500));if(!current(ctx)||blob.size>262144||!['image/jpeg','image/png','image/webp'].includes(blob.type))return;
     const bytes=new Uint8Array(await blob.arrayBuffer()),pieces=[];
     for(let n=0;n<bytes.length;n+=8192)pieces.push(String.fromCharCode(...bytes.subarray(n,n+8192)));
     await(await offlineVault()).seal(ctx.partition,'cover:'+assetId,{mime:blob.type,bytes:btoa(pieces.join(''))});bytes.fill(0);
   }catch{/* A missing cover must not make a complete encrypted book unusable. */}
 }
 export async function clearAccountDownloads(){const ctx=context();closeDownloads();if(nativePlayerAvailable()){await NativePlayer.stop();await NativePlayer.cacheClear({partition:await ciphertextHash(new TextEncoder().encode(ctx.partition))});await NativePlayer.leaseClear({partition:await ciphertextHash(new TextEncoder().encode(ctx.partition))});}if(!globalThis.indexedDB)return;const store=await openDownloadDb();await(await offlineVault()).forget(ctx.endpoint,ctx.userId);await store.removePartition(ctx.partition);}
-export async function removeDownload(assetId){const ctx=context(),store=await openDownloadDb();for(const [id,grant] of [...grants])if(grant.context.partition===ctx.partition && grant.manifest.assetId===assetId){lock(id);grant.onLock?.();}const row=await store.getPackage(packageKey(ctx,assetId));if(nativePlayerAvailable()&&row){if((await NativePlayer.status()).item?.id===assetId)await NativePlayer.stop();await NativePlayer.cacheRemove({partition:await ciphertextHash(new TextEncoder().encode(ctx.partition)),id:row.manifest.id});await NativePlayer.leaseRevoke({partition:await ciphertextHash(new TextEncoder().encode(ctx.partition)),id:row.manifest.id});}if(row)await(await offlineVault()).revoke(ctx.partition,row.manifest.id);await store.remove(packageKey(ctx,assetId));}
+export async function removeDownload(assetId){const ctx=context(),store=await openDownloadDb();if(nativeTransfersAvailable())await NativeTransfer.removeAsset({origin:ctx.endpoint,token:ctx.token,userId:ctx.userId,assetId});for(const [id,grant] of [...grants])if(grant.context.partition===ctx.partition && grant.manifest.assetId===assetId){lock(id);grant.onLock?.();}const row=await store.getPackage(packageKey(ctx,assetId));if(nativePlayerAvailable()&&row){if((await NativePlayer.status()).item?.id===assetId)await NativePlayer.stop();await NativePlayer.cacheRemove({partition:await ciphertextHash(new TextEncoder().encode(ctx.partition)),id:row.manifest.id});await NativePlayer.leaseRevoke({partition:await ciphertextHash(new TextEncoder().encode(ctx.partition)),id:row.manifest.id});}if(row)await(await offlineVault()).revoke(ctx.partition,row.manifest.id);await store.remove(packageKey(ctx,assetId));}
 const delay=(ms,signal)=>new Promise((resolve,reject)=>{
   const abort=()=>{clearTimeout(timer);reject(new DOMException('中断しました。','AbortError'));};
   const timer=setTimeout(()=>{signal.removeEventListener('abort',abort);resolve();},ms);
   signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();
 });
-export async function downloadToDevice(item,onProgress=()=>{},externalSignal,quality){
+const downloading=new Map();
+export function downloadToDevice(item,onProgress=()=>{},externalSignal,quality){
+  const ctx=context(),identity=packageKey(ctx,item.id);
+  if(downloading.has(identity))return Promise.reject(new Error('この作品は転送中です。「転送状況」を確認してください。'));
+  const controller=new AbortController(),signal=externalSignal?AbortSignal.any([controller.signal,externalSignal]):controller.signal;
+  const row=trackTransfer({direction:'download',title:item.title,notifications:!nativeTransfersAvailable(),cancel:()=>controller.abort(),work:update=>performDownload(item,value=>{onProgress(value);update({percent:value.total?value.received/value.total*100:0,message:value.message||'暗号化データを保存中'});},signal,quality)});
+  const promise=row.promise.finally(()=>downloading.delete(identity));downloading.set(identity,promise);return promise;
+}
+async function performDownload(item,onProgress=()=>{},externalSignal,quality){
   const ctx=context(),controller=new AbortController(),releaseUpdate=beginUpdateActivity();tasks.add(controller);
   const signal=externalSignal?AbortSignal.any([controller.signal,externalSignal]):controller.signal;
   try{
+    if(nativeTransfersAvailable()){
+      const nativeContext={origin:ctx.endpoint,token:ctx.token,userId:ctx.userId},task=nativeTransferTask(nativeContext,'download',{assetId:item.id,title:item.title,...(quality?{quality}:{})},row=>onProgress({received:row.received,total:row.total||item.size,message:row.state==='queued'?'順番待ち':'暗号化データを保存中'}));
+      const stop=()=>task.abort();signal.addEventListener('abort',stop,{once:true});if(signal.aborted)stop();
+      try{await task.promise;signal.throwIfAborted();if(!current(ctx))throw new Error('ログイン先が変更されました。');await syncNativeDownloads();const store=await openDownloadDb();return await store.getPackage(packageKey(ctx,item.id));}
+      finally{signal.removeEventListener('abort',stop);}
+    }
     await ensureDownloadWorker();await navigator.storage?.persist?.().catch(()=>false);signal.throwIfAborted();
     const result=await api(`/items/${item.id}/download`,{method:'POST',signal,...(quality?{body:{quality}}:{})});
     if(!current(ctx))throw new Error('ログイン先が変更されました。');

@@ -76,7 +76,7 @@ test('real v15 additive migration preserves all prior columns and records and re
  db.exec("DROP TRIGGER series_parent_insert;DROP TRIGGER series_parent_update;DROP TRIGGER series_tree_shelf_update;DROP TRIGGER series_parent_changed;DROP INDEX series_parent;DROP TABLE series_create_requests;ALTER TABLE upload_sessions DROP COLUMN target_series_id;ALTER TABLE upload_sessions DROP COLUMN series_requested;ALTER TABLE upload_sessions DROP COLUMN series_warning;ALTER TABLE series DROP COLUMN parent_id;UPDATE schema_version SET version=15;");
  const tables=db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT IN ('schema_version','sqlite_sequence') ORDER BY name").all().map(s=>s.name),before=new Map();
  for(const table of tables){const columns=db.prepare('PRAGMA table_info('+table+')').all().map(c=>c.name);before.set(table,{columns,rows:db.prepare('SELECT '+columns.join(',')+' FROM '+table+' ORDER BY rowid').all()});}
- db.close();db=openDatabase(path);assert.equal(db.prepare('SELECT version FROM schema_version').get().version,16);
+ db.close();db=openDatabase(path);assert.equal(db.prepare('SELECT version FROM schema_version').get().version,17);
  for(const [table,value]of before)assert.deepEqual(db.prepare('SELECT '+value.columns.join(',')+' FROM '+table+' ORDER BY rowid').all(),value.rows,table);
  assert.equal(db.prepare("SELECT parent_id FROM series WHERE id='old'").get().parent_id,null);assert.equal(db.prepare('PRAGMA foreign_key_check').all().length,0);
  db.close();db=openDatabase(path);assert.equal(db.prepare("SELECT revision FROM series WHERE id='old'").get().revision,9);

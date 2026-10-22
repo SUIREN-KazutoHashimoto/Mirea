@@ -5,7 +5,12 @@ import {connectionBudget} from './connection-budget.js';
 import {createLoginStore} from './session-store.js';
 import { createResumableUpload } from './resumable-upload.js';
 import { beginUpdateActivity } from './update-busy.js';
+import {nativeTransfersAvailable,nativeUpload,configureNativeTransfers,invalidateTransfers} from './native-transfers.js';
+import {ciphertextHash} from './download-core.js';
+import {stopTransfers} from './transfer-manager.js';
 
+configureNativeTransfers(()=>session?.token?{origin:endpoint,token:session.token,userId:session.user.id}:null);
+function invalidateTransferContext(){stopTransfers();if(session?.user.id)ciphertextHash(new TextEncoder().encode((endpoint||location.origin)+'|'+session.user.id)).then(invalidateTransfers).catch(()=>{});}
 export const native = Capacitor.isNativePlatform();
 let savedEndpoint;try{savedEndpoint=localStorage.getItem('mirea.server');}catch{}
 let endpoint = native ? (savedEndpoint || import.meta.env.VITE_API_URL || '') : '';
@@ -46,7 +51,7 @@ export async function initializeSession({signal}={}){
     // A newer login/server selection wins over an older in-flight validation.
     // api() already clears the matching current session on a 401.
     if(authRevision!==revision||origin!==endpoint)return;
-    if(error.status===401){await loginStore.clear(origin,loaded.value.token,{signal});if(authRevision===revision)session=null;return;}const cached=await offlineIdentity(origin,session?.user.id);if(cached){session={...session,offline:true};return;}throw error;
+    if(error.status===401){await loginStore.clear(origin,loaded.value.token,{signal});if(authRevision===revision)session=null;return;}let cached=await offlineIdentity(origin,session?.user.id);if(!cached&&nativeTransfersAvailable()){await import('./downloads.js').then(m=>m.syncNativeDownloads()).catch(()=>{});cached=await offlineIdentity(origin,session?.user.id);}if(cached){session={...session,offline:true};return;}throw error;
   }
   if(authRevision!==revision||origin!==endpoint)return;
   if(current.user.id!==loaded.value.user.id){await setSession(null);return;}
@@ -62,13 +67,13 @@ export function setEndpoint(value) {
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
     throw new Error('HTTPSのサーバーURLを入力してください（例：https://mirea.example.com）。');
   }
-  invalidateNativePlayback();
+  invalidateNativePlayback();invalidateTransferContext();
   if(endpoint!==url.origin){session=null;authRevision++;try{sessionStorage.removeItem('mirea.session');}catch{}}
   endpoint = url.origin;
   try{localStorage.setItem('mirea.server', endpoint);}catch{}
 }
 export function setSession(value,{remember=rememberChoice,broadcast=true}={}) {
-  invalidateNativePlayback();
+  invalidateNativePlayback();invalidateTransferContext();
   const oldToken=session?.token,oldUser=session?.user.id;authRevision++;
   session = value;
   rememberChoice=remember;
@@ -131,7 +136,7 @@ export function upload(shelfId, files, title, onProgress, options) {
   const token = session?.token;
   const release = beginUpdateActivity();
   let task;
-  try { task = createResumableUpload({ endpoint, token, userId: session?.user?.id, unauthorized: () => {
+  try { task = nativeTransfersAvailable()&&files.every(file=>file.nativeId)?nativeUpload({origin:endpoint,token,userId:session.user.id},shelfId,files,title,onProgress,options):createResumableUpload({ endpoint, token, userId: session?.user?.id, unauthorized: () => {
     if (session?.token !== token) return;
     setSession(null);
     window.dispatchEvent(new Event('mirea:unauthorized'));

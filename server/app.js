@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import {registerCustomThumbnails} from './custom-thumbnails.js';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
@@ -50,7 +51,7 @@ const password = text(128, 12);
 const credentials = object({ email, password,remember:{type:'boolean',default:true} },['email','password']);
 const memberRole = { type: 'string', enum: ['editor', 'viewer'] };
 const publicUser = u => ({ id: u.id, email: u.email, name: u.name });
-const publicItem = i => ({
+const basePublicItem = i => ({
   id: i.id, shelfId: i.shelf_id, title: i.title, filename: i.filename, mimeType: i.mime_type,
   kind: i.mime_type === IMAGE_BOOK_MIME ? 'image-book' : i.mime_type === EPUB_MIME ? 'epub' : i.mime_type === 'application/pdf' ? 'pdf' : isAudio(i.mime_type) ? 'audio' : 'video',
   pageCount: i.page_count, thumbnailUrl: `/api/v1/items/${i.id}/thumbnail`, size: i.size, createdAt: i.created_at
@@ -69,6 +70,8 @@ export async function createApp(options = {}) {
   const videoTranscoder=options.videoTranscoder??createVideoTranscoder();
   const audioTranscoder=options.audioTranscoder??createAudioTranscoder();
   const ensureThumbnail = createThumbnailStore(db, media, uploadDir, thumbnailDir);
+  const coverRevision=db.prepare('SELECT image_id FROM thumbnail_overrides WHERE asset_id=?');
+  const publicItem=i=>{const image=coverRevision.get(i.id)?.image_id;return {...basePublicItem(i),...(image?{thumbnailUrl:'/api/v1/items/'+i.id+'/thumbnail?revision='+image}:{})};};
   const maxUploadBytes = Number(options.maxUploadBytes ?? process.env.MAX_UPLOAD_BYTES ?? 2147483648);
   if (!Number.isSafeInteger(maxUploadBytes) || maxUploadBytes <= 0) throw new Error('Invalid MAX_UPLOAD_BYTES');
   const chunkSize = Number(options.chunkSize ?? process.env.UPLOAD_CHUNK_BYTES ?? 8 * 1024 * 1024);
@@ -175,7 +178,7 @@ export async function createApp(options = {}) {
     return loginResult(user,reply,req.body.remember);
   });
   app.get('/api/v1/auth/me', auth, async req => ({ user: req.user }));
-  app.get('/api/v1/history',auth,async req=>({items:db.prepare(`SELECT i.*,MAX(v.last_received_at) AS lastSeenAt FROM analytics_views v JOIN items i ON i.id=v.asset_id JOIN memberships m ON m.shelf_id=i.shelf_id AND m.user_id=? WHERE v.user_id=? AND v.context='viewer' AND v.counted=1 GROUP BY i.id ORDER BY lastSeenAt DESC,i.id LIMIT 100`).all(req.user.id,req.user.id).map(item=>({...publicItem(item),lastSeenAt:item.lastSeenAt}))}));
+  app.get('/api/v1/history',auth,async req=>({items:db.prepare(`SELECT i.*,s.name AS shelfName,m.role,MAX(v.last_received_at) AS lastSeenAt FROM analytics_views v JOIN items i ON i.id=v.asset_id JOIN shelves s ON s.id=i.shelf_id JOIN memberships m ON m.shelf_id=i.shelf_id AND m.user_id=? WHERE v.user_id=? AND v.context='viewer' AND v.counted=1 GROUP BY i.id ORDER BY lastSeenAt DESC,i.id LIMIT 1000`).all(req.user.id,req.user.id).map(item=>({...publicItem(item),shelfName:item.shelfName,role:item.role,lastSeenAt:item.lastSeenAt,progress:publicProgress(db.prepare('SELECT * FROM asset_progress WHERE user_id=? AND asset_id=?').get(req.user.id,item.id))}))}));
   app.post('/api/v1/auth/logout', auth, async (req, reply) => {
     db.prepare('DELETE FROM sessions WHERE id=?').run(req.session.id);
     clearRememberCookie(reply);
@@ -230,6 +233,7 @@ export async function createApp(options = {}) {
     const series=shelfSeriesMembership(db,req.params.id);
     return { shelf: { ...shelf, role }, pendingUploads:pendingShelfUploads(db,req.params.id), series:shelfSeries(db,req.params.id), items: db.prepare('SELECT * FROM items WHERE shelf_id=? ORDER BY created_at DESC, id').all(req.params.id).map(item=>({...publicItem(item),series:series.get(item.id)??null,progress:progress.get(item.id)??null})) };
   });
+  await registerCustomThumbnails(app,{db,thumbnailDir,media,authenticate,findItem,membership});
   const uploads = await registerResumableUploads(app, {
     db, media, videoTranscoder, audioTranscoder, uploadDir, stagingDir, booksDir, thumbnailDir, videoDir, originalDir, previewDir, authenticate, membership, maxUploadBytes, chunkSize, publicItem,adminAccess,maintenance
   });

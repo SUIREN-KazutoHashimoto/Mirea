@@ -3,9 +3,18 @@ export function downloadableSnapshot(items){
 }
 // Serial transfers respect per-user limits. A cancelled transfer retains its
 // encrypted chunks, and authentication changes stop the entire queue.
-export async function runBulkDownloads(items,{list,download,signal,isCurrent=()=>true,changed=()=>{}}){
+export async function runBulkDownloads(items,{list,download,signal,isCurrent=()=>true,changed=()=>{},eager=false}){
   const queue=downloadableSnapshot(items),saved=new Set((await list()).filter(row=>row.state==='ready').map(row=>row.assetId));
   const result={total:queue.length,completed:0,skipped:0,failed:[],cancelled:false};
+  if(eager){
+    const fractions=new Map();await Promise.all(queue.map(async(item,index)=>{
+      if(signal?.aborted||!isCurrent()){result.cancelled=true;return;}
+      if(saved.has(item.id)){result.skipped++;return;}
+      try{await download(item,value=>{fractions.set(item.id,value.total?value.received/value.total:0);changed({...result,index,item,state:'downloading',received:[...fractions.values()].reduce((n,v)=>n+v,0),totalBytes:queue.length});},signal);result.completed++;fractions.delete(item.id);}
+      catch(error){if(signal?.aborted||error.name==='AbortError'||!isCurrent())result.cancelled=true;else result.failed.push({id:item.id,title:item.title,message:error.message});}
+      changed({...result,index,item,state:'complete'});
+    }));changed({...result,state:'finished'});return result;
+  }
   for(const [index,item] of queue.entries()){
     if(signal?.aborted||!isCurrent()){result.cancelled=true;break;}
     if(saved.has(item.id)){result.skipped++;changed({...result,index,item,state:'skipped'});continue;}
