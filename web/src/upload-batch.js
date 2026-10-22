@@ -52,7 +52,7 @@ export function createUploadBatch(jobs,{start,concurrency=3,isCurrent=()=>true,c
       let settled=false;
       try {
         const task=start(row.job,(percent,processing)=>{if(settled||cancelled)return;if(!isCurrent()){cancel();return;}row.percent=Math.max(0,Math.min(100,Number(percent)||0));row.processing=processing;row.state=row.percent===100?'processing':'uploading';emit();});
-        active.set(row,task);if(cancelled||!isCurrent()){row.state=task.processing?'detached':'cancelled';try{task.processing?task.detach():task.abort();}catch{}}await task.promise;
+        active.set(row,task);if(cancelled||!isCurrent()){row.state=task.processing?'detached':'cancelled';try{task.processing?task.detach():task.abort();}catch{}}const result=await task.promise;row.warning=result?.seriesWarning??'';
         if(!cancelled&&isCurrent()){row.state='complete';row.percent=100;row.processing=null;}
       } catch(error) {
         if(!cancelled&&isCurrent()){row.state='failed';row.error=error.message||'アップロードに失敗しました。';if([401,403,429].includes(error.status))halted=true;}

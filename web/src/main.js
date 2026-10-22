@@ -33,6 +33,8 @@ import { isTimedKind } from '../../server/audio-types.js';
 import {openUploadDialog} from './upload-ui.js';
 import {collectionEntries} from './library-collection.js';
 import './collection-groups.css';
+import {mountCollectionView} from './collection-view.js';
+import {seriesPath,isInSeries} from './series-tree.js';
 import { beginUpdateActivity } from './update-busy.js';
 import { initializeAppUpdates, refreshAppUpdates, appUpdatesEndpointChanged, mountAppUpdates, openAppUpdates } from './app-updates.js';
 import './app-updates.css';
@@ -44,6 +46,7 @@ import {showShelfMenu} from './shelf-menu.js';
 import {mountLibraryDrawer,mountAssetHold} from './library-interactions.js';
 import {downloadableSnapshot,runBulkDownloads} from './bulk-downloads.js';
 import './library-mobile.css';
+import './collection-view.css';
 import {pollLibrary,mountLibraryRefresh,shouldRefreshCatalog} from './library-refresh.js';
 import './library-refresh.css';
 import './playback-dock.css';
@@ -242,7 +245,7 @@ function renderShell() {
     <div class="drawer-backdrop" hidden></div><main class="main-content"><header class="topbar"><button id="open-drawer" class="icon-button menu-opener" aria-label="ライブラリメニューを開く" aria-controls="library-drawer" aria-expanded="false">${icon('menu')}</button><div class="breadcrumb"><span class="workspace-prefix">ワークスペース</span> <span>/</span> <strong id="breadcrumb-title">ライブラリ</strong></div><span class="topbar-label">YOUR PERSONAL COLLECTION</span><button id="mobile-settings" class="icon-button mobile-settings" aria-label="設定">${icon('settings')}</button><button id="mobile-logout" class="icon-button mobile-logout" aria-label="ログアウト">${icon('logout')}</button></header>
     <div class="content-wrap">
     <section class="library-overview" aria-label="ライブラリの概要"><div class="overview-message"><div class="overview-icon">${icon('shelf')}</div><div><span class="eyebrow">YOUR COLLECTION</span><h2 id="overview-title">すべてのコンテンツ</h2><p id="overview-description">本棚を選んで、コレクションを楽しみましょう。</p></div></div><div class="overview-actions"><button class="button primary" id="open-upload">${icon('plus')}コンテンツを追加</button><button class="button secondary" id="add-series">${icon('plus')}シリーズを追加</button></div><div class="stats"><div><strong id="stat-total">—</strong><span>コンテンツ</span></div><div><strong id="stat-book">—</strong><span>本</span></div><div><strong id="stat-video">—</strong><span>動画</span></div><div><strong id="stat-audio">—</strong><span>音声・音楽</span></div><div><button id="upload-jobs" class="upload-stat" aria-label="アップロード処理を開く"><strong id="stat-upload">0</strong></button><span>アップロード中</span></div></div><small id="analytics-delivery" role="status"></small></section>
-    <section class="collection"><div class="collection-toolbar"><div class="tabs" role="group" aria-label="種類で絞り込み"><button data-filter="all" class="tab active">すべて <span id="count-all">0</span></button><button data-filter="book" class="tab">${icon('book')}本 <span id="count-book">0</span></button><button data-filter="video" class="tab">${icon('video')}動画 <span id="count-video">0</span></button><button data-filter="audio" class="tab">${icon('audio')}音声 <span id="count-audio">0</span></button></div><div class="collection-tools"><label class="search-field">${icon('search')}<input id="search" type="search" placeholder="タイトルで検索" aria-label="タイトルで検索"></label><label class="sr-only" for="sort">並び順</label><select id="sort"><option value="recent">追加が新しい順</option><option value="name">タイトル順</option></select></div></div><div class="collection-caption"><h2 id="collection-title" tabindex="-1">すべてのコンテンツ</h2><span id="result-count"></span><button id="refresh-library" type="button" class="collection-refresh" aria-label="コンテンツ一覧を更新" title="コンテンツ一覧を更新">${icon('refresh')}</button><button id="bulk-download" type="button" class="button secondary bulk-download-button" disabled>${icon('download')}<span>表示中を一括DL</span></button></div><div id="items" class="item-grid" aria-live="polite"><p class="loading-state">ライブラリを読み込んでいます…</p></div></section>
+    <section class="collection"><div class="collection-toolbar"><div class="tabs" role="group" aria-label="種類で絞り込み"><button data-filter="all" class="tab active">すべて <span id="count-all">0</span></button><button data-filter="book" class="tab">${icon('book')}本 <span id="count-book">0</span></button><button data-filter="video" class="tab">${icon('video')}動画 <span id="count-video">0</span></button><button data-filter="audio" class="tab">${icon('audio')}音声 <span id="count-audio">0</span></button></div><div class="collection-tools"><label class="search-field">${icon('search')}<input id="search" type="search" placeholder="タイトルで検索" aria-label="タイトルで検索"></label><label class="sr-only" for="sort">並び順</label><select id="sort"><option value="recent">追加が新しい順</option><option value="name">タイトル順</option></select></div></div><div class="collection-view-controls"></div><div class="collection-caption"><h2 id="collection-title" tabindex="-1">すべてのコンテンツ</h2><span id="result-count"></span><button id="refresh-library" type="button" class="collection-refresh" aria-label="コンテンツ一覧を更新" title="コンテンツ一覧を更新">${icon('refresh')}</button><button id="bulk-download" type="button" class="button secondary bulk-download-button" disabled>${icon('download')}<span>表示中を一括DL</span></button></div><div id="items" class="item-grid" aria-live="polite"><p class="loading-state">ライブラリを読み込んでいます…</p></div></section>
     <footer class="library-footer"><span class="footer-brand" role="img" aria-label="Mirea">${brandMarkup()}</span><span>あなたの物語が、ここにある。</span></footer></div></main></div>`;
   document.querySelector('#add-shelf').onclick = openCreateShelf;
   document.querySelector('#nav-all').onclick = () => selectShelf(null);
@@ -267,6 +270,7 @@ function renderShell() {
   document.querySelector('#search').oninput = e => { search = e.target.value; renderItems(true); };
   document.querySelector('#sort').onchange = e => { sort = e.target.value; renderItems(true); };
   document.querySelectorAll('[data-filter]').forEach(button => { button.onclick = () => { filter = button.dataset.filter; renderItems(true); }; });
+  mountCollectionView({container:root.querySelector('.collection-view-controls'),grid:root.querySelector('#items')});
   appDrawer=mountLibraryDrawer({layout:root.querySelector('.app-layout'),panel:root.querySelector('.sidebar'),main:root.querySelector('.main-content'),opener:root.querySelector('#open-drawer'),closer:root.querySelector('.drawer-close'),backdrop:root.querySelector('.drawer-backdrop'),actions:[root.querySelector('#open-upload'),root.querySelector('#add-series')],actionHome:root.querySelector('.overview-actions'),native});
   pullRefresh=mountLibraryRefresh({main:root.querySelector('.main-content'),button:root.querySelector('#refresh-library'),onRefresh:refreshManually,
     blocked:()=>refreshBusy||!getSession()||appDrawer?.isOpen()||Boolean(document.querySelector('dialog[open],.viewer-screen:not([style*="display: none"])'))});
@@ -387,16 +391,16 @@ function renderItems(animate=false) {
   context.classList.add('series-folder-header');
   document.querySelector('.collection').classList.toggle('in-series',Boolean(selectedSeries));
   const parentName=shelves.find(s=>s.id===activeShelf)?.name??'ライブラリ';
-  document.querySelector('#breadcrumb-title').textContent=selectedSeries?parentName+' / '+selectedSeries.title:parentName;
-  context.innerHTML=selectedSeries?`<button class="button secondary clear-series" aria-label="コンテンツ一覧へ戻る">← <span>一覧へ戻る</span></button><div class="series-folder-name"><small>シリーズ · ${items.filter(i=>i.series?.id===activeSeries).length}作品</small><h2 tabindex="-1">${esc(selectedSeries.title)}</h2></div>${selectedSeries.role!=='viewer'?'<button class="button secondary edit-series">シリーズを編集</button>':''}`:'';
+  document.querySelector('#breadcrumb-title').textContent=selectedSeries?parentName+' / '+seriesPath(series,activeSeries).map(s=>s.title).join(' / '):parentName;
+  context.innerHTML=selectedSeries?`<button class="button secondary clear-series" aria-label="コンテンツ一覧へ戻る">← <span>${selectedSeries.parentId?'親シリーズへ':'一覧へ戻る'}</span></button><div class="series-folder-name"><small>シリーズ · ${items.filter(i=>isInSeries(series,i.series?.id,activeSeries)).length}作品${selectedSeries.childCount?' · 子シリーズ '+selectedSeries.childCount:''}</small><h2 tabindex="-1">${esc(selectedSeries.title)}</h2></div>${selectedSeries.role!=='viewer'?'<button class="button secondary edit-series">シリーズを編集</button>':''}`:'';
   if(selectedSeries){context.querySelector('.clear-series').onclick=leaveLibrarySeries;if(context.querySelector('.edit-series'))context.querySelector('.edit-series').onclick=()=>manageSeries();}
   const sortSelect=document.querySelector('#sort');sortSelect.disabled=Boolean(selectedSeries);
   if(!sortSelect.querySelector('[value="series"]'))sortSelect.insertAdjacentHTML('beforeend','<option value="series" disabled>シリーズの設定順</option>');
   sortSelect.value=selectedSeries?'series':sort;
-  const selected = items.filter(item => (!activeSeries || (activeSeries==='ungrouped'?!item.series:item.series?.id===activeSeries)) && (filter === 'all' || (filter === 'book' ? !isTimedKind(item.kind) : filter === item.kind)) && `${item.title} ${item.series?.title??''} ${item.series?.label??''}`.toLocaleLowerCase().includes(search.toLocaleLowerCase())).sort((a, b) => selectedSeries?a.series.position-b.series.position:sort === 'name' ? a.title.localeCompare(b.title, 'ja') : b.createdAt - a.createdAt);
+  const selected = items.filter(item => (!activeSeries || (activeSeries==='ungrouped'?!item.series:isInSeries(series,item.series?.id,activeSeries))) && (filter === 'all' || (filter === 'book' ? !isTimedKind(item.kind) : filter === item.kind)) && `${item.title} ${seriesPath(series,item.series?.id).map(s=>s.title).join(' / ')||item.series?.title||''} ${item.series?.label??''}`.toLocaleLowerCase().includes(search.toLocaleLowerCase())).sort((a, b) => selectedSeries?a.series.position-b.series.position:sort === 'name' ? a.title.localeCompare(b.title, 'ja') : b.createdAt - a.createdAt);
   document.querySelector('#collection-title').textContent = filter === 'book' ? '本（PDF・EPUB・画像）' : filter === 'audio' ? '音声・音楽' : filter === 'video' ? '動画' : 'すべてのコンテンツ';
   if(selectedSeries)document.querySelector('#collection-title').textContent='収録コンテンツ';
-  const entries=collectionEntries(selected,series,{group:!activeSeries,allItems:items,filter,search,sort});
+  const entries=collectionEntries(selected,series,{group:activeSeries!=='ungrouped',parentId:selectedSeries?.id??null,allItems:items,filter,search,sort});
   displayedItems=selected;
   document.querySelector('#bulk-download').disabled=offlineLibrary||!selected.some(item=>!item.pending);
   document.querySelector('#result-count').textContent = entries.some(entry=>entry.type==='series')?`${entries.length} 件の表示 · ${selected.length} アセット`:`${selected.length} 件のコンテンツ`;
@@ -410,7 +414,7 @@ function renderItems(animate=false) {
   node.innerHTML = entries.map(entry => {
     if(entry.type==='series'){
       const cover=entry.cover,count=entry.matchedCount===entry.assetCount?`${entry.assetCount}作品`:`${entry.matchedCount} / ${entry.assetCount}作品が一致`;
-      return `<article class="media-card series-card"><button class="card-open" data-open-series="${esc(entry.id)}" aria-label="シリーズ「${esc(entry.title)}」を開く"><div class="card-art actual-cover series-cover">${cover?`<img data-local-thumbnail="${cover.id}" data-thumbnail="${esc(cover.thumbnailUrl)}" alt="${esc(entry.title)}の表紙">`:''}<span class="cover-placeholder">${icon('library')}<span>${cover?'表紙を読み込んでいます…':'まだ作品がありません'}</span></span><span class="media-type">SERIES</span><span class="series-count">${entry.assetCount}作品</span></div><div class="card-content"><span class="card-shelf">${icon('shelf')}${esc(entry.shelfName)}</span><h3>${esc(entry.title)}</h3><div class="card-meta"><span>${count}</span><span>シリーズ</span></div><div class="card-progress">${entry.assetCount?`閲覧済み ${entry.completed} / ${entry.assetCount}作品`:entry.role==='viewer'?'作品はまだありません':'開いて作品を追加できます'}</div></div></button></article>`;
+      return `<article class="media-card series-card"><button class="card-open" data-open-series="${esc(entry.id)}" aria-label="シリーズ「${esc(entry.title)}」を開く"><div class="card-art actual-cover series-cover">${cover?`<img data-local-thumbnail="${cover.id}" data-thumbnail="${esc(cover.thumbnailUrl)}" alt="${esc(entry.title)}の表紙">`:''}<span class="cover-placeholder">${icon('library')}<span>${cover?'表紙を読み込んでいます…':'まだ作品がありません'}</span></span><span class="media-type">SERIES</span><span class="series-count">${entry.assetCount}作品</span></div><div class="card-content"><span class="card-shelf">${icon('shelf')}${esc(entry.shelfName)}</span><h3>${esc(entry.title)}</h3><div class="card-meta"><span>${count}</span><span>${entry.childCount?`子シリーズ ${entry.childCount}`:'シリーズ'}</span></div><div class="card-progress">${entry.assetCount?`閲覧済み ${entry.completed} / ${entry.assetCount}作品`:entry.role==='viewer'?'作品はまだありません':'開いて作品を追加できます'}</div></div></button></article>`;
     }
     const item=entry.item;
     if(item.pending)return `<article class="media-card pending-card" aria-disabled="true"><div class="card-art pending-art">${icon(item.kind==='video'?'video':item.kind==='audio'?'audio':'book')}<span>${item.state==='uploading'?'アップロード中':esc(processingLabel(item.processing))}</span></div><div class="card-content"><span class="card-shelf">${esc(item.shelfName)}</span><h3>${esc(item.title)}</h3><p class="muted">処理が完了すると開けます</p><progress max="100" value="${Math.max(0,Math.min(100,Number(item.processing?.percent)||0))}" aria-label="後処理の進捗"></progress></div></article>`;
@@ -439,13 +443,15 @@ function openLibrarySeries(id){
   activeSeries=id;filter='all';search='';document.querySelector('#search').value='';renderItems(true);document.querySelector('.series-folder-name h2')?.focus({preventScroll:true});document.querySelector('.collection')?.scrollIntoView({block:'start'});
 }
 function leaveLibrarySeries(){
-  if(!activeSeries)return;activeSeries='';
-  if(seriesReturnView){({filter,search,sort}=seriesReturnView);seriesReturnView=null;document.querySelector('#search').value=search;}
+  if(!activeSeries)return;
+  const current=series.find(s=>s.id===activeSeries);
+  if(current?.parentId&&series.some(s=>s.id===current.parentId)){activeSeries=current.parentId;filter='all';search='';document.querySelector('#search').value='';}
+  else{activeSeries='';if(seriesReturnView){({filter,search,sort}=seriesReturnView);seriesReturnView=null;document.querySelector('#search').value=search;}}
   renderItems(true);document.querySelector('#collection-title')?.focus({preventScroll:true});
 }
 function manageSeries(create=false){
   const actor=getSession()?.user.id,endpoint=getEndpoint(),selected=!create&&series.find(s=>s.id===activeSeries && s.role!=='viewer');
-  openSeriesManager({dialog,api,esc,shelves,initialShelfId:shelves.find(s=>s.id===activeShelf && s.role!=='viewer')?.id,initialSeriesId:selected?.id,onChanged:refresh,isCurrent:()=>getSession()?.user.id===actor && getEndpoint()===endpoint});
+  openSeriesManager({dialog,api,esc,shelves,initialShelfId:series.find(s=>s.id===activeSeries)?.shelfId??shelves.find(s=>s.id===activeShelf && s.role!=='viewer')?.id,initialSeriesId:selected?.id,initialParentId:create?activeSeries:null,onChanged:refresh,isCurrent:()=>getSession()?.user.id===actor && getEndpoint()===endpoint});
 }
 
 function openCreateShelf() {
@@ -467,7 +473,7 @@ function openCreateShelf() {
 function openUpload() {
   const editable=shelves.filter(s=>s.role!=='viewer');if(!editable.length)return openCreateShelf();
   const actor=getSession(),endpoint=getEndpoint(),isCurrent=()=>getSession()?.token===actor?.token&&getEndpoint()===endpoint;
-  return openUploadDialog({dialog,api,upload,shelves:editable,activeShelf,config,esc,bytes,icon,processingLabel,isCurrent,onChanged:async()=>{if(isCurrent())await refresh();},toast});
+  return openUploadDialog({dialog,api,upload,shelves:editable,activeShelf:series.find(s=>s.id===activeSeries)?.shelfId??activeShelf,initialSeriesId:series.find(s=>s.id===activeSeries)?.id,config,esc,bytes,icon,processingLabel,isCurrent,onChanged:async()=>{if(isCurrent())await refresh();},toast});
 }
 async function openMembers(requestedShelfId = activeShelf) {
   const shelf = shelves.find(s => s.id === (typeof requestedShelfId === 'string' ? requestedShelfId : activeShelf));

@@ -1,6 +1,7 @@
 import { copyFile, open, rename, stat, unlink, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { transaction } from './database.js';
+import {attachUploadSeries} from './upload-series.js';
 
 // Publication commit is the sole boundary permitting removal of verified source
 // chunks. Failed/cancelled/restarted jobs follow the same durable queue as video.
@@ -32,6 +33,7 @@ export async function publishAudio(context,upload,authorize) {
       db.prepare(`INSERT INTO items(id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at,page_count,thumbnail_ready)
         VALUES(?,?,?,?,'audio/mp4',?,?,?,1,1)`).run(id,shelfId,title,first.filename.replace(/\.[^.]+$/,'')+'.m4a',metadata.size,userId,Date.now());
       db.prepare('INSERT INTO audio_assets VALUES(?,?,?)').run(id,JSON.stringify(metadata),upload.retain_original?1:0);
+      attachUploadSeries(db,upload);
       db.prepare("UPDATE upload_sessions SET state='complete',error=NULL,processing_json=? WHERE id=?").run(JSON.stringify({stage:'complete',percent:100}),id);
     });
     return publicItem(db.prepare('SELECT * FROM items WHERE id=?').get(id));

@@ -1,0 +1,38 @@
+.series-child-choice{display:flex;align-items:center;gap:10px;padding:6px}.series-child-choice input{width:18px;min-height:18px;padding:0;flex:none}.series-child-picker{padding:12px;border:1px solid var(--border);border-radius:10px}.series-candidate{min-height:140px}.series-add{align-items:start}.series-add>div{display:grid;gap:8px}
+.collection-view-controls{display:flex;gap:10px;align-items:center;justify-content:flex-end;padding:0 0 4px}
+.collection-view-controls label{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted)}
+.collection-view-controls select{width:auto;min-height:36px;font-size:12px;max-width:210px;padding:6px 28px 6px 10px}
+.item-grid[data-layout="grid2"]{grid-template-columns:repeat(2,minmax(0,1fr))}
+.item-grid[data-layout="grid3"]{grid-template-columns:repeat(3,minmax(0,1fr))}
+.item-grid[data-layout="list"]{grid-template-columns:minmax(0,1fr)}
+.item-grid[data-layout="list"] .card-open{display:grid;grid-template-columns:120px minmax(0,1fr);align-items:center}
+.item-grid[data-layout="list"] .card-art{aspect-ratio:1;width:120px;height:120px;margin:0;border-radius:10px}
+.item-grid[data-layout="list"] .card-content{min-width:0;padding:12px 16px}
+.item-grid[data-layout="list"] .card-content h3{margin:6px 0;font-size:15px}
+.item-grid[data-layout="list"] .pending-card{display:grid;grid-template-columns:120px minmax(0,1fr);padding:8px}
+.item-grid[data-layout="list"] .card-series{grid-column:1/-1}
+.item-grid[data-layout="grid3"] .card-art{height:auto;min-height:0;aspect-ratio:1}
+.item-grid[data-layout="grid3"] .card-content{padding:10px}
+.item-grid[data-layout="grid3"] .card-content h3{font-size:13px}
+.item-grid[data-details="compact"] .card-shelf,.item-grid[data-details="compact"] .card-meta,.item-grid[data-details="compact"] .card-progress,.item-grid[data-details="compact"] .card-series,.item-grid[data-details="compact"] .media-type,.item-grid[data-details="compact"] .series-count,.item-grid[data-details="compact"] .card-open-label{display:none}
+.item-grid[data-details="compact"] .card-content{padding:10px 12px}
+.item-grid[data-details="compact"] .card-content h3{margin:0}
+.item-grid .empty-state,.item-grid>.loading-state{grid-column:1/-1}
+@media(max-width:760px){
+ .collection-view-controls{justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:10px}
+ .collection-view-controls label{flex:1;min-width:0;flex-wrap:wrap;font-size:10px}
+ .collection-view-controls select{width:100%;max-width:100%;min-height:36px;font-size:11px}
+ .compact-library .item-grid[data-layout="grid2"]{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .compact-library .item-grid[data-layout="grid3"]{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+ .compact-library .item-grid[data-layout="list"]{grid-template-columns:minmax(0,1fr)}
+ .item-grid[data-layout="grid3"] .card-content{padding:8px}
+ .item-grid[data-layout="grid3"] .card-content h3{font-size:11px;line-height:1.5}
+ .item-grid[data-layout="grid3"] .card-meta{flex-wrap:wrap;gap:3px;font-size:9px}
+ .item-grid[data-layout="grid3"] .card-shelf,.item-grid[data-layout="grid3"] .card-progress,.item-grid[data-layout="grid3"] .card-series{font-size:9px}
+ .item-grid[data-layout="grid3"] .media-type{font-size:8px;left:4px;top:4px;padding:3px}
+ .item-grid[data-layout="grid3"] .series-count{font-size:9px}
+ .item-grid[data-layout="list"] .card-open{grid-template-columns:92px minmax(0,1fr)}
+ .item-grid[data-layout="list"] .card-art{width:92px;height:92px}
+ .item-grid[data-layout="list"] .card-content{padding:8px 12px}
+ .item-grid[data-layout="list"] .card-content h3{font-size:13px}
+}
