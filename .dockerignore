@@ -1,12 +1,14 @@
-.git
-node_modules
-dist
-data
-android
-tests
-docs
-.env
-*.log
-test-results
-.local
-releases
+# A source-only allowlist. Never send production data, attachments, certificates,
+# signing identities, local credentials or release archives to the builder.
+**
+!Dockerfile
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!.npmrc
+!vite.config.js
+!LICENSE
+!server/
+!server/**
+!web/
+!web/**

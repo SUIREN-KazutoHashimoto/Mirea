@@ -156,7 +156,7 @@ export async function createApp(options = {}) {
   registerAppUpdates(app, { directory: updatesPath ? resolve(PROJECT_ROOT, updatesPath) : undefined });
   let analytics;
   app.get('/api/v1/config', async () => ({ allowRegistration, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadSessionHours: 24, analytics,
-    version: packageInfo.version, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.3.0beta/mirea-0.3.0beta-android.apk' }));
+    version: packageInfo.version, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.13.0beta/mirea-0.13.0beta-android.apk' }));
   app.post('/api/v1/auth/register', { ...authLimits, schema: { body: object({ email, password, name: text(80),remember:{type:'boolean',default:true} },['email','password','name']) } }, async (req, reply) => {
     if (!allowRegistration) throw httpError(403, '新規登録は現在停止しています。');
     const normalizedEmail = req.body.email.trim().toLowerCase();

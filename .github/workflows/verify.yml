@@ -24,15 +24,39 @@ jobs:
       - run: pnpm test:package
   container:
     runs-on: ubuntu-latest
+    env:
+      COMPOSE_PROJECT_NAME: mirea-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      MIREA_IMAGE: mirea:ci
     steps:
       - uses: actions/checkout@v4
-      - run: docker compose build
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+      - run: docker compose build --build-arg VCS_REF=${{ github.sha }}
       - run: docker compose up -d --wait
-      - run: curl --fail http://localhost:3000/api/health
       - run: curl --fail http://localhost:3000/
       - name: Verify video and audio conversion inside the read-only container
         run: docker compose exec -T mirea node --input-type=module < scripts/check-media-runtime.mjs
-      - run: docker compose -f compose.yaml -f compose.host-data.yaml config --quiet
+      - name: Create isolated accounts, nested series, PDF, progress and encrypted download
+        run: node scripts/check-container.mjs prepare
+      - run: docker compose up -d --force-recreate --wait
+      - name: Verify data and encryption identity after container recreation
+        run: node scripts/check-container.mjs verify
+      - name: Validate deployment configurations
+        run: |
+          docker compose -f compose.release.yaml config --quiet
+          docker compose -f compose.yaml -f compose.host-data.yaml config --quiet
+          docker compose -f deploy/truenas/compose.yaml config --quiet
+      - name: Export exactly the tested image for a release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: docker save mirea:ci | gzip -n > "$RUNNER_TEMP/mirea-container-tested.tar.gz"
+      - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: mirea-container-tested
+          path: ${{ runner.temp }}/mirea-container-tested.tar.gz
+          retention-days: 3
+          compression-level: 0
       - if: always()
         run: docker compose down
   android:
@@ -59,3 +83,26 @@ jobs:
         with:
           name: mirea-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
+  publish-container:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [web-and-api, container, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: mirea-container-tested
+          path: ${{ runner.temp }}
+      - name: Publish the verified image and attach it to a draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/publish-container.mjs
+      - if: always()
+        run: docker logout ghcr.io
