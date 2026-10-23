@@ -45,7 +45,7 @@ jobs:
       - name: Verify separate storage across a real filesystem boundary
         # Node 24 detects ESM on stdin. --input-type would be inherited by the
         # PDF/image file workers, which reject that stdin-only option.
-        run: docker compose exec -e MIREA_EXPECT_CROSS_DEVICE=1 -T mirea node < scripts/check-storage-runtime.mjs
+        run: docker compose exec -e MIREA_EXPECT_CROSS_DEVICE=1 -e MIREA_STORAGE_FIXTURE_ROOT=/data -T mirea node < scripts/check-storage-runtime.mjs
       - name: Verify opt-in persistent media volume and recreation
         run: |
           docker compose down
