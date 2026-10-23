@@ -43,7 +43,7 @@ export async function initializeSession({signal}={}){
   const revision=++authRevision,origin=endpoint;let loaded;
   try{loaded=await loginStore.load(origin,{signal});
     if(await offlineLoggedOut(origin)){if(loaded?.value?.token&&!native){await fetch('/api/v1/auth/logout',{method:'POST',headers:{Authorization:'Bearer '+loaded.value.token},cache:'no-store',signal}).catch(()=>{});await loginStore.clear(origin,loaded.value.token,{signal});}session=null;return;}
-  }catch(error){const cached=await offlineIdentity(origin);if(!cached)throw error;loaded={value:{...cached,token:'',offline:true},remember:true};}if(authRevision!==revision||origin!==endpoint)return;
+  }catch(error){if(authRevision!==revision||origin!==endpoint)return;if([401,403].includes(error.status)){await forgetOfflineIdentity(origin);session=null;return;}const cached=await offlineIdentity(origin);if(!cached)throw error;loaded={value:{...cached,token:'',offline:true},remember:true};}if(authRevision!==revision||origin!==endpoint)return;
   if(!loaded){session=null;await forgetOfflineIdentity(origin);return;}session=loaded.value;rememberChoice=loaded.remember;
   if(session.offline)return;
   let current;
@@ -51,7 +51,7 @@ export async function initializeSession({signal}={}){
     // A newer login/server selection wins over an older in-flight validation.
     // api() already clears the matching current session on a 401.
     if(authRevision!==revision||origin!==endpoint)return;
-    if(error.status===401){await loginStore.clear(origin,loaded.value.token,{signal});if(authRevision===revision)session=null;return;}let cached=await offlineIdentity(origin,session?.user.id);if(!cached&&nativeTransfersAvailable()){await import('./downloads.js').then(m=>m.syncNativeDownloads()).catch(()=>{});cached=await offlineIdentity(origin,session?.user.id);}if(cached){session={...session,offline:true};return;}throw error;
+    if([401,403].includes(error.status)){await loginStore.clear(origin,loaded.value.token,{signal});await forgetOfflineIdentity(origin,loaded.value.user.id);if(authRevision===revision)session=null;return;}let cached=await offlineIdentity(origin,session?.user.id);if(!cached&&nativeTransfersAvailable()){await import('./downloads.js').then(m=>m.syncNativeDownloads()).catch(()=>{});cached=await offlineIdentity(origin,session?.user.id);}if(cached){session={...session,offline:true};return;}throw error;
   }
   if(authRevision!==revision||origin!==endpoint)return;
   if(current.user.id!==loaded.value.user.id){await setSession(null);return;}

@@ -28,6 +28,7 @@ export function createSeriesContinuation({assetId,loadContext,move,isActive=()=>
       const index=targetId?fresh.items.findIndex(item=>item.id===targetId):fresh.currentIndex+direction;
       const target=activeOrder()&&!targetId?planned?.target:fresh.items[index];
       if(!target || target.id===assetId&&!(order&&continuous&&order.modes.repeat==='series')){message=targetId?'選択したアセットはシリーズから外されました。':'シリーズの端に到達しました。';return false;}
+      if(target.offlineUnavailable){message='次の作品は未保存・期限切れのため、オフラインでは開けません。';return false;}
       // The viewer disposes old progress/analytics/media keys before opening the new asset.
       let committed=false;const allowed=()=>{if(disposed||revision!==epoch||!isActive()||continuous&&!enabled)return false;if(planned&&!committed){if(!planned.commit())return false;committed=true;}return true;};
       return (await move(target,{startAtBeginning:continuous,autoplay},allowed))!==false;

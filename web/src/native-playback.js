@@ -2,7 +2,9 @@ import { mountPlaybackDock } from './playback-dock.js';
 import { authenticatedBlob } from './api.js';
 import { getSession,getEndpoint,isOfflineSession } from './api.js';
 import { NativePlayer,nativePlayerAvailable,nativePlaybackGeneration,nativePlaybackStopped } from './native-player-bridge.js';
-import { prepareNativeDownload,downloadedThumbnail } from './downloads.js';
+import { prepareNativeDownload,downloadedThumbnail,listDownloads } from './downloads.js';
+import {offlineCatalog,offlineCollection,offlineSeriesContext} from './offline-catalog.js';
+import {offlineVault,offlinePartition} from './offline-vault.js';
 import { beginUpdateActivity } from './update-busy.js';
 
 let release,dock,dockIdentity,refreshEpoch=0;
@@ -36,6 +38,17 @@ export async function openNativePlayback(item,{restart=false,continuous=true,ana
   let artwork;
   if(download){const cover=await downloadedThumbnail(item.id).catch(()=>null);if(cover){const bytes=new Uint8Array(await cover.arrayBuffer()),parts=[];for(let n=0;n<bytes.length;n+=8192)parts.push(String.fromCharCode(...bytes.subarray(n,n+8192)));artwork=btoa(parts.join(''));bytes.fill(0);}}
   if(!valid())throw new Error('再生準備を取り消しました。');
-  await NativePlayer.open({...(artwork?{artwork}:{}),origin,token:session.token,userId:session.user.id,item,restart,continuous,analytics,version,autoplay:true,...(download?{download,offline:isOfflineSession()}:{})});
+  let offlineSeries;
+  if(download&&isOfflineSession()){
+    const partition=offlinePartition(origin,session.user.id),catalog=await(await offlineCatalog()).load(partition).catch(()=>null);
+    if(catalog){
+      const rows=await listDownloads(),vault=await offlineVault(),playable=new Set();
+      await Promise.all(rows.filter(row=>row.state==='ready').map(async row=>{const lease=await vault.lease(partition,row.manifest.id).catch(()=>null);if(lease){playable.add(row.assetId);lease.key='';}}));
+      const context=offlineSeriesContext(offlineCollection(catalog,rows,playable),item.id);
+      if(context.series){const manifests=new Map(rows.filter(row=>row.state==='ready'&&playable.has(row.assetId)&&['audio','video'].includes(row.manifest.kind)).map(row=>[row.assetId,row.manifest]));offlineSeries={...context,items:context.items.map(asset=>({...asset,...(manifests.has(asset.id)?{offlineDownload:manifests.get(asset.id)}:{})}))};}
+    }
+  }
+  if(!valid())throw new Error('再生準備を取り消しました。');
+  await NativePlayer.open({...(offlineSeries?{offlineSeries}:{}),...(artwork?{artwork}:{}),origin,token:session.token,userId:session.user.id,item,restart,continuous,analytics,version,autoplay:true,...(download?{download,offline:isOfflineSession()}:{})});
   await refreshNativePlayback();
 }

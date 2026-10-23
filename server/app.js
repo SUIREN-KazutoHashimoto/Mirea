@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import {registerLibraryCatalog} from './library-catalog.js';
 import {registerCustomThumbnails} from './custom-thumbnails.js';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
@@ -184,6 +185,7 @@ export async function createApp(options = {}) {
     clearRememberCookie(reply);
     return reply.code(204).send();
   });
+  registerLibraryCatalog(app,{db,authenticate,publicItem});
   app.get('/api/v1/shelves', auth, async req => ({ shelves: db.prepare(`
     SELECT s.*, m.role, (SELECT COUNT(*) FROM items i WHERE i.shelf_id=s.id) AS itemCount,
       (SELECT COUNT(*) FROM memberships n WHERE n.shelf_id=s.id) AS memberCount

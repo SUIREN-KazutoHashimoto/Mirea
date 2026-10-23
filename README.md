@@ -1,6 +1,6 @@
 # Mirea
 
-このソースはLANパッチ **0.3.2beta**（内部 `0.3.2-beta`、Android versionCode 7）です。今回のPR・GitHub Releaseは作らず、LANサーバーと署名付き更新APKを反映します。[直近の公開リリース0.3.0beta](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.3.0beta)、[起動手順・ベータの制限](RELEASE.md)を参照してください。既存の専用署名を維持し、旧デバッグ署名からの初回移行だけは手動です。
+このソースはLANパッチ **0.12.1beta**（内部 `0.12.1-beta`、Android versionCode 26）です。今回のPR・GitHub Releaseは作らず、LANサーバーと署名付き更新APKを反映します。[公開リリース0.3.0beta](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.3.0beta)、[起動手順・ベータの制限](RELEASE.md)を参照してください。既存の専用署名を維持し、旧デバッグ署名からの初回移行だけは手動です。
 
 動画・音声・音楽・PDF・EPUB・複数画像の本を、本棚単位で共有できるクライアント・サーバー型メディアライブラリです。PCのWebブラウザとAndroidアプリが、同じAPI・アカウント・本棚を使います。
 

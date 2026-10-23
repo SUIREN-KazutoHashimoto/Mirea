@@ -40,6 +40,6 @@ for(const native of [true,false])for(const bodyDelay of [false,true]){
 const temporary=await scenario({native:false,temporarySession:true,reconnect:true});assert.equal(temporary.session.token,saved.token);assert.equal(temporary.session.offline,false);assert.equal(temporary.clears,0);
 const offline=await scenario({online:false});assert.equal(offline.requests,0);assert.equal(offline.session.offline,true);assert.ok(offline.elapsed<100);
 const expired=await scenario({cached:false});assert.ok(expired.error);assert.notEqual(expired.session?.offline,true);assert.equal(expired.clears,0);
-for(const native of [true,false]){const denied=await scenario({native,status:401});assert.equal(denied.session,null);assert.equal(denied.session?.offline,undefined);}
+for(const native of [true,false])for(const status of [401,403]){const denied=await scenario({native,status});assert.equal(denied.session,null);assert.equal(denied.session?.offline,undefined);}
 const loggedOut=await scenario({loggedOut:true});assert.equal(loggedOut.session,null);
 console.log(JSON.stringify({unreachableAndStalledBody:true,browserAndNative:true,offlineImmediate:true,denialDoesNotFallback:true,expiredGrantDenied:true,temporarySessionReconnect:true,rememberedCredentialsPreserved:true}));

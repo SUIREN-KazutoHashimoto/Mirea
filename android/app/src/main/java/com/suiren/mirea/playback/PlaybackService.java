@@ -179,8 +179,8 @@ public final class PlaybackService extends Service {
     private void scheduleEnded(){if(!continuous)return;final int epoch=transitionEpoch;continuation=()->{if(epoch!=transitionEpoch||destroyed||!ended)return;if(repeat.equals("one"))play();else navigate(1,true);};main.postDelayed(continuation,repeat.equals("one")?100:shuffle||repeat.equals("series")?250:5000);}
     public void navigate(int direction){navigate(direction,false);}
     private void navigate(int direction,boolean automatic){
-        if(item==null||api==null)return;cancelContinuation();final int epoch=generation,transition=transitionEpoch;final PlaybackApi target=api;final String id=item.optString("id");
-        io.submit(()->{try{JSONObject context=target.json("/items/"+id+"/series","GET",null);JSONArray entries=context.getJSONArray("items");int current=context.optInt("currentIndex",-1);JSONObject series=context.optJSONObject("series");
+        if(item==null||api==null)return;cancelContinuation();final int epoch=generation,transition=transitionEpoch;final PlaybackApi target=api;final String id=item.optString("id");final JSONObject offlineRequest=request!=null&&request.optBoolean("offline")?request:null;
+        io.submit(()->{try{JSONObject context=offlineRequest!=null?OfflineSeries.context(offlineRequest,id):target.json("/items/"+id+"/series","GET",null);JSONArray entries=context.getJSONArray("items");int current=context.optInt("currentIndex",-1);JSONObject series=context.optJSONObject("series");
             main.post(()->{if(epoch!=generation||transition!=transitionEpoch||destroyed)return;try{
                 JSONObject original=item.optJSONObject("series");if(series==null||current<0||current>=entries.length()||!entries.getJSONObject(current).getString("id").equals(id)||original!=null&&!original.optString("id").equals(series.optString("id"))){nextTitle="シリーズの所属を確認できません。閉じて開き直してください。";changed();return;}
                 JSONObject next;PlaybackOrder.Plan plan=null;
@@ -188,8 +188,9 @@ public final class PlaybackService extends Service {
                 else{int index=current+direction;next=index<0||index>=entries.length()?null:entries.getJSONObject(index);}
                 if(next==null){nextTitle="シリーズの最後（または先頭）の作品です。";changed();return;}
                 if(!Arrays.asList("audio","video").contains(next.optString("kind"))){nextTitle="次は本「"+next.optString("title")+"」です。ライブラリから開いてください。";changed();return;}
+                if(offlineRequest!=null&&next.optJSONObject("offlineDownload")==null){nextTitle="次の作品は未保存・期限切れのため、オフラインでは開けません。";changed();return;}
                 if(plan!=null)order=plan.order;if(next.getString("id").equals(id)){if(automatic)play();return;}
-                JSONObject nextRequest=new JSONObject(request.toString());nextRequest.put("item",next).put("restart",automatic||direction>0&&ended).put("autoplay",playing()||ended||automatic).put("orderContinuation",true).remove("download");nextRequest.remove("quality");nextRequest.remove("artwork");open(nextRequest,true,0);
+                JSONObject nextRequest=offlineRequest!=null?OfflineSeries.nextRequest(offlineRequest,next,automatic||direction>0&&ended,playing()||ended||automatic):new JSONObject(request.toString());if(offlineRequest==null)nextRequest.put("item",next).put("restart",automatic||direction>0&&ended).put("autoplay",playing()||ended||automatic).put("orderContinuation",true).remove("download");nextRequest.remove("quality");nextRequest.remove("artwork");open(nextRequest,true,0);
             }catch(Exception e){fail("次のアセットを開けません。");}});
         }catch(Exception failure){main.post(()->{if(epoch==generation&&transition==transitionEpoch){nextTitle="シリーズのアクセス権を確認できません。接続を確認してから再試行してください。";changed();}});}});
     }
