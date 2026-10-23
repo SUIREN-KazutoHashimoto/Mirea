@@ -7,6 +7,8 @@ import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import { randomUUID } from 'node:crypto';
 import { mkdir, rename, unlink, access, stat } from 'node:fs/promises';
+import {storagePaths,initializeStorage} from './storage.js';
+import {moveStorage} from './storage-move.js';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -60,12 +62,10 @@ const basePublicItem = i => ({
 
 export async function createApp(options = {}) {
   const dataDir = resolve(options.dataDir ?? process.env.DATA_DIR ?? './data');
-  const uploadDir = join(dataDir, 'uploads');
-  const stagingDir = join(uploadDir, 'staging');
-  const booksDir = join(uploadDir, 'books');
-  const thumbnailDir = join(dataDir, 'thumbnails');
-  const videoDir=join(dataDir,'videos'),originalDir=join(dataDir,'originals'),previewDir=join(dataDir,'previews');
-  await Promise.all([uploadDir, stagingDir, booksDir, thumbnailDir, videoDir, originalDir, previewDir].map(path => mkdir(path, { recursive: true, mode: 0o700 })));
+  const selectedMedia=options.mediaDir??process.env.MEDIA_DIR;
+  const storage=storagePaths(dataDir,selectedMedia===undefined?undefined:resolve(PROJECT_ROOT,selectedMedia));
+  await initializeStorage(storage);
+  const {mediaDir,uploadDir,stagingDir,booksDir,thumbnailDir,videoDir,originalDir,previewDir}=storage;
   const db = openDatabase(join(dataDir, 'mirea.sqlite'));
   const media = options.mediaProcessor ?? createMediaProcessor();
   const videoTranscoder=options.videoTranscoder??createVideoTranscoder();
@@ -156,7 +156,7 @@ export async function createApp(options = {}) {
   registerAppUpdates(app, { directory: updatesPath ? resolve(PROJECT_ROOT, updatesPath) : undefined });
   let analytics;
   app.get('/api/v1/config', async () => ({ allowRegistration, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadSessionHours: 24, analytics,
-    version: packageInfo.version, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.13.0beta/mirea-0.13.0beta-android.apk' }));
+    version: packageInfo.version, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.14.0beta/mirea-0.14.0beta-android.apk' }));
   app.post('/api/v1/auth/register', { ...authLimits, schema: { body: object({ email, password, name: text(80),remember:{type:'boolean',default:true} },['email','password','name']) } }, async (req, reply) => {
     if (!allowRegistration) throw httpError(403, '新規登録は現在停止しています。');
     const normalizedEmail = req.body.email.trim().toLowerCase();
@@ -252,9 +252,9 @@ export async function createApp(options = {}) {
   const adminJobs=await registerAdminJobs(app,{db,adminAccess,media,videoTranscoder,uploadDir,booksDir,thumbnailDir,previewDir,videoDir,originalDir,dataDir,uploads,maintenance,videoPreviews,ensureThumbnail,rateLimit:options.rateLimit});
   registerAdmin(app,{db,adminAccess,uploads,rateLimit:options.rateLimit});
   maintenance.setBusy(()=>uploads.busy||adminJobs.busy||videoPreviews.busy||navigation.busy||media.busy);
-  await registerAdminCleanup(app,{db,dataDir,adminAccess,maintenance,options});
-  await registerAdminBackups(app,{db,dataDir,adminAccess,maintenance,options});
-  await registerServerUpdates(app,{adminAccess,maintenance,options});
+  await registerAdminCleanup(app,{db,dataDir,mediaDir,adminAccess,maintenance,options});
+  await registerAdminBackups(app,{db,dataDir,mediaDir,adminAccess,maintenance,options});
+  await registerServerUpdates(app,{adminAccess,maintenance,options:{...options,storageSeparated:storage.separate}});
   // onClose runs in reverse order: stop encoders before waiting for either
   // upload or admin queues, so running jobs can persist a resumable state.
   app.addHook('onClose',async()=>{videoTranscoder.close();audioTranscoder.close();});
@@ -333,7 +333,7 @@ export async function createApp(options = {}) {
       // Uploads can take a long time; recheck revoked sessions and membership before publishing.
       authenticate(req);
       membership(req.params.id, req.user.id, ['owner', 'editor']);
-      await rename(join(stage, 'thumbnail.jpg'), finalThumbnail);
+      await moveStorage(join(stage, 'thumbnail.jpg'), finalThumbnail);
       if (isImageBook) await rename(stage, join(booksDir, id));
       else {
         await rename(join(stage, 'raw-1'), finalPath);

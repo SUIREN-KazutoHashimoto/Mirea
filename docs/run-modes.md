@@ -31,9 +31,11 @@ FFmpegは通常 `ffmpeg-static` が取得したバイナリを使います。取
 
 直接起動はWindowsのLANサービスで運用し、LinuxはGitHub Actionsの実起動テスト対象です。
 
+保存先は既定では従来配置です。0.14.0betaから、別の既存ディレクトリを`MEDIA_DIR`に指定してDB／鍵と本体を分離できます。既存環境は設定だけ切り替えず、[停止・バックアップ・移行手順](storage.md)に従ってください。
+
 ## 2. Dockerコンテナで起動する
 
-0.13.0betaから`ghcr.io/suiren-kazutohashimoto/mirea:0.13.0beta`（linux/amd64）を配布します。ビルド不要の起動は`docker compose -f compose.release.yaml up -d`、停止は同じ`-f`で`down`です。[TrueNAS 25.04.2.6](truenas-25.04.md)には専用YAMLと設定対応表を用意しています。コンテナの管理更新はホスト側で行い、WebにDockerソケットを渡しません。以下はソースビルドの手順です。
+0.14.0betaから`ghcr.io/suiren-kazutohashimoto/mirea:0.14.0beta`（linux/amd64）を配布します。ビルド不要の起動は`docker compose -f compose.release.yaml up -d`、停止は同じ`-f`で`down`です。[TrueNAS 25.04.2.6](truenas-25.04.md)には専用YAMLと設定対応表を用意しています。コンテナの管理更新はホスト側で行い、WebにDockerソケットを渡しません。以下はソースビルドの手順です。
 
 ホストにNode.jsやpnpmを入れる必要はありません。DockerとCompose v2を用意し、ルートで実行します。
 

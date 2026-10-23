@@ -3,13 +3,14 @@
 # until the previous server is stopped and a full backup exists.
 services:
   mirea:
-    image: ghcr.io/suiren-kazutohashimoto/mirea:0.13.0beta
+    image: ghcr.io/suiren-kazutohashimoto/mirea:0.14.0beta
     user: "1000:1000"
     environment:
       HOST: 0.0.0.0
       PORT: "3000"
       NODE_ENV: production
       DATA_DIR: /data
+      MEDIA_DIR: /media
       XDG_CACHE_HOME: /tmp/mirea-cache
       CORS_ORIGINS: https://localhost
       MAX_UPLOAD_BYTES: "2147483648"
@@ -19,8 +20,13 @@ services:
       SERVER_ADMIN_USER_IDS: ""
     volumes:
       - type: bind
-        source: /mnt/POOL/apps/mirea/data
+        source: /mnt/SSD_POOL/apps/mirea/state
         target: /data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/MEDIA_POOL/apps/mirea/media
+        target: /media
         bind:
           create_host_path: false
     # Proxy/Tunnel runs on this NAS host. For a proxy on another LAN machine,

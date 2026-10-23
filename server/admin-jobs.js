@@ -1,3 +1,4 @@
+import {moveStorage} from './storage-move.js';
 import {randomUUID} from 'node:crypto';
 import {mkdir,rename,stat,unlink,open} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -65,7 +66,7 @@ export async function registerAdminJobs(app,context) {
             const h=await open(join(work,'video',name),'r+');try{await h.sync();}finally{await h.close();}
           }
           authorize();await mkdir(join(videoDir,item.id),{recursive:true,mode:0o700});
-          await rename(join(work,'video'),join(videoDir,item.id,id));
+          await moveStorage(join(work,'video'),join(videoDir,item.id,id),{authorize});
           authorize();
           transaction(db,()=>{
             const previous=videoMetadata(db,item.id);

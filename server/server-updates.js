@@ -30,6 +30,7 @@ export async function registerServerUpdates(app,{adminAccess:a,maintenance,optio
   const watchers=new Map();
   app.addHook('onClose',async()=>{for(const [timer,unlock] of watchers){clearInterval(timer);unlock();}watchers.clear();});
   async function capability(){
+    if(options.storageSeparated)return {enabled:false,reason:'分離ストレージは専用ヘルパーの自動バックアップ対象外です。全保存先を停止中にバックアップし、ホスト側で更新してください。'};
     if(!root)return {enabled:false,reason:'WinVAI01の専用更新ヘルパーを管理者が初期設定すると利用できます。'};
     try{const config=JSON.parse(await readFile(join(root,'capabilities.json'),'utf8'));if(config.protocol!==1||config.platform!=='win32'||!config.installed)throw new Error('Invalid helper');return {enabled:true,platform:'win32',automaticRollback:true};}
     catch{return {enabled:false,reason:'更新ヘルパーの設定・権限・稼働状態を確認してください。'};}

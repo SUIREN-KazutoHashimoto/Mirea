@@ -10,7 +10,7 @@ import {encryptBackup} from './backup-archive.js';
 import {adminBody} from './admin.js';
 
 const TTL=24*3600000;
-export async function registerAdminBackups(app,{db,dataDir,adminAccess:a,maintenance,options}){
+export async function registerAdminBackups(app,{db,dataDir,mediaDir=dataDir,adminAccess:a,maintenance,options}){
   const directory=join(dataDir,'admin-backups');await mkdir(directory,{recursive:true,mode:0o700});
   const pathFor=id=>join(directory,id+'.mireabackup');
   const jobs=()=>db.prepare("SELECT id,kind,state,progress_json,error,created_at,updated_at,output_size FROM admin_jobs WHERE kind IN ('backup_metadata','backup_full') ORDER BY created_at DESC LIMIT 100").all();
@@ -36,13 +36,13 @@ export async function registerAdminBackups(app,{db,dataDir,adminAccess:a,mainten
       const walk=async(path,name)=>{const info=await lstat(path);if(info.isSymbolicLink())throw new Error('Backup may not follow links');if(info.isDirectory()){for(const entry of await readdir(path))await walk(join(path,entry),name+'/'+entry);}else await add(path,name);};
       await add(snapshot,'data/mirea.sqlite');
       for(const name of mode==='full'?['keys','uploads','videos','originals','previews','thumbnails']:['keys']){
-        const path=join(dataDir,name);if(await lstat(path).catch(e=>{if(e.code==='ENOENT')return null;throw e;}))await walk(path,'data/'+name);
+        const path=join(['uploads','videos','originals'].includes(name)?mediaDir:dataDir,name);if(await lstat(path).catch(e=>{if(e.code==='ENOENT')return null;throw e;}))await walk(path,'data/'+name);
       }
       const configPath=options.backupConfigFile??join(PROJECT_ROOT,'.env');
       if(await lstat(configPath).catch(e=>{if(e.code==='ENOENT')return null;throw e;}))await add(configPath,'configuration/server.env');
       const metadata=Buffer.from(JSON.stringify({format:1,mode,createdAt:new Date().toISOString(),schema:db.prepare('SELECT version FROM schema_version').get().version,
         settings:{allowRegistration:options.allowRegistration??process.env.ALLOW_REGISTRATION!=='false',analyticsEnabled:options.analyticsEnabled??process.env.ANALYTICS_ENABLED!=='false',serverAdminUserIds:options.serverAdminUserIds??process.env.SERVER_ADMIN_USER_IDS??'',maxUploadBytes:options.maxUploadBytes??process.env.MAX_UPLOAD_BYTES??2147483648},
-        includesPersonalLogs:true,includesDownloadKey:true,mediaIncluded:mode==='full',
+        includesPersonalLogs:true,includesDownloadKey:true,mediaIncluded:mode==='full',storage:{separate:mediaDir!==dataDir,archiveLayout:'combined',restore:'Restore logical data/ tree into DATA_DIR; migrate media offline before enabling MEDIA_DIR'},
         files:files.map(file=>({name:file.name,size:file.size,mtimeMs:file.mtime})),
         excluded:['OS/runtime','TLS and CA private keys outside DATA_DIR','APK/update signing keys','other backup archives','maintenance helper configuration']},null,2));
       files.unshift({name:'backup-manifest.json',size:metadata.length,bytes:metadata});

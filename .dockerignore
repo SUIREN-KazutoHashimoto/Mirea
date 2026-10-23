@@ -10,5 +10,7 @@
 !LICENSE
 !server/
 !server/**
+!scripts/
+!scripts/prepare-media-storage.mjs
 !web/
 !web/**

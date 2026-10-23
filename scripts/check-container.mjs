@@ -5,7 +5,7 @@ import {execFileSync} from 'node:child_process';
 import {createHash,createDecipheriv,randomUUID} from 'node:crypto';
 import assert from 'node:assert/strict';
 import pkg from '../package.json' with {type:'json'};
-if(process.env.GITHUB_ACTIONS!=='true'||!/^mirea-ci-\d+-\d+$/.test(process.env.COMPOSE_PROJECT_NAME??''))throw Error('An isolated GitHub CI project is required');
+if(process.env.GITHUB_ACTIONS!=='true'||!/^mirea-ci-\d+-\d+(?:-separated)?$/.test(process.env.COMPOSE_PROJECT_NAME??''))throw Error('An isolated GitHub CI project is required');
 const mode=process.argv[2],base='http://127.0.0.1:3000',statePath=resolve(process.env.RUNNER_TEMP??'',process.env.COMPOSE_PROJECT_NAME+'.json');
 if(!statePath.startsWith(resolve(process.env.RUNNER_TEMP)+sep))throw Error('Unsafe fixture state path');
 const hash=b=>createHash('sha256').update(b).digest('hex');

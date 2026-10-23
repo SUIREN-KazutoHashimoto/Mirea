@@ -2,9 +2,9 @@ import { createApp } from './app.js';
 import { loadEnvironment, runtimeConfig,loadTlsOptions } from './runtime.js';
 
 loadEnvironment();
-const { host, port, dataDir } = runtimeConfig();
+const { host, port, dataDir,mediaDir } = runtimeConfig();
 const https=await loadTlsOptions();
-const app = await createApp({ logger: true, dataDir,https });
+const app = await createApp({ logger: true, dataDir,mediaDir,https });
 const shutdown = async () => { await app.close(); };
 process.once('SIGTERM', shutdown);
 process.once('SIGINT', shutdown);

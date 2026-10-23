@@ -62,7 +62,7 @@ window.addEventListener('mirea:transferchange',updateTransferCount);
 const theme = createTheme({changed:syncAppearance});
 document.documentElement.classList.toggle('native-app',native);
 const finishAppLaunch=showAppLaunch({native});
-const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.13.0beta/mirea-0.13.0beta-android.apk';
+const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.14.0beta/mirea-0.14.0beta-android.apk';
 const currentApkUrl=()=>config.androidApkUrl?.startsWith('/api/v1/app-updates/')?absoluteUrl(config.androidApkUrl):config.androidApkUrl||defaultApkUrl;
 
 const root = document.querySelector('#app');
