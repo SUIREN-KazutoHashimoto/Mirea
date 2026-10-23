@@ -21,7 +21,7 @@ ARG VERSION=0.13.0-beta
 LABEL org.opencontainers.image.title="Mirea" \
       org.opencontainers.image.description="Shared video, audio and book library" \
       org.opencontainers.image.source="https://github.com/SUIREN-KazutoHashimoto/Mirea" \
-      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.revision=$VCS_REF \
       org.opencontainers.image.version=$VERSION
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates fontconfig fonts-noto-cjk ffmpeg && apt-get clean && rm -rf /var/lib/apt/lists/*
