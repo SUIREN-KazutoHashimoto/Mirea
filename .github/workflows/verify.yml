@@ -43,7 +43,9 @@ jobs:
       - name: Verify data and encryption identity after container recreation
         run: node scripts/check-container.mjs verify
       - name: Verify separate storage across a real filesystem boundary
-        run: docker compose exec -e MIREA_EXPECT_CROSS_DEVICE=1 -T mirea node --input-type=module < scripts/check-storage-runtime.mjs
+        # Node 24 detects ESM on stdin. --input-type would be inherited by the
+        # PDF/image file workers, which reject that stdin-only option.
+        run: docker compose exec -e MIREA_EXPECT_CROSS_DEVICE=1 -T mirea node < scripts/check-storage-runtime.mjs
       - name: Verify opt-in persistent media volume and recreation
         run: |
           docker compose down
