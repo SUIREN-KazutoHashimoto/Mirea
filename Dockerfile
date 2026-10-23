@@ -32,7 +32,7 @@ COPY --from=build --chown=node:node /app/dist ./dist
 COPY --chown=node:node server ./server
 COPY --chown=node:node package.json LICENSE ./
 COPY --chown=node:node scripts/prepare-media-storage.mjs ./scripts/prepare-media-storage.mjs
-RUN mkdir /data /media && chown node:node /data /media
+RUN mkdir -p /data /media && chown node:node /data /media
 USER 1000:1000
 VOLUME ["/data"]
 EXPOSE 3000
