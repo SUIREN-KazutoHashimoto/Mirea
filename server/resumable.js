@@ -44,6 +44,7 @@ export async function registerResumableUploads(app, context) {
     const item = upload.state === 'complete' && db.prepare('SELECT * FROM items WHERE id=?').get(upload.id);
     return {
       id: upload.id, state: upload.state, chunkSize: upload.chunk_size, expiresAt: upload.expires_at,
+      seriesId:upload.target_series_id,seriesWarning:upload.series_warning,
       title: upload.title, retainOriginal: Boolean(upload.retain_original), processing: JSON.parse(upload.processing_json),
       sourceRetained: upload.state === 'failed' && isTimedMime(JSON.parse(upload.files_json)[0].mime),
       receivedBytes: parts.reduce((sum, part) => sum + part.size, 0),
@@ -144,6 +145,7 @@ export async function registerResumableUploads(app, context) {
       properties: {
         title: { type: 'string', minLength: 1, maxLength: 200 },
         retainOriginal: { type: 'boolean', default: true },
+        seriesId:{anyOf:[{type:'string',format:'uuid'},{type:'null'}]},
         files: { type: 'array', minItems: 1, maxItems: MAX_BOOK_PAGES, items: {
           type: 'object', additionalProperties: false, required: ['filename', 'mime', 'size'],
           properties: { filename: { type: 'string', minLength: 1, maxLength: 255 }, mime: { enum: MIME_TYPES }, size: { type: 'integer', minimum: 1, maximum: maxUploadBytes } }
@@ -159,6 +161,7 @@ export async function registerResumableUploads(app, context) {
     if (files.some(file => IMAGE_TYPES.includes(file.mime) && file.size > MAX_IMAGE_BYTES) || files.reduce((sum, file) => sum + file.size, 0) > maxUploadBytes) {
       throw httpError(413, 'アップロードの合計、または画像1枚のサイズ上限を超えています。');
     }
+    if(req.body.seriesId&&!db.prepare('SELECT 1 FROM series WHERE id=? AND shelf_id=?').get(req.body.seriesId,req.params.id))throw httpError(422,'この本棚のシリーズを選んでください。');
     const active = db.prepare("SELECT COUNT(*) AS n FROM upload_sessions WHERE user_id=? AND (state IN ('processing','failed') OR (state='uploading' AND expires_at>?))").get(req.user.id, Date.now()).n;
     if (active >= 3) throw httpError(429, '同時アップロードは3件までです。不要なアップロードを取り消してください。');
     const id = randomUUID(), now = Date.now();
@@ -168,6 +171,7 @@ export async function registerResumableUploads(app, context) {
       db.prepare(`INSERT INTO upload_sessions(id,shelf_id,user_id,session_id,title,files_json,chunk_size,state,created_at,expires_at,retain_original)
         VALUES(?,?,?,?,?,?,?,'uploading',?,?,?)`).run(id, req.params.id, req.user.id, req.session.id, title,
         JSON.stringify(files.map(file => ({ ...file, filename: file.filename.replaceAll('\\', '/').split('/').pop() || 'file' }))), chunkSize, now, now + UPLOAD_TTL_MS, req.body.retainOriginal && isTimedMime(files[0].mime)?1:0);
+      db.prepare('UPDATE upload_sessions SET target_series_id=?,series_requested=? WHERE id=?').run(req.body.seriesId??null,req.body.seriesId?1:0,id);
       await mkdir(join(transferDir, id), { mode: 0o700 });
       authenticate(req);
       membership(req.params.id, req.user.id, ['owner', 'editor']);

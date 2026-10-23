@@ -1,0 +1,7 @@
+.offline-notice{margin:0 0 1rem;padding:.7rem 1rem;border:1px solid var(--border,#30415b);border-radius:12px;background:var(--surface,#172235);color:var(--muted,#9eabc4);font-size:.85rem;line-height:1.6}
+.offline-unavailable .card-open{cursor:not-allowed}
+.offline-unavailable .card-art img{filter:saturate(.5);opacity:.65}
+.offline-unavailable .card-open-label{display:none}
+.card-offline-status{display:block;margin-top:.5rem;font-size:.75rem;line-height:1.5;color:var(--muted,#9eabc4)}
+.offline-unavailable .card-offline-status{color:var(--muted,#9eabc4)}
+.item-grid[data-details="compact"] .card-offline-status{display:block!important}

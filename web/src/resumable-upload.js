@@ -3,7 +3,7 @@ const digest = async bytes => hex(await crypto.subtle.digest('SHA-256', bytes));
 const abortError = () => new Error('アップロードをキャンセルしました。');
 const transient = status => !status || [408, 409, 425, 429].includes(status) || status >= 500;
 
-export function createResumableUpload({ endpoint, token, userId, unauthorized }, shelfId, files, title, onProgress, {retainOriginal=true}={}) {
+export function createResumableUpload({ endpoint, token, userId, unauthorized }, shelfId, files, title, onProgress, {retainOriginal=true,seriesId=null}={}) {
   const controller = new AbortController();
   const { signal } = controller;
   let xhr, uploadId, storageKey, cancelled = false, processing = false;
@@ -72,7 +72,7 @@ export function createResumableUpload({ endpoint, token, userId, unauthorized },
       const sample = new Blob([file.slice(0, 65536), file.slice(Math.max(0, file.size - 65536))]);
       identities.push([file.name, file.type, file.size, file.lastModified, await digest(await sample.arrayBuffer())]);
     }
-    storageKey = `mirea.upload.${await digest(new TextEncoder().encode(JSON.stringify([endpoint, userId, shelfId, title, identities, retainOriginal])))}`;
+    storageKey = `mirea.upload.${await digest(new TextEncoder().encode(JSON.stringify([endpoint, userId, shelfId, title, identities, retainOriginal,...(seriesId?[seriesId]:[])])))}`;
     if (signal.aborted) throw abortError();
     let state;
     const saved = readSaved();
@@ -85,7 +85,7 @@ export function createResumableUpload({ endpoint, token, userId, unauthorized },
       // Do not automatically retry creation: a lost response must not allocate
       // several server sessions. Individual parts and completion are idempotent.
       state = await request(`/shelves/${shelfId}/uploads`, 'POST', {
-        title, retainOriginal, files: files.map(file => ({ filename: file.name, mime: file.type, size: file.size }))
+        title, retainOriginal, ...(seriesId?{seriesId}:{}), files: files.map(file => ({ filename: file.name, mime: file.type, size: file.size }))
       });
       save({ id: state.id, expiresAt: state.expiresAt });
     }
@@ -127,7 +127,7 @@ export function createResumableUpload({ endpoint, token, userId, unauthorized },
     }
     if (state.state !== 'complete' || !state.item) { save(null); throw new Error(state.error || 'コンテンツを保存できませんでした。'); }
     save(null);
-    return { item: state.item };
+    return { item: state.item,seriesWarning:state.seriesWarning??'' };
   })().catch(error => {
     if (cancelled) throw abortError();
     throw error;

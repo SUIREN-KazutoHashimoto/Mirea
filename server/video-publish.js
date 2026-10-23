@@ -1,6 +1,7 @@
 import { copyFile, rename, unlink, stat, rm, readdir, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { transaction } from './database.js';
+import {attachUploadSeries} from './upload-series.js';
 import { removeItemDirectory } from './media.js';
 import { probeVideo } from './video-transcode.js';
 
@@ -51,6 +52,7 @@ export async function publishVideo(context,upload,authorize) {
       db.prepare(`INSERT INTO items(id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at,page_count,thumbnail_ready)
         VALUES(?,?,?,?, 'video/mp4',?,?,?,1,1)`).run(id,shelfId,title,first.filename.replace(/\.[^.]+$/,'')+'.mp4',metadata.renditions[0].size,userId,Date.now());
       db.prepare('INSERT INTO video_assets VALUES(?,?,?)').run(id,JSON.stringify(metadata),upload.retain_original?1:0);
+      attachUploadSeries(db,upload);
       db.prepare("UPDATE upload_sessions SET state='complete',error=NULL,processing_json=? WHERE id=?").run(JSON.stringify({stage:'complete',percent:100}),id);
     });
     // The caller now discards source staging + transfer parts. If interrupted,

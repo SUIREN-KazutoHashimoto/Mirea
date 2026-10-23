@@ -1,6 +1,6 @@
 import {createProgressCache} from './progress-cache.js';
 import { isTimedKind } from '../../server/audio-types.js';
-import { getSession,getEndpoint } from './api.js';
+import { getSession,getEndpoint,isOfflineSession } from './api.js';
 import { createProgressSync,resumeVideoMs } from './progress-core.js';
 
 const active=new Set(),finishing=new Set();
@@ -41,7 +41,7 @@ export async function openProgress(item,{status=()=>{},saved=()=>{}}={}){
   if(!session)throw new Error('ログインしてください。');
   const cache=cacheFor(`${endpoint || location.origin}|${session.user.id}`,item.id);
   const request=async(method,body)=>{
-    if(!getSession()?.token)throw new Error('続き位置はオンライン復帰後に同期します。');
+    if(isOfflineSession()||!getSession()?.token)throw new Error('続き位置はオンライン復帰後に同期します。');
     const response=await fetch(`${endpoint}/api/v1/items/${item.id}/progress`,{method,headers:{Authorization:`Bearer ${getSession()?.user.id===session.user.id&&getEndpoint()===endpoint?getSession().token:''}`,...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined,cache:'no-store',keepalive:method==='PUT',signal:AbortSignal.timeout(10000)});
     const data=await response.json().catch(()=>({}));
     if(!response.ok)throw Object.assign(new Error(data.error || '進行度の通信に失敗しました。'),{status:response.status});

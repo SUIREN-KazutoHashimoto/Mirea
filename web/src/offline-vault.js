@@ -6,9 +6,14 @@ const encoder=new TextEncoder(),decoder=new TextDecoder(),anchors=new Map();
 const originOf=origin=>origin||globalThis.location?.origin;
 export const offlinePartition=(origin,userId)=>`${originOf(origin)}|${userId}`;
 const slot=(partition,id)=>`sealed|${partition}|${id}`;
+const timedQueues=new WeakMap();
 // A non-extractable device/origin key wraps leases and content keys. Neither
 // bearer tokens nor plaintext media are persisted in the browser vault.
 export async function createOfflineVault(store,{cryptoApi=crypto,wall=Date.now,mono=()=>performance.now(),anchorMap=anchors}={}){
+  // Renewal, clock checkpoints and reads for the same record serialize across
+  // vault instances, so a late read cannot restore an older catalog/lease.
+  let queues=timedQueues.get(store);if(!queues)timedQueues.set(store,queues=new Map());
+  function serialized(partition,id,work){const name=slot(partition,id),before=queues.get(name)??Promise.resolve(),task=before.catch(()=>{}).then(work);queues.set(name,task);task.finally(()=>{if(queues.get(name)===task)queues.delete(name);}).catch(()=>{});return task;}
   async function deviceKey(partition,create=false){
     const name=`device|${partition}`;let key=await store.vaultGet(name);
     if(!key&&create)key=await store.vaultInit(name,await cryptoApi.subtle.generateKey({name:'AES-GCM',length:256},false,['encrypt','decrypt']));
@@ -22,8 +27,7 @@ export async function createOfflineVault(store,{cryptoApi=crypto,wall=Date.now,m
     const record=await store.vaultGet(slot(partition,id));if(!record)return null;
     let plain;try{plain=new Uint8Array(await cryptoApi.subtle.decrypt({name:'AES-GCM',iv:record.iv,additionalData:encoder.encode(slot(partition,id))},await deviceKey(partition),record.bytes));return JSON.parse(decoder.decode(plain));}finally{plain?.fill(0);}
   }
-  async function lease(partition,id){
-    const saved=await unseal(partition,id);if(!saved)return null;
+  async function remaining(partition,id,saved){
     const time=wall(),name=slot(partition,id),anchor=anchorMap.get(name);
     // Fail closed on clock rollback. Monotonic time also bounds a live page
     // while the wall clock is held back. This is not hardware DRM.
@@ -31,18 +35,30 @@ export async function createOfflineVault(store,{cryptoApi=crypto,wall=Date.now,m
     const elapsed=Math.max(0,time-saved.wall,anchor?anchor.elapsed+mono()-anchor.mono:0);
     if(saved.grant.expiresAt<=saved.grant.serverTime+elapsed){await store.vaultDelete(name);return null;}
     saved.lastWall=Math.max(time,saved.lastWall);await seal(partition,id,saved);anchorMap.set(name,{elapsed,mono:mono()});
-    return {...saved.grant,localExpiresAt:time+saved.grant.expiresAt-saved.grant.serverTime-elapsed};
+    return time+saved.grant.expiresAt-saved.grant.serverTime-elapsed;
   }
+  function lease(partition,id){return serialized(partition,id,async()=>{
+    const saved=await unseal(partition,id);if(!saved)return null;
+    const localExpiresAt=await remaining(partition,id,saved);return localExpiresAt?{...saved.grant,localExpiresAt}:null;
+  });}
+  function catalog(partition){return serialized(partition,'catalog',async()=>{
+    const saved=await unseal(partition,'catalog');if(!saved)return null;
+    return await remaining(partition,'catalog',saved)?saved.catalog:null;
+  });}
   return {
     async loggedOut(origin){return await store.vaultGet(`loggedout|${originOf(origin)}`)===true;},
     async setLoggedOut(origin,value){await store.vaultPut(`loggedout|${originOf(origin)}`,value);},
-    async saveLease(partition,grant,userId){
+    saveLease(partition,grant,userId){return serialized(partition,grant.manifest.id,async()=>{
       validateManifest(grant.manifest);
       if(grant.userId!==userId||!Number.isSafeInteger(grant.serverTime)||!Number.isSafeInteger(grant.expiresAt)||grant.expiresAt<=grant.serverTime||grant.expiresAt-grant.serverTime>OFFLINE_MS||!/^([A-Za-z0-9+/]{43}=)$/.test(grant.key))throw new Error('オフライン閲覧許可が不正です。');
       const time=wall(),safe={manifest:grant.manifest,userId,key:grant.key,serverTime:grant.serverTime,expiresAt:grant.expiresAt};
       await seal(partition,grant.manifest.id,{grant:safe,wall:time,lastWall:time});anchorMap.set(slot(partition,grant.manifest.id),{elapsed:0,mono:mono()});
-    },lease,
-    async revoke(partition,id){anchorMap.delete(slot(partition,id));await store.vaultDelete(slot(partition,id));},
+    });},lease,
+    revoke(partition,id){return serialized(partition,id,async()=>{anchorMap.delete(slot(partition,id));await store.vaultDelete(slot(partition,id));});},
+    saveCatalog(partition,value,userId){return serialized(partition,'catalog',async()=>{
+      if(value.userId!==userId||!Number.isSafeInteger(value.serverTime)||value.serverTime<=0)throw new Error('一覧情報のユーザーが一致しません。');
+      const time=wall();await seal(partition,'catalog',{catalog:value,grant:{serverTime:value.serverTime,expiresAt:value.serverTime+OFFLINE_MS},wall:time,lastWall:time});anchorMap.set(slot(partition,'catalog'),{elapsed:0,mono:mono()});
+    });},catalog,
     async saveIdentity(origin,session,remember,config){
       const partition=offlinePartition(origin,session.user.id);
       await seal(partition,'identity',{user:session.user,expiresAt:session.expiresAt,remember,config});
@@ -52,6 +68,7 @@ export async function createOfflineVault(store,{cryptoApi=crypto,wall=Date.now,m
       if(await store.vaultGet(`loggedout|${originOf(origin)}`))return null;
       const id=userId??await store.vaultGet(`identity|${originOf(origin)}`);if(!id)return null;
       const partition=offlinePartition(origin,id),identity=await unseal(partition,'identity');if(!identity||(!identity.remember&&!userId))return null;
+      if(await catalog(partition).catch(()=>null))return identity;
       for(const row of await store.list(partition))if(row.state==='ready'&&await lease(partition,row.manifest.id).catch(()=>null))return identity;
       return null;
     },

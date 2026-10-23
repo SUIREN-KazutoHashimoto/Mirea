@@ -79,7 +79,7 @@ export function openDatabase(filename) {
         UPDATE schema_version SET version = 2;
       `));
     } finally { db.exec('PRAGMA foreign_keys = ON'); }
-  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
+  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
   if (version < 10) {
     // v10 adds EPUB while retaining v9's nullable uploader attribution.
     // Account deletion removes attribution, not another member's shared assets.
@@ -366,6 +366,27 @@ export function openDatabase(filename) {
     view_id TEXT PRIMARY KEY REFERENCES analytics_views(id) ON DELETE CASCADE,state_json TEXT NOT NULL
   );CREATE INDEX IF NOT EXISTS analytics_events_view_arrival ON analytics_events(view_id,row_id);
   UPDATE schema_version SET version=15;`);
+  // Additive v16 migration: keep every asset, key, history and old series row.
+  transaction(db,()=>{
+    if(!db.prepare('PRAGMA table_info(series)').all().some(c=>c.name==='parent_id'))db.exec('ALTER TABLE series ADD COLUMN parent_id TEXT REFERENCES series(id) ON DELETE SET NULL');
+    const columns=db.prepare('PRAGMA table_info(upload_sessions)').all();
+    if(!columns.some(c=>c.name==='target_series_id'))db.exec('ALTER TABLE upload_sessions ADD COLUMN target_series_id TEXT REFERENCES series(id) ON DELETE SET NULL');
+    if(!columns.some(c=>c.name==='series_requested'))db.exec('ALTER TABLE upload_sessions ADD COLUMN series_requested INTEGER NOT NULL DEFAULT 0');
+    if(!columns.some(c=>c.name==='series_warning'))db.exec("ALTER TABLE upload_sessions ADD COLUMN series_warning TEXT NOT NULL DEFAULT ''");
+    db.exec(`CREATE INDEX IF NOT EXISTS series_parent ON series(parent_id);
+      CREATE TABLE IF NOT EXISTS series_create_requests(user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,request_id TEXT NOT NULL,series_id TEXT NOT NULL REFERENCES series(id) ON DELETE CASCADE,PRIMARY KEY(user_id,request_id));
+      CREATE TRIGGER IF NOT EXISTS series_parent_insert BEFORE INSERT ON series WHEN NEW.parent_id IS NOT NULL BEGIN
+        SELECT CASE WHEN NEW.parent_id=NEW.id OR NOT EXISTS(SELECT 1 FROM series WHERE id=NEW.parent_id AND shelf_id=NEW.shelf_id) THEN RAISE(ABORT,'Invalid series parent') END;
+      END;
+      CREATE TRIGGER IF NOT EXISTS series_parent_update BEFORE UPDATE OF parent_id ON series WHEN NEW.parent_id IS NOT NULL BEGIN
+        SELECT CASE WHEN NEW.parent_id=NEW.id OR NOT EXISTS(SELECT 1 FROM series WHERE id=NEW.parent_id AND shelf_id=NEW.shelf_id) THEN RAISE(ABORT,'Invalid series parent') END;
+        SELECT CASE WHEN EXISTS(WITH RECURSIVE ancestors(id) AS (SELECT NEW.parent_id UNION SELECT s.parent_id FROM series s JOIN ancestors a ON s.id=a.id WHERE s.parent_id IS NOT NULL) SELECT 1 FROM ancestors WHERE id=NEW.id) THEN RAISE(ABORT,'Series hierarchy cycle') END;
+      END;
+      CREATE TRIGGER IF NOT EXISTS series_tree_shelf_update BEFORE UPDATE OF shelf_id ON series WHEN EXISTS(SELECT 1 FROM series WHERE id=NEW.parent_id AND shelf_id!=NEW.shelf_id) OR EXISTS(SELECT 1 FROM series WHERE parent_id=NEW.id AND shelf_id!=NEW.shelf_id) BEGIN SELECT RAISE(ABORT,'Detach series hierarchy before moving shelves');END;
+      CREATE TRIGGER IF NOT EXISTS series_parent_changed AFTER UPDATE OF parent_id ON series WHEN OLD.parent_id IS NOT NEW.parent_id BEGIN UPDATE series SET revision=revision+1,updated_at=CAST(unixepoch('subsec')*1000 AS INTEGER) WHERE id=NEW.id;END;
+      UPDATE schema_version SET version=16;`);
+  });
+  db.exec(`CREATE TABLE IF NOT EXISTS thumbnail_overrides(asset_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,image_id TEXT NOT NULL,updated_at INTEGER NOT NULL);CREATE INDEX IF NOT EXISTS thumbnail_image ON thumbnail_overrides(image_id);UPDATE schema_version SET version=17;`);
   if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Database foreign key validation failed');
   return db;
 }

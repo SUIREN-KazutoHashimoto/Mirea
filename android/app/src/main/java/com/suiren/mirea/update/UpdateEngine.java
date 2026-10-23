@@ -23,7 +23,7 @@ public final class UpdateEngine {
     public static final String EVENT="com.suiren.mirea.UPDATE_STATE";
     private static final int JOB_ID=1296650837;
     private static final AtomicBoolean RUNNING=new AtomicBoolean(false);
-    private static volatile boolean busy=false,foreground=false,playbackBusy=false;
+    private static volatile boolean busy=false,foreground=false,playbackBusy=false,transferBusy=false;
     private final Context ctx;
     private final SharedPreferences prefs;
     private final File folder;
@@ -32,7 +32,8 @@ public final class UpdateEngine {
     public static void setForeground(boolean value){foreground=value;}
     public static void setBusy(boolean value){busy=value;}
     public static void setPlaybackBusy(boolean value){playbackBusy=value;}
-    public static boolean isBusy(){return busy||playbackBusy;}
+    public static void setTransferBusy(boolean value){transferBusy=value;}
+    public static boolean isBusy(){return busy||playbackBusy||transferBusy;}
     public void installNow() throws Exception {
         if(!RUNNING.compareAndSet(false,true))throw new Exception("更新の処理中です。");
         try{maybeInstall(true);}catch(Exception error){state("error",safeMessage(error));throw error;}finally{RUNNING.set(false);changed();}

@@ -1,0 +1,50 @@
+# TrueNAS Apps > Discover Apps > menu > Install via YAML.
+# Replace the host dataset path BEFORE installing. Do not use this on live data
+# until the previous server is stopped and a full backup exists.
+services:
+  mirea:
+    image: ghcr.io/suiren-kazutohashimoto/mirea:0.13.0beta
+    user: "1000:1000"
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3000"
+      NODE_ENV: production
+      DATA_DIR: /data
+      XDG_CACHE_HOME: /tmp/mirea-cache
+      CORS_ORIGINS: https://localhost
+      MAX_UPLOAD_BYTES: "2147483648"
+      UPLOAD_CHUNK_BYTES: "8388608"
+      ALLOW_REGISTRATION: "true"
+      ANALYTICS_ENABLED: "true"
+      SERVER_ADMIN_USER_IDS: ""
+    volumes:
+      - type: bind
+        source: /mnt/POOL/apps/mirea/data
+        target: /data
+        bind:
+          create_host_path: false
+    # Proxy/Tunnel runs on this NAS host. For a proxy on another LAN machine,
+    # replace only host_ip with the NAS LAN IP and firewall it to that proxy.
+    ports:
+      - target: 3000
+        published: "13000"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cpus: 2.0
+    mem_limit: 4g
+    pids_limit: 256
+    stop_grace_period: 2m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

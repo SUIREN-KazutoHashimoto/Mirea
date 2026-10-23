@@ -19,13 +19,15 @@ async function scenario({native=true,cached=true,online=true,status,bodyDelay=fa
   };
   const context=createContext({fetch,console,AbortSignal,AbortController,setTimeout,clearTimeout,URL,Response,TextEncoder,crypto,Event,window,location:{origin},localStorage:{getItem:()=>origin,setItem:()=>{}},sessionStorage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)}});
   const exports={
+    './native-transfers.js':{nativeTransfersAvailable:()=>native,nativeUpload:()=>{},configureNativeTransfers:()=>{},invalidateTransfers:()=>{}},
+    './download-core.js':{ciphertextHash:async()=> 'fixture-partition'},'./transfer-manager.js':{stopTransfers:()=>{}},
     './native-player-bridge.js':{NativePlayer:{},nativePlayerAvailable:()=>false,invalidateNativePlayback:()=>{}},
     '@capacitor/core':{Capacitor:{isNativePlatform:()=>native},registerPlugin:()=>secure},
     './offline-vault.js':{offlineVault:async()=>vault,offlineIdentity:async()=>cached&&!loggedOut?{user,expiresAt:saved.expiresAt}:null,forgetOfflineIdentity:async()=>{}},
     './session-store.js':{createLoginStore},'./connection-budget.js':{connectionBudget},
     './resumable-upload.js':{createResumableUpload:()=>{}},'./update-busy.js':{beginUpdateActivity:()=>()=>{}}
   };
-  const module=new SourceTextModule(source,{context,initializeImportMeta:meta=>{meta.env={};}});
+  const module=new SourceTextModule(source,{context,initializeImportMeta:meta=>{meta.env={};},importModuleDynamically:async specifier=>{assert.equal(specifier,'./downloads.js');const imported=new SyntheticModule(['syncNativeDownloads'],function(){this.setExport('syncNativeDownloads',async()=>{});},{context});await imported.link(()=>{});await imported.evaluate();return imported;}});
   await module.link(specifier=>{const values=exports[specifier];if(!values)throw Error(specifier);return new SyntheticModule(Object.keys(values),function(){for(const [key,value] of Object.entries(values))this.setExport(key,value);},{context});});await module.evaluate();
   const budget=connectionBudget({ms:35,online}),start=performance.now();let error;
   try{await module.namespace.initializeSession({signal:budget.signal});}catch(e){error=e;}finally{budget.dispose();}
@@ -38,6 +40,6 @@ for(const native of [true,false])for(const bodyDelay of [false,true]){
 const temporary=await scenario({native:false,temporarySession:true,reconnect:true});assert.equal(temporary.session.token,saved.token);assert.equal(temporary.session.offline,false);assert.equal(temporary.clears,0);
 const offline=await scenario({online:false});assert.equal(offline.requests,0);assert.equal(offline.session.offline,true);assert.ok(offline.elapsed<100);
 const expired=await scenario({cached:false});assert.ok(expired.error);assert.notEqual(expired.session?.offline,true);assert.equal(expired.clears,0);
-for(const native of [true,false]){const denied=await scenario({native,status:401});assert.equal(denied.session,null);assert.equal(denied.session?.offline,undefined);}
+for(const native of [true,false])for(const status of [401,403]){const denied=await scenario({native,status});assert.equal(denied.session,null);assert.equal(denied.session?.offline,undefined);}
 const loggedOut=await scenario({loggedOut:true});assert.equal(loggedOut.session,null);
 console.log(JSON.stringify({unreachableAndStalledBody:true,browserAndNative:true,offlineImmediate:true,denialDoesNotFallback:true,expiredGrantDenied:true,temporarySessionReconnect:true,rememberedCredentialsPreserved:true}));

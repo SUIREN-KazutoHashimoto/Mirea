@@ -29,9 +29,11 @@ UPLOAD_CHUNK_BYTES=8388608
 
 FFmpegは通常 `ffmpeg-static` が取得したバイナリを使います。取得できないプラットフォームや制限された環境では、別途FFmpegを用意し `FFMPEG_PATH` に絶対パスを設定してください。画像・PDF用のsharp／Canvasも実行OSに合ったネイティブ依存関係が必要なので、別OSの `node_modules` はコピーせず、起動するOSでインストールします。日本語PDFサムネイルには日本語フォントを用意します。DockerイメージではNoto CJKを含めていますが、直接起動ではOS側のフォントを利用します。
 
-直接起動の実動作はWindowsで確認しています。LinuxはGitHub Actionsの起動テスト対象ですが、リモート実行結果はまだ確認していません。
+直接起動はWindowsのLANサービスで運用し、LinuxはGitHub Actionsの実起動テスト対象です。
 
 ## 2. Dockerコンテナで起動する
+
+0.13.0betaから`ghcr.io/suiren-kazutohashimoto/mirea:0.13.0beta`（linux/amd64）を配布します。ビルド不要の起動は`docker compose -f compose.release.yaml up -d`、停止は同じ`-f`で`down`です。[TrueNAS 25.04.2.6](truenas-25.04.md)には専用YAMLと設定対応表を用意しています。コンテナの管理更新はホスト側で行い、WebにDockerソケットを渡しません。以下はソースビルドの手順です。
 
 ホストにNode.jsやpnpmを入れる必要はありません。DockerとCompose v2を用意し、ルートで実行します。
 
@@ -82,4 +84,4 @@ pnpm build
 pnpm test:startup
 ```
 
-起動テストは別の一時領域で実際の `server/index.js` を起動し、Web配信・PDF分割転送・サムネイル・Range取得・再起動後の保持を確認します。通常の `data/` は変更しません。Dockerのビルド・ヘルスチェック・Web配信・追加設定の構文確認もCIへ登録しています。このPCにはDockerがないため、コンテナの実行結果は未確認です。
+起動テストは別の一時領域で実際の `server/index.js` を起動し、Web配信・PDF分割転送・サムネイル・Range取得・再起動後の保持を確認します。通常の `data/` は変更しません。Dockerのビルド・非特権／読取専用root FS・FFmpeg変換・実アップロード・入れ子シリーズ・続き位置・コンテナ再作成後の鍵保持もCIの検査対象です。リリースタグでは全検査ジョブの正式成功後に、その検査済みイメージ自体を再ビルドせず公開します。このPCにはDockerがないため、コンテナの実行検証はCIで行います。

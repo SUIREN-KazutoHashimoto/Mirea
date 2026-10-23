@@ -1,6 +1,7 @@
 import { open, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { transaction } from './database.js';
+import {attachUploadSeries} from './upload-series.js';
 import { httpError, matchesFileType } from './security.js';
 import { IMAGE_TYPES, IMAGE_BOOK_MIME, imageExtension, removeItemDirectory } from './media.js';
 import { EPUB_MIME } from './ebook-types.js';
@@ -65,6 +66,7 @@ export async function publishStagedUpload(context, upload, authorize) {
         files.reduce((sum, file) => sum + file.size, 0), userId, Date.now(), isBook ? pages.length : thumbnail.pageCount);
       const insert = db.prepare('INSERT INTO image_pages VALUES(?,?,?,?,?,?,?)');
       for (const page of pages) insert.run(id, page.number, page.filename, page.size, page.width, page.height, page.mime);
+      attachUploadSeries(db,upload);
       db.prepare("UPDATE upload_sessions SET state='complete', error=NULL WHERE id=?").run(id);
     });
     return publicItem(db.prepare('SELECT * FROM items WHERE id=?').get(id));

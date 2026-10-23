@@ -1,0 +1,42 @@
+# Download this file from the release and run: docker compose -f compose.release.yaml up -d
+# The host defaults to loopback. Use a trusted HTTPS proxy for browsers/Android.
+services:
+  mirea:
+    image: ghcr.io/suiren-kazutohashimoto/mirea:0.13.0beta
+    user: "1000:1000"
+    ports:
+      - target: 3000
+        published: "${PORT:-3000}"
+        host_ip: "${HOST:-127.0.0.1}"
+        protocol: tcp
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3000"
+      DATA_DIR: /data
+      NODE_ENV: production
+      XDG_CACHE_HOME: /tmp/mirea-cache
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-2147483648}
+      UPLOAD_CHUNK_BYTES: ${UPLOAD_CHUNK_BYTES:-8388608}
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      ANALYTICS_ENABLED: ${ANALYTICS_ENABLED:-true}
+      SERVER_ADMIN_USER_IDS: ${SERVER_ADMIN_USER_IDS:-}
+    volumes:
+      - mirea-data:/data
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 2m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  mirea-data:

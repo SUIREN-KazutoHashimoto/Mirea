@@ -8,7 +8,7 @@ const titleOf=file=>file.name.replace(/\.[^.]+$/,'').slice(0,200)||'無題';
 export function planUploads(incoming) {
   const files=Array.from(incoming).map(file=>{
     const ext=file.name.split('.').pop().toLowerCase(),mime=ext==='webm'&&file.type==='audio/webm'?'audio/webm':mimeByExtension[ext]||file.type||'application/octet-stream';
-    return file.type===mime?file:new File([file],file.name,{type:mime,lastModified:file.lastModified});
+    return file.nativeId?{...file,type:mime}:file.type===mime?file:new File([file],file.name,{type:mime,lastModified:file.lastModified});
   });
   const pages=files.filter(isUploadImage).sort((a,b)=>a.name.localeCompare(b.name,'ja',{numeric:true,sensitivity:'base'})),jobs=[];
   let book=false;
@@ -40,7 +40,7 @@ export function validateUploadPlan(jobs,{maxUploadBytes,maxBookPages,maxImageByt
 
 // Each worker holds its slot through server post-processing, not just transfer.
 // A failed file is not silently retried/re-created; completed jobs are never resent.
-export function createUploadBatch(jobs,{start,concurrency=3,isCurrent=()=>true,changed=()=>{}}) {
+export function createUploadBatch(jobs,{start,concurrency=3,isCurrent=()=>true,changed=()=>{},eager=false}) {
   const rows=jobs.map(job=>({job,state:'queued',percent:0,processing:null,error:''})),active=new Map();
   let next=0,cancelled=false,halted=false;
   const emit=()=>changed(rows.map(row=>({...row})));
@@ -52,13 +52,13 @@ export function createUploadBatch(jobs,{start,concurrency=3,isCurrent=()=>true,c
       let settled=false;
       try {
         const task=start(row.job,(percent,processing)=>{if(settled||cancelled)return;if(!isCurrent()){cancel();return;}row.percent=Math.max(0,Math.min(100,Number(percent)||0));row.processing=processing;row.state=row.percent===100?'processing':'uploading';emit();});
-        active.set(row,task);if(cancelled||!isCurrent()){row.state=task.processing?'detached':'cancelled';try{task.processing?task.detach():task.abort();}catch{}}await task.promise;
+        active.set(row,task);if(cancelled||!isCurrent()){row.state=task.processing?'detached':'cancelled';try{task.processing?task.detach():task.abort();}catch{}}const result=await task.promise;row.warning=result?.seriesWarning??'';
         if(!cancelled&&isCurrent()){row.state='complete';row.percent=100;row.processing=null;}
       } catch(error) {
         if(!cancelled&&isCurrent()){row.state='failed';row.error=error.message||'アップロードに失敗しました。';if([401,403,429].includes(error.status))halted=true;}
       } finally {settled=true;active.delete(row);if(!isCurrent())cancel();emit();}
     }
   }
-  const promise=Promise.resolve().then(async()=>{emit();await Promise.all(Array.from({length:Math.min(3,Math.max(1,Math.floor(concurrency)||1),rows.length)},worker));if(!isCurrent())cancel();emit();return {rows:rows.map(row=>({...row})),cancelled,halted};});
+  const promise=Promise.resolve().then(async()=>{emit();await Promise.all(Array.from({length:Math.min(eager?rows.length:3,Math.max(1,Math.floor(concurrency)||1),rows.length)},worker));if(!isCurrent())cancel();emit();return {rows:rows.map(row=>({...row})),cancelled,halted};});
   return {promise,cancel};
 }
