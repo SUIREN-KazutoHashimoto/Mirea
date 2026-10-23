@@ -1,3 +1,4 @@
+import {moveStorage} from './storage-move.js';
 import { open, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { transaction } from './database.js';
@@ -52,7 +53,7 @@ export async function publishStagedUpload(context, upload, authorize) {
     const first = files[0];
     const thumbnail = await media.thumbnail(join(stage, isBook ? `1.${imageExtension(first.mime)}` : 'raw-1'), first.mime, join(stage, 'thumbnail.jpg'), isEpub ? join(stage,'book.json') : undefined);
     authorize();
-    await rename(join(stage, 'thumbnail.jpg'), finalThumbnail);
+    await moveStorage(join(stage, 'thumbnail.jpg'), finalThumbnail,{authorize});
     if (isBook) await rename(stage, join(booksDir, id));
     else {
       await rename(join(stage, 'raw-1'), finalPath);

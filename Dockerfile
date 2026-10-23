@@ -17,7 +17,7 @@ RUN pnpm install --prod --frozen-lockfile
 
 FROM node:24.19.0-bookworm-slim AS runtime
 ARG VCS_REF=unknown
-ARG VERSION=0.13.0-beta
+ARG VERSION=0.14.0-beta
 LABEL org.opencontainers.image.title="Mirea" \
       org.opencontainers.image.description="Shared video, audio and book library" \
       org.opencontainers.image.source="https://github.com/SUIREN-KazutoHashimoto/Mirea" \
@@ -31,7 +31,8 @@ COPY --from=dependencies --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --chown=node:node server ./server
 COPY --chown=node:node package.json LICENSE ./
-RUN mkdir /data && chown node:node /data
+COPY --chown=node:node scripts/prepare-media-storage.mjs ./scripts/prepare-media-storage.mjs
+RUN mkdir -p /data /media && chown node:node /data /media
 USER 1000:1000
 VOLUME ["/data"]
 EXPOSE 3000

@@ -117,6 +117,8 @@ try{
       # A server restart or interrupted handoff must not silently remove the
       # write barrier while dependency preparation is in progress.
       Health $oldPackage.version $true
+      $layoutPath=Join-Path ($installation+'\data') 'storage-layout.json'
+      if((Test-Path -LiteralPath $layoutPath) -and (Get-Content -LiteralPath $layoutPath -Raw|ConvertFrom-Json).mode -eq 'separate'){throw 'Separate storage requires an operator backup of BOTH roots; this helper cannot safely roll it back'}
       $stopped=$true;StopMirea
       $data=SafeChild ($installation+'\data') $installation
       if(@(Get-ChildItem -LiteralPath $data -Recurse -Force|Where-Object {$_.Attributes -band [IO.FileAttributes]::ReparsePoint}).Count){throw 'Data links are not supported by rollback backup'}

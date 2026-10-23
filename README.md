@@ -1,6 +1,6 @@
 # Mirea
 
-**0.13.0beta**（内部 `0.13.0-beta`、Android versionCode 28）。[配布リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.13.0beta)、[変更履歴・制限](RELEASE.md)、[TrueNAS 25.04.2.6 Custom App手順](docs/truenas-25.04.md)を参照してください。既存の専用APK署名を維持し、旧デバッグ署名からの初回移行だけは手動です。
+**0.14.0beta**（内部 `0.14.0-beta`、Android versionCode 29）。[配布リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.14.0beta)、[変更履歴・制限](RELEASE.md)、[TrueNAS 25.04.2.6 Custom App手順](docs/truenas-25.04.md)を参照してください。既存の専用APK署名を維持し、旧デバッグ署名からの初回移行だけは手動です。
 
 動画・音声・音楽・PDF・EPUB・複数画像の本を、本棚単位で共有できるクライアント・サーバー型メディアライブラリです。PCのWebブラウザとAndroidアプリが、同じAPI・アカウント・本棚を使います。
 
@@ -15,6 +15,8 @@
 [動画のPiP／動画・音楽のバックグラウンド再生](docs/background-playback.md)も収録します。Webの背景再生バーとOSメディア操作、Androidの独立した再生サービス・通知／ロック画面操作に対応します。
 
 [管理者専用メニュー](docs/admin.md)でジョブ確認・再生成、アカウントと本棚権限の管理、匿名統計、メタデータ／メディア込みの暗号化バックアップができます。WinVAI01向け更新ヘルパーは初期導入が必要です。本人の詳細ログ画面は設定からのNDJSON取得へ変更し、簡単な閲覧履歴は残しています。
+
+[DB／ユーザー情報とメディア本体のストレージ分離](docs/storage.md)に対応します。`MEDIA_DIR`未設定なら従来配置を維持。TrueNAS用YAMLは`/data`と`/media`の2マウント構成です。既存環境は停止・全バックアップ・検証付きコピーで移行してから有効化します。
 
 ## 現在の機能
 

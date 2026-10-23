@@ -42,10 +42,23 @@ jobs:
       - run: docker compose up -d --force-recreate --wait
       - name: Verify data and encryption identity after container recreation
         run: node scripts/check-container.mjs verify
+      - name: Verify separate storage across a real filesystem boundary
+        # Node 24 detects ESM on stdin. --input-type would be inherited by the
+        # PDF/image file workers, which reject that stdin-only option.
+        run: docker compose exec -e MIREA_EXPECT_CROSS_DEVICE=1 -e MIREA_STORAGE_FIXTURE_ROOT=/data -T mirea node < scripts/check-storage-runtime.mjs
+      - name: Verify opt-in persistent media volume and recreation
+        run: |
+          docker compose down
+          export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}-separated"
+          docker compose -f compose.yaml -f compose.storage.yaml up -d --wait
+          node scripts/check-container.mjs prepare
+          docker compose -f compose.yaml -f compose.storage.yaml up -d --force-recreate --wait
+          node scripts/check-container.mjs verify
       - name: Validate deployment configurations
         run: |
           docker compose -f compose.release.yaml config --quiet
           docker compose -f compose.yaml -f compose.host-data.yaml config --quiet
+          docker compose -f compose.release.yaml -f compose.storage.yaml config --quiet
           docker compose -f deploy/truenas/compose.yaml config --quiet
       - name: Export exactly the tested image for a release tag
         if: startsWith(github.ref, 'refs/tags/v')
@@ -58,7 +71,9 @@ jobs:
           retention-days: 3
           compression-level: 0
       - if: always()
-        run: docker compose down
+        run: |
+          docker compose down
+          COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}-separated" docker compose -f compose.yaml -f compose.storage.yaml down
   android:
     runs-on: ubuntu-latest
     steps:

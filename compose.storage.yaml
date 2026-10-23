@@ -1,0 +1,10 @@
+# Opt-in override for compose.yaml OR compose.release.yaml.
+# EXISTING installations: stop, back up and migrate first (docs/storage.md).
+services:
+  mirea:
+    environment:
+      MEDIA_DIR: /media
+    volumes:
+      - mirea-media:/media
+volumes:
+  mirea-media:

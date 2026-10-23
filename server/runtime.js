@@ -22,7 +22,9 @@ export function runtimeConfig(env = process.env, projectRoot = PROJECT_ROOT) {
   }
   const dataPath = env.DATA_DIR ?? './data';
   if (!dataPath.trim()) throw new Error('DATA_DIR must not be empty');
-  return { host, port: Number(portText), dataDir: isAbsolute(dataPath) ? resolve(dataPath) : resolve(projectRoot, dataPath) };
+  const selectedMedia=env.MEDIA_DIR;
+  if(selectedMedia!==undefined&&!selectedMedia.trim())throw new Error('MEDIA_DIR must not be empty');
+  return { host, port: Number(portText), dataDir: isAbsolute(dataPath) ? resolve(dataPath) : resolve(projectRoot, dataPath),...(selectedMedia!==undefined?{mediaDir:isAbsolute(selectedMedia)?resolve(selectedMedia):resolve(projectRoot,selectedMedia)}:{}) };
 }
 
 export async function loadTlsOptions(env=process.env,projectRoot=PROJECT_ROOT){

@@ -1,3 +1,4 @@
+import {moveStorage} from './storage-move.js';
 import { copyFile, open, rename, stat, unlink, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { transaction } from './database.js';
@@ -19,7 +20,7 @@ export async function publishAudio(context,upload,authorize) {
     authorize();
     await Promise.all([canonical,thumbnail,original].map(path=>unlink(path).catch(error=>{if(error.code!=='ENOENT')throw error;})));
     await rename(join(work,'audio.m4a'),canonical);
-    await rename(join(work,'thumbnail.jpg'),thumbnail);
+    await moveStorage(join(work,'thumbnail.jpg'),thumbnail,{authorize});
     if(upload.retain_original)await copyFile(join(stage,'raw-1'),original);
     if((await stat(canonical)).size!==metadata.size || upload.retain_original && (await stat(original)).size!==first.size)throw new Error('Published audio size mismatch');
     for(const path of [canonical,thumbnail,...(upload.retain_original?[original]:[])]){
