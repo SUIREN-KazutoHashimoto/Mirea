@@ -40,7 +40,7 @@ COPY --from=build /app/dist ./dist
 COPY server ./server
 COPY package.json LICENSE ./
 COPY scripts/prepare-media-storage.mjs ./scripts/prepare-media-storage.mjs
-RUN mkdir -p /data /media && chown node:node /data /media
+RUN chmod -R go-w /app /usr/local/bin/mirea-launch && mkdir -p /data /media && chown node:node /data /media
 USER 1000:1000
 VOLUME ["/data"]
 EXPOSE 3000

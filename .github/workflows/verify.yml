@@ -57,7 +57,7 @@ jobs:
       - name: Verify separate storage across a real filesystem boundary
         # Exercise the formerly broken stdin launcher too: file workers must
         # support inherited --input-type without dropping runtime permissions.
-        run: docker compose run --rm --no-deps -e MIREA_EXPECT_CROSS_DEVICE=1 -e MIREA_STORAGE_FIXTURE_ROOT=/data -T mirea /usr/local/bin/node --input-type=module < scripts/check-storage-runtime.mjs
+        run: docker compose run --rm --no-deps -e MIREA_EXPECT_CROSS_DEVICE=1 -e MIREA_STORAGE_FIXTURE_ROOT=/data -e MIREA_STORAGE_MEDIA_FIXTURE_ROOT=/tmp -T mirea /usr/local/bin/node --input-type=module < scripts/check-storage-runtime.mjs
       - name: Verify opt-in persistent media volume and recreation
         run: |
           docker compose down
