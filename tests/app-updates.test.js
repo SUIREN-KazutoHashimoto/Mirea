@@ -59,6 +59,10 @@ test('the real API exposes no update endpoint data without a configured bundle, 
   const dir=await mkdtemp(join(tmpdir(),'mirea-update-api-')), app=await createApp({dataDir:dir,appUpdatesDir:'',rateLimit:false});
   t.after(async()=>{await app.close();await rm(dir,{recursive:true,force:true});});
   const response=await app.inject('/api/v1/app-updates/android/manifest');assert.equal(response.statusCode,404);assert.match(response.headers['cache-control'],/no-store, no-transform/);
+  const config=(await app.inject('/api/v1/config')).json();
+  const expectedApk='https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.15.2beta/mirea-0.15.2beta-android.apk';
+  assert.equal(config.androidApkUrl,expectedApk);
+  const web=await readFile(new URL('../web/src/main.js',import.meta.url),'utf8');assert(web.includes(`const defaultApkUrl = '${expectedApk}';`));
   const serverKey=await readFile(new URL('../server/update-signing-public.pem',import.meta.url),'utf8'),androidKey=await readFile(new URL('../android/app/src/main/assets/update-signing-public.pem',import.meta.url),'utf8');
   assert.equal(serverKey.trim(),androidKey.trim());
 });
