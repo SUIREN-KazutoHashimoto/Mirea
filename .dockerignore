@@ -12,5 +12,6 @@
 !server/**
 !scripts/
 !scripts/prepare-media-storage.mjs
+!scripts/pwa-icons.mjs
 !web/
 !web/**

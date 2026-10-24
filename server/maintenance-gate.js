@@ -20,11 +20,13 @@ export function createMaintenanceGate(app) {
       }catch(error){done();throw error;}
     };
   });
-  const excluded=req=>/^\/api\/v1\/admin\/backups(?:\/|$)/.test(req.url.split('?')[0]) || req.method==='GET' && /^\/api\/v1\/admin\/(?:jobs|updates\/status)$/.test(req.url.split('?')[0]);
+  // Recovery is password protected and must remain reachable if a committed
+  // reset cannot finish removing a storage directory. It never starts a reset.
+  const excluded=req=>/^\/api\/v1\/admin\/backups(?:\/|$)/.test(req.url.split('?')[0]) || req.method==='POST'&&req.url.split('?')[0]==='/api/v1/admin/reset/recover' || req.method==='GET' && /^\/api\/v1\/(?:admin\/(?:access|reset|jobs|updates\/status)|auth\/me)$/.test(req.url.split('?')[0]);
   app.addHook('onRequest',async(req,reply)=>{
     const path=req.url.split('?')[0];
     if(!path.startsWith('/api/') || path==='/api/health' || excluded(req))return;
-    if(locked)return reply.code(503).header('Retry-After','10').send({error:'整合性を保つためバックアップ／更新の準備中です。しばらくして再試行してください。'});
+    if(locked)return reply.code(503).header('Retry-After','10').send({error:'整合性を保つためバックアップ・更新・リセットの保守中です。しばらくして再試行してください。'});
     if(!['GET','HEAD','OPTIONS'].includes(req.method) || path.endsWith('/thumbnail')){
       req.maintenanceTracked=true;active++;
       const finish=()=>{

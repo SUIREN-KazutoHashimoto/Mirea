@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "Mirea — メディアライブラリ",
+  "short_name": "Mirea",
+  "description": "動画・本・音楽を、あなたの本棚に。",
+  "lang": "ja",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f7f8fb",
+  "theme_color": "#4026df",
+  "prefer_related_applications": false,
+  "icons": [
+    { "src": "/pwa/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/pwa/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/pwa/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash,randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtemp, readdir, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,6 +10,7 @@ import sharp from 'sharp';
 import { createApp } from '../server/app.js';
 import { createMediaProcessor } from '../server/media.js';
 import { makePdf, makeMp4, withOutOfRangeEditList } from './fixtures.js';
+import {uploadErrorMessage} from '../server/upload-errors.js';
 
 const pdf = makePdf();
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -137,6 +138,34 @@ test('upload ownership, role/session revocation, cancellation, expiration and ac
   assert.equal((await readdir(join(ctx.dataDir, 'uploads', 'transfers'))).includes(active[0].id), false);
   await ctx.request('POST', '/auth/logout', ctx.owner);
   assert.equal((await ctx.part(active[1], 0, 0, pdf.subarray(0, 256))).statusCode, 401);
+});
+
+test('retained failed sources never occupy slots; all retry entry points respect the same active limit',async t=>{
+  const admins=[],ctx=await setup(t,{serverAdminUserIds:admins});admins.push(ctx.owner.user.id);
+  const db=new DatabaseSync(join(ctx.dataDir,'mirea.sqlite'));
+  try{
+  const failed=[];for(let n=0;n<4;n++){
+    const r=await ctx.request('POST',`/shelves/${ctx.shelfId}/uploads`,ctx.owner,{title:'Failed fixture',files:[{filename:'fixture.mp4',mime:'video/mp4',size:16}]});assert.equal(r.statusCode,201,r.body);failed.push(r.json().id);
+    db.prepare("UPDATE upload_sessions SET state='failed',expires_at=1,error='fixture' WHERE id=?").run(r.json().id);
+  }
+  let list=(await ctx.request('GET','/uploads',ctx.owner)).json();assert.equal(list.activeCount,0);assert.equal(list.uploads.length,4);assert(list.uploads.every(u=>u.sourceRetained));
+  const active=await Promise.all([ctx.start(),ctx.start(),ctx.start()]);assert.equal((await ctx.request('GET','/uploads',ctx.owner)).json().activeCount,3);
+  assert.equal((await ctx.request('POST',`/uploads/${failed[0]}/retry`,ctx.owner)).statusCode,429);
+  assert.equal((await ctx.request('POST',`/admin/uploads/${failed[1]}/retry`,ctx.owner,{acknowledgeCost:true})).statusCode,429);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM admin_upload_retries').get().n,0);
+  assert.equal((await ctx.request('DELETE',`/uploads/${active[0].id}`,ctx.owner)).statusCode,204);
+  assert.equal((await ctx.request('POST',`/uploads/${failed[0]}/retry`,ctx.owner)).statusCode,202);
+  while(db.prepare('SELECT state FROM upload_sessions WHERE id=?').get(failed[0]).state==='processing')await delay(10);
+  assert.equal((await ctx.request('POST',`/admin/uploads/${failed[1]}/retry`,ctx.owner,{acknowledgeCost:true})).statusCode,202);
+  while(db.prepare('SELECT state FROM upload_sessions WHERE id=?').get(failed[1]).state==='processing')await delay(10);
+  assert.equal((await ctx.request('GET','/uploads',ctx.owner)).json().activeCount,2);assert.equal(db.prepare("SELECT COUNT(*) n FROM upload_sessions WHERE state='failed'").get().n,4);
+  }finally{db.close();}
+});
+
+test('filesystem failures provide actionable sanitized errors and release slots for later uploads',async t=>{
+  const ctx=await setup(t,{mediaProcessor:{async close(){},async thumbnail(){throw Object.assign(Error('EACCES private host path'),{code:'EACCES'});}}});
+  for(let n=0;n<4;n++){const upload=await ctx.start();await ctx.send(upload);await ctx.request('POST',`/uploads/${upload.id}/complete`,ctx.owner);const state=await ctx.wait(upload.id,'failed');assert.match(state.error,/書き込めません/);assert(!state.error.includes('private'));assert.equal((await ctx.request('GET','/uploads',ctx.owner)).json().activeCount,0);}
+  assert.match(uploadErrorMessage({code:'ENOSPC'}),/空き/);assert.match(uploadErrorMessage({cause:{code:'EROFS'}}),/書き込めません/);assert.match(uploadErrorMessage({code:'ESTALE'}),/接続状態/);assert(!uploadErrorMessage(Error('private')).includes('private'));assert.equal(uploadErrorMessage({statusCode:422,message:'invalid media'}),'invalid media');
 });
 
 test('image books retain manifest order and original bytes; corrupted persisted chunks fail without publication', async t => {

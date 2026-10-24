@@ -37,7 +37,7 @@ self.addEventListener('fetch',event=>{
   const url=new URL(event.request.url);if(url.origin!==self.location.origin)return;
   if(!url.pathname.startsWith(DOWNLOAD_PATH)){
     if(event.request.method!=='GET'||url.search||url.pathname.startsWith('/api/'))return;
-    if(event.request.mode==='navigate'||url.pathname.startsWith('/assets/')||url.pathname.startsWith('/pdf-assets/')||url.pathname==='/favicon.svg'||url.pathname.startsWith('/brand/')){
+    if(event.request.mode==='navigate'||url.pathname.startsWith('/assets/')||url.pathname.startsWith('/pdf-assets/')||url.pathname==='/favicon.svg'||url.pathname==='/manifest.webmanifest'||url.pathname.startsWith('/pwa/')||url.pathname.startsWith('/brand/')){
       event.respondWith(shellResponse(event.request,{navigate:event.request.mode==='navigate',findCached:async()=>{
         const path=event.request.mode==='navigate'?'/index.html':url.pathname;
         for(const name of (await caches.keys()).filter(name=>name.startsWith(SHELL)).reverse()){

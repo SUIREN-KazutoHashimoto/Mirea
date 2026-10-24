@@ -1,6 +1,8 @@
 # Mirea
 
-**0.14.0beta**（内部 `0.14.0-beta`、Android versionCode 29）。[配布リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.14.0beta)、[変更履歴・制限](RELEASE.md)、[TrueNAS 25.04.2.6 Custom App手順](docs/truenas-25.04.md)を参照してください。既存の専用APK署名を維持し、旧デバッグ署名からの初回移行だけは手動です。
+ブラウザー版は[PWAとしてインストール](docs/pwa.md)できます。ログイン画面・設定に案内があり、既存の暗号化ダウンロードと7日間のオフライン視聴を利用します。
+
+**0.15.0beta**（内部 `0.15.0-beta`、Android versionCode 30）。[配布リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.15.0beta)、[変更履歴・制限](RELEASE.md)、[TrueNAS 25.04.2.6 Custom App手順](docs/truenas-25.04.md)を参照してください。既存の専用APK署名を維持し、旧デバッグ署名からの初回移行だけは手動です。
 
 動画・音声・音楽・PDF・EPUB・複数画像の本を、本棚単位で共有できるクライアント・サーバー型メディアライブラリです。PCのWebブラウザとAndroidアプリが、同じAPI・アカウント・本棚を使います。
 

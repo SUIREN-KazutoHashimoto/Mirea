@@ -41,6 +41,7 @@ import {createMaintenanceGate} from './maintenance-gate.js';
 import {registerAdminBackups} from './admin-backups.js';
 import {registerServerUpdates} from './server-updates.js';
 import {registerAdminCleanup} from './admin-cleanup.js';
+import {createMediaReset,registerAdminReset} from './admin-reset.js';
 import {pendingShelfUploads} from './pending-uploads.js';
 import {registerShelfManagement} from './shelf-management.js';
 import {registerRememberSessions,issueRememberCookie,clearRememberCookie} from './remember-session.js';
@@ -67,6 +68,8 @@ export async function createApp(options = {}) {
   await initializeStorage(storage);
   const {mediaDir,uploadDir,stagingDir,booksDir,thumbnailDir,videoDir,originalDir,previewDir}=storage;
   const db = openDatabase(join(dataDir, 'mirea.sqlite'));
+  const reset=createMediaReset({db,storage});
+  try{await reset.recover();}catch(error){db.close();throw error;}
   const media = options.mediaProcessor ?? createMediaProcessor();
   const videoTranscoder=options.videoTranscoder??createVideoTranscoder();
   const audioTranscoder=options.audioTranscoder??createAudioTranscoder();
@@ -103,6 +106,7 @@ export async function createApp(options = {}) {
   app.addHook('onClose', async () => { clearInterval(sweep); db.close(); });
   app.addHook('onSend', async (req, reply, payload) => {
     if(req.url.split('?')[0]==='/download-sw.js')reply.header('Service-Worker-Allowed','/').header('Cache-Control','no-store');
+    if(req.url.split('?')[0]==='/manifest.webmanifest')reply.header('Content-Type','application/manifest+json; charset=utf-8').header('Cache-Control','no-cache');
     reply.header('X-Content-Type-Options', 'nosniff');
     reply.header('Referrer-Policy', 'no-referrer');
     reply.header('X-Frame-Options', 'DENY');
@@ -156,7 +160,7 @@ export async function createApp(options = {}) {
   registerAppUpdates(app, { directory: updatesPath ? resolve(PROJECT_ROOT, updatesPath) : undefined });
   let analytics;
   app.get('/api/v1/config', async () => ({ allowRegistration, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadSessionHours: 24, analytics,
-    version: packageInfo.version, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.14.0beta/mirea-0.14.0beta-android.apk' }));
+    version: packageInfo.version, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.15.0beta/mirea-0.15.0beta-android.apk' }));
   app.post('/api/v1/auth/register', { ...authLimits, schema: { body: object({ email, password, name: text(80),remember:{type:'boolean',default:true} },['email','password','name']) } }, async (req, reply) => {
     if (!allowRegistration) throw httpError(403, '新規登録は現在停止しています。');
     const normalizedEmail = req.body.email.trim().toLowerCase();
@@ -253,6 +257,7 @@ export async function createApp(options = {}) {
   registerAdmin(app,{db,adminAccess,uploads,rateLimit:options.rateLimit});
   maintenance.setBusy(()=>uploads.busy||adminJobs.busy||videoPreviews.busy||navigation.busy||media.busy);
   await registerAdminCleanup(app,{db,dataDir,mediaDir,adminAccess,maintenance,options});
+  registerAdminReset(app,{db,storage,adminAccess,maintenance,reset,options});
   await registerAdminBackups(app,{db,dataDir,mediaDir,adminAccess,maintenance,options});
   await registerServerUpdates(app,{adminAccess,maintenance,options:{...options,storageSeparated:storage.separate}});
   // onClose runs in reverse order: stop encoders before waiting for either

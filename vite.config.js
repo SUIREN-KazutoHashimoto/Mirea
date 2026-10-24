@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import { cpSync, mkdirSync, readdirSync, writeFileSync, readFileSync } from 'node:fs';
 import {createHash} from 'node:crypto';
 import { resolve } from 'node:path';
+import {buildPwaIcons} from './scripts/pwa-icons.mjs';
 
 export default defineConfig({
   root: 'web',
@@ -10,7 +11,8 @@ export default defineConfig({
   server: { headers:{'Service-Worker-Allowed':'/'},proxy: { '/api': 'http://127.0.0.1:3000' } },
   plugins: [{
     name: 'pdf-fonts-and-codecs',
-    closeBundle() {
+    async closeBundle() {
+      await buildPwaIcons();
       mkdirSync('dist/pdf-assets', { recursive: true });
       for (const dir of ['cmaps', 'standard_fonts', 'wasm']) {
         cpSync(resolve('node_modules/pdfjs-dist', dir), resolve('dist/pdf-assets', dir), { recursive: true });
