@@ -2,17 +2,26 @@ import { chunkKey,validateManifest } from './download-core.js';
 
 let opening;
 export function openDownloadDb(){
-  return opening??=(new Promise((resolve,reject)=>{
-    if(!globalThis.indexedDB)return reject(new Error('この環境では暗号化ダウンロードを保存できません。'));
-    const request=indexedDB.open('mirea-encrypted-downloads-v1',2);
+  return opening??=openDownloadDatabase().catch(error=>{opening=null;throw error;});
+}
+// An older tab can hold a prior schema open indefinitely. Do not erase it or
+// keep startup blank; reject this attempt and close any late-opened connection.
+export function openDownloadDatabase({factory=globalThis.indexedDB,ms=2500}={}){
+  return new Promise((resolve,reject)=>{
+    if(!factory)return reject(new Error('この環境では暗号化ダウンロードを保存できません。'));
+    let settled=false;const fail=error=>{if(settled)return;settled=true;clearTimeout(timer);reject(error);};
+    const timer=setTimeout(()=>fail(new Error('端末の保存領域を開けません。ほかのMireaタブを閉じるか再読み込みして、もう一度お試しください。保存データは削除していません。')),ms);
+    let request;try{request=factory.open('mirea-encrypted-downloads-v1',2);}catch(error){fail(error);return;}
+    request.onblocked=()=>fail(new Error('ほかのMireaタブが保存領域の更新を待たせています。ほかのタブを再読み込みしてください。保存データは削除していません。'));
     request.onupgradeneeded=()=>{
+      if(settled){request.transaction.abort();return;}
       if(!request.result.objectStoreNames.contains('packages'))request.result.createObjectStore('packages',{keyPath:'key'}).createIndex('partition','partition');
       if(!request.result.objectStoreNames.contains('chunks'))request.result.createObjectStore('chunks',{keyPath:'key'}).createIndex('downloadId','downloadId');
-      request.result.createObjectStore('vault');
+      if(!request.result.objectStoreNames.contains('vault'))request.result.createObjectStore('vault');
     };
-    request.onsuccess=()=>{request.result.onversionchange=()=>request.result.close();resolve(createDownloadStore(request.result));};
-    request.onerror=()=>reject(request.error);
-  })).catch(error=>{opening=null;throw error;});
+    request.onsuccess=()=>{if(settled){request.result.close();return;}settled=true;clearTimeout(timer);request.result.onversionchange=()=>request.result.close();resolve(createDownloadStore(request.result));};
+    request.onerror=()=>fail(request.error);
+  });
 }
 export function createDownloadStore(db){
   const run=(names,mode,fn)=>new Promise((resolve,reject)=>{

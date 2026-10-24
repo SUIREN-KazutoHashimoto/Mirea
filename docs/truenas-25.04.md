@@ -1,11 +1,11 @@
-# TrueNAS 25.04.2.6 Custom App — Mirea 0.14.0beta
+# TrueNAS 25.04.2.6 Custom App — Mirea 0.15.0beta
 
 この手順は導入計画です。TrueNASへのインストール・設定変更・既存WinVAI01からのデータ移行は自動実行しません。対象はDockerベースのAppsを持つTrueNAS **25.04.2.6 / x86-64**。ARM版・GPUトランスコード・複数レプリカは提供しません。
 
 ## 配布物と推奨構成
 
-- イメージ: `ghcr.io/suiren-kazutohashimoto/mirea:0.14.0beta`（linux/amd64）。`latest`は使いません。
-- [リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.14.0beta)の`mirea-0.14.0beta-container.json`でコミット・レジストリdigestを確認し、可能なら`image`をそこに記載した`ghcr.io/…@sha256:…`へ固定します。
+- イメージ: `ghcr.io/suiren-kazutohashimoto/mirea:0.15.0beta`（linux/amd64）。`latest`は使いません。
+- [リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.15.0beta)の`mirea-0.15.0beta-container.json`でコミット・レジストリdigestを確認し、可能なら`image`をそこに記載した`ghcr.io/…@sha256:…`へ固定します。
 - DockerがGHCRへ接続できない環境用に、同じ検証済みイメージの`container-linux-amd64.tar.gz`とSHA-256も配布します。導入操作はTrueNASのサポート範囲に従ってください。
 - 推奨は [Compose YAML](../deploy/truenas/compose.yaml) を使うCustom App。NASのローカルSSDデータセットを`/data`、大容量側を`/media`へそれぞれマウントし、HTTPSは別のリバースプロキシで終端します。
 
@@ -55,7 +55,7 @@ YAMLのほうが安全設定を再現しやすいため推奨です。GUIを使�
 
 | 25.04 GUI項目 | 設定 |
 | --- | --- |
-| Image Repository / Tag | `ghcr.io/suiren-kazutohashimoto/mirea` / `0.14.0beta` |
+| Image Repository / Tag | `ghcr.io/suiren-kazutohashimoto/mirea` / `0.15.0beta` |
 | Entrypoint / Command | 上書きしない |
 | Custom User | 有効、User ID 1000 / Group ID 1000 |
 | Privileged / Host Network | 無効 / 無効 |
@@ -76,7 +76,7 @@ Cloudflareを使う場合は[配信経路・利用条件の注意](cloudflare.md
 
 ## 5. 導入後の確認
 
-- Appsのコンテナがhealthyになり、`/api/health`が`status:ok / version:0.14.0-beta`であること。
+- Appsのコンテナがhealthyになり、`/api/health`が`status:ok / version:0.15.0-beta`であること。
 - 信頼されたHTTPSからログイン、本棚・シリーズ階層・サムネイルを確認。
 - 小さなPDF／動画／音声をテスト専用本棚へアップロードし、ジョブ完了、再生・読書・シーク・保存・再接続を確認。
 - アプリを停止・再開してもアカウント・続き位置・ダウンロード鍵が変わらないこと。
@@ -92,7 +92,7 @@ CIはLinuxコンテナの変換・再作成・データ／鍵保持を検査し�
 4. 上記の導入後確認を実施。Mireaの管理画面からDocker更新は実行しません。Dockerソケット・NAS管理資格情報・特権をWebへ与えないでください。
 5. 不調時は停止して、**旧イメージ＋更新前データ／設定の対応した組**を復元。新DBに旧サーバーを当てるダウングレードや、旧新サーバーから同じデータを同時に開く運用はしません。
 
-0.14.0betaのDBはv17のままです。今後の移行に備えて上記を毎回行います。App削除時もデータセットを削除しないでください。`docker compose down -v`は禁止です。
+0.15.0betaのDBはv17のままです。今後の移行に備えて上記を毎回行います。App削除時もデータセットを削除しないでください。`docker compose down -v`は禁止です。
 
 WinVAI01から移行する場合も最初に旧サービスを停止して全データをコピーします。同じHTTPSオリジンを維持できない場合、ブラウザー／アプリの端末内保存はサーバー別管理のため再接続・再取得が必要になる場合があります。移行検証が済むまで旧データを保持します。
 

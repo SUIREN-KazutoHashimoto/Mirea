@@ -56,13 +56,18 @@ import './custom-thumbnails.css';
 import {pollLibrary,mountLibraryRefresh,shouldRefreshCatalog} from './library-refresh.js';
 import './library-refresh.css';
 import './playback-dock.css';
+import {createPwaInstall,mountPwaInstall} from './pwa-install.js';
+import './pwa.css';
 
 function updateTransferCount(){const badge=document.querySelector('.transfer-count');if(badge)badge.textContent=transferRows().filter(r=>r.state==='running').length||'';}
 window.addEventListener('mirea:transferchange',updateTransferCount);
 const theme = createTheme({changed:syncAppearance});
 document.documentElement.classList.toggle('native-app',native);
 const finishAppLaunch=showAppLaunch({native});
-const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.14.0beta/mirea-0.14.0beta-android.apk';
+const pwa=createPwaInstall({native,ensureWorker:ensureDownloadWorker});
+if(!native&&!import.meta.env.DEV)void pwa.prepare();
+let disposeAuthPwa;
+const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.15.0beta/mirea-0.15.0beta-android.apk';
 const currentApkUrl=()=>config.androidApkUrl?.startsWith('/api/v1/app-updates/')?absoluteUrl(config.androidApkUrl):config.androidApkUrl||defaultApkUrl;
 
 const root = document.querySelector('#app');
@@ -188,6 +193,7 @@ function dialog(title, body, extraClass = '') {
 }
 
 function renderAuth(register = false) {
+  disposeAuthPwa?.();disposeAuthPwa=null;
   appDrawer?.dispose();appDrawer=null;
   libraryPoll?.();libraryPoll=null;pullRefresh?.dispose();pullRefresh=null;librarySnapshot='';
   document.querySelectorAll('.viewer-screen').forEach(node => node.close());
@@ -209,6 +215,7 @@ function renderAuth(register = false) {
   const switchButton = document.querySelector('#switch-auth');
   switchButton.hidden = !register && !config.allowRegistration;
   switchButton.onclick = () => renderAuth(!register);
+  if(!native){const install=document.createElement('div');install.className='auth-pwa';document.querySelector('.auth-form-wrap').append(install);disposeAuthPwa=mountPwaInstall(install,pwa);}
   if (native) {
     const updates = document.createElement('button'); updates.type = 'button'; updates.className = 'text-button'; updates.textContent = 'アプリの更新';
     document.querySelector('.auth-form-wrap').append(updates);
@@ -239,6 +246,7 @@ function renderAuth(register = false) {
 }
 
 function renderShell() {
+  disposeAuthPwa?.();disposeAuthPwa=null;
   appDrawer?.dispose();appDrawer=null;
   libraryPoll?.();libraryPoll=null;pullRefresh?.dispose();pullRefresh=null;librarySnapshot='';
   clearThumbnails();
@@ -292,13 +300,13 @@ function showSettings() {
   const actor=getSession(),server=getEndpoint();
   const current=()=>getSession()===actor && getEndpoint()===server;
   if(offlineLibrary){openDownloadManager();return;}
-  openSettings({ dialog, api, esc, theme, flush:flushAnalytics, apkUrl: currentApkUrl(), version: config.version || '0.4.4-beta', manageShelf: id => openMembers(id), manageDownloads:openDownloadManager, mountUpdates: native ? mountAppUpdates : null,
+  openSettings({ dialog, api, esc, theme, flush:flushAnalytics, apkUrl: currentApkUrl(), version: config.version || '0.4.4-beta', manageShelf: id => openMembers(id), manageDownloads:openDownloadManager, mountUpdates: native ? mountAppUpdates : null, mountPwa:native?null:container=>mountPwaInstall(container,pwa),
     onUpdated: async result => { if(!current())return;closeDownloads();await setSession(result);await stopAnalytics().catch(()=>{});if(getSession()!==result || getEndpoint()!==server)return;await startAnalytics();if(getSession()!==result || getEndpoint()!==server)return;renderShell();await refresh();toast('アカウント情報を更新しました。他の端末では再ログインが必要です。'); },
     onDeleted: async () => { if(!current())return;const results=await Promise.allSettled([clearAccountDownloads(),clearAccountAnalytics(),clearAccountProgress()]);if(!current())return;const cacheError=results.some(r=>r.status==='rejected');clearThumbnails();setSession(null);loadGeneration++;shelves=[];items=[];activeShelf=null;renderAuth();toast(cacheError?'アカウントを削除しました。端末内データを消去できませんでした。ブラウザーのサイトデータを削除してください。':'アカウントと個人の記録、この端末のダウンロードを削除しました。'); }
   });
 }
 
-function showAdmin(){openAdmin({dialog,api,esc,bytes,onStatistics:()=>openAnalytics({dialog,api,flush:flushAnalytics,esc,global:true})}).catch(report);}
+function showAdmin(){openAdmin({dialog,api,esc,bytes,onStatistics:()=>openAnalytics({dialog,api,flush:flushAnalytics,esc,global:true}),onReset:async()=>{activeShelf=null;activeSeries='';historyMode=false;seriesReturnView=null;await refresh();}}).catch(report);}
 function openShelfMenu(id){
   const shelf=shelves.find(s=>s.id===id);if(!shelf)return;
   const actor=getSession(),server=getEndpoint();
@@ -866,7 +874,9 @@ syncAppearance(document.documentElement.dataset.theme);
 initializeNativePlayback().catch(()=>{});
 async function bootstrapLogin(){
   const budget=connectionBudget();
-  try{await initializeSession({signal:budget.signal});await loadConfig({signal:budget.signal});if(getSession()){await startAnalytics();renderShell();if(isOfflineSession()){if(!await renderOfflineLibrary())throw new Error('有効なオフライン一覧情報がありません。オンラインで一度接続してください。');}else await refresh({signal:budget.signal});synchronizeConnection();}else renderAuth();}
+  root.innerHTML='<main class="reconnect-screen"><section><h1>Mireaを開いています</h1><p class="startup-status" role="status">ログインと端末の保存データを確認しています…</p></section></main>';
+  const phase=text=>{const status=root.querySelector('.startup-status');if(status)status.textContent=text;};
+  try{await initializeSession({signal:budget.signal});phase('サーバーの設定を確認しています…');await loadConfig({signal:budget.signal});if(getSession()){phase('閲覧記録の保存領域を準備しています…');await startAnalytics();renderShell();if(isOfflineSession()){if(!await renderOfflineLibrary())throw new Error('有効なオフライン一覧情報がありません。オンラインで一度接続してください。');}else await refresh({signal:budget.signal});synchronizeConnection();}else renderAuth();}
   catch(error){
     libraryPoll?.();libraryPoll=null;pullRefresh?.dispose();pullRefresh=null;clearThumbnails();
     root.innerHTML=`<main class="reconnect-screen"><section><h1>サーバーに再接続</h1><p>${esc(error.message)}</p><p class="muted">通信に失敗しても、保持したログインは解除しません。オンラインで認証を確認してからライブラリを開きます。</p><button class="button primary retry-connection">もう一度接続する</button><button class="button secondary show-login">ログイン画面を開く</button></section></main>`;

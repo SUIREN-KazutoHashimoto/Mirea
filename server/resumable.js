@@ -10,6 +10,7 @@ import { EPUB_MIME, MAX_EPUB_BYTES } from './ebook-types.js';
 import { publishStagedUpload } from './upload-publish.js';
 import { VIDEO_TYPES } from './video-types.js';
 import { AUDIO_TYPES, isTimedMime } from './audio-types.js';
+import {uploadErrorMessage} from './upload-errors.js';
 
 const UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
 const MIME_TYPES = ['application/pdf', EPUB_MIME, ...VIDEO_TYPES, ...AUDIO_TYPES, ...IMAGE_TYPES];
@@ -20,9 +21,13 @@ export async function registerResumableUploads(app, context) {
   const transferDir = join(uploadDir, 'transfers');
   await mkdir(transferDir, { recursive: true, mode: 0o700 });
   const locked = new Set(), jobs = new Map();
-  let queue = Promise.resolve(), closing = false;
+  let queue = Promise.resolve(), closing = false, sweeping=false;
   const auth = { onRequest: async req => authenticate(req) };
   const get = id => db.prepare('SELECT * FROM upload_sessions WHERE id=?').get(id);
+  // Failed sources remain retryable, but are not running work. Use the same
+  // admission rule for new transfers, multipart and both retry entry points.
+  const activeCount=userId=>db.prepare("SELECT COUNT(*) AS n FROM upload_sessions WHERE user_id=? AND (state='processing' OR (state='uploading' AND expires_at>?))").get(userId,Date.now()).n;
+  function requireSlot(userId){if(activeCount(userId)>=3)throw httpError(429,'同時アップロードは3件までです。処理の完了を待つか、受信中のアップロードを取り消してください。');}
   function owned(req) {
     const upload = get(req.params.id);
     if (!upload || upload.user_id !== req.user.id) throw httpError(404, 'アップロードが見つかりません。');
@@ -103,7 +108,7 @@ export async function registerResumableUploads(app, context) {
       } catch (error) {
         if(error.code==='SERVER_CLOSING')return; // durable processing state is recovered on startup
         db.prepare("UPDATE upload_sessions SET state='failed',error=? WHERE id=? AND state='processing'").run(
-          error.statusCode ? error.message : 'メディアの保存に失敗しました。選択し直してください。', id);
+          uploadErrorMessage(error), id);
         app.log.error({ err: error, uploadId: id }, 'Upload processing failed');
       } finally {
         // A failed timed-media job remains retryable indefinitely. Never sweep its source
@@ -118,7 +123,9 @@ export async function registerResumableUploads(app, context) {
     return job;
   }
   async function sweep() {
-    if(context.maintenance.locked)return;
+    if(context.maintenance.locked||sweeping)return;
+    sweeping=true;
+    try{
     for (const row of db.prepare("SELECT id,state,files_json FROM upload_sessions WHERE expires_at<=? AND state != 'processing'").all(Date.now())) {
       if(row.state==='failed'&&isTimedMime(JSON.parse(row.files_json)[0].mime))continue;
       if (jobs.has(row.id) || locked.has(row.id)) continue;
@@ -127,6 +134,7 @@ export async function registerResumableUploads(app, context) {
         db.prepare('DELETE FROM upload_sessions WHERE id=?').run(row.id);
       });
     }
+    }finally{sweeping=false;}
   }
   await sweep();
   for (const row of db.prepare("SELECT id FROM upload_sessions WHERE state IN ('complete','cancelled')").all()) await discard(row.id);
@@ -162,8 +170,7 @@ export async function registerResumableUploads(app, context) {
       throw httpError(413, 'アップロードの合計、または画像1枚のサイズ上限を超えています。');
     }
     if(req.body.seriesId&&!db.prepare('SELECT 1 FROM series WHERE id=? AND shelf_id=?').get(req.body.seriesId,req.params.id))throw httpError(422,'この本棚のシリーズを選んでください。');
-    const active = db.prepare("SELECT COUNT(*) AS n FROM upload_sessions WHERE user_id=? AND (state IN ('processing','failed') OR (state='uploading' AND expires_at>?))").get(req.user.id, Date.now()).n;
-    if (active >= 3) throw httpError(429, '同時アップロードは3件までです。不要なアップロードを取り消してください。');
+    requireSlot(req.user.id);
     const id = randomUUID(), now = Date.now();
     try {
       // Count and reserve synchronously before filesystem I/O: concurrent
@@ -179,12 +186,13 @@ export async function registerResumableUploads(app, context) {
     return reply.code(201).send(status(get(id)));
   });
   app.get('/api/v1/uploads/:id', auth, async req => status(owned(req)));
-  app.get('/api/v1/uploads', auth, async req => ({uploads:db.prepare("SELECT u.* FROM upload_sessions u JOIN memberships m ON m.shelf_id=u.shelf_id AND m.user_id=u.user_id WHERE u.user_id=? AND m.role IN ('owner','editor') AND (u.state IN ('processing','failed') OR u.state='uploading' AND u.expires_at>?) ORDER BY u.created_at DESC LIMIT 100").all(req.user.id,Date.now()).map(row=>status(row,false)),activeCount:db.prepare("SELECT COUNT(*) AS n FROM upload_sessions u JOIN memberships m ON m.shelf_id=u.shelf_id AND m.user_id=u.user_id WHERE u.user_id=? AND m.role IN ('owner','editor') AND (u.state='processing' OR u.state='uploading' AND u.expires_at>?)").get(req.user.id,Date.now()).n}));
+  app.get('/api/v1/uploads', auth, async req => ({uploads:db.prepare("SELECT u.* FROM upload_sessions u JOIN memberships m ON m.shelf_id=u.shelf_id AND m.user_id=u.user_id WHERE u.user_id=? AND m.role IN ('owner','editor') AND (u.state IN ('processing','failed') OR u.state='uploading' AND u.expires_at>?) ORDER BY u.created_at DESC LIMIT 100").all(req.user.id,Date.now()).map(row=>status(row,false)),activeCount:activeCount(req.user.id)}));
   app.post('/api/v1/uploads/:id/retry', auth, async(req,reply)=>{
     await exclusive(req.params.id,async()=>{
       const upload=owned(req);
       if(upload.state!=='failed'||!isTimedMime(JSON.parse(upload.files_json)[0].mime))throw httpError(409,'再試行できる動画・音声ではありません。');
       if(jobs.has(upload.id))throw httpError(409,'直前の処理を終了しています。少し待って再試行してください。');
+      requireSlot(upload.user_id);
       db.prepare('DELETE FROM admin_upload_retries WHERE upload_id=?').run(upload.id);
       db.prepare("UPDATE upload_sessions SET state='processing',error=NULL,session_id=?,processing_json='{}' WHERE id=?").run(req.session.id,upload.id);
       schedule(upload.id);
@@ -272,14 +280,16 @@ export async function registerResumableUploads(app, context) {
         if(jobs.has(id))throw httpError(409,'処理の終了を待ってください。');
         if(!context.adminAccess.isAdmin(adminId)||!context.adminAccess.enabled(upload.user_id))throw httpError(403,'アカウントの権限を確認してください。');
         membership(upload.shelf_id,upload.user_id,['owner','editor']);
+        requireSlot(upload.user_id);
         db.prepare('INSERT INTO admin_upload_retries VALUES(?,?,?) ON CONFLICT(upload_id) DO UPDATE SET admin_id=excluded.admin_id,session_id=excluded.session_id').run(id,adminId,sessionId);
         db.prepare("UPDATE upload_sessions SET state='processing',error=NULL,processing_json='{}' WHERE id=?").run(id);schedule(id);
       });
     },
-    get busy(){return jobs.size>0;},
+    get busy(){return jobs.size>0||locked.size>0||sweeping;},
     // Compatibility API: multipart clients enter the same durable, serialized
     // processing path as resumable uploads; they cannot bypass normalization.
     async publishMultipartMedia({id,shelfId,userId,sessionId,title,file,retainOriginal=true}) {
+      requireSlot(userId);
       const now=Date.now();
       db.prepare(`INSERT INTO upload_sessions(id,shelf_id,user_id,session_id,title,files_json,chunk_size,state,created_at,expires_at,retain_original)
         VALUES(?,?,?,?,?,?,?,'uploading',?,?,?)`).run(id,shelfId,userId,sessionId,title,JSON.stringify([file]),chunkSize,now,now+UPLOAD_TTL_MS,retainOriginal?1:0);

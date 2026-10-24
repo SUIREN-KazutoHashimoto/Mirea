@@ -2,12 +2,13 @@ import {saveBackup} from './admin-downloads.js';
 import {getSession} from './api.js';
 import {mountAdminJobs} from './admin-jobs-ui.js';
 import {mountAdminCleanup} from './admin-cleanup-ui.js';
+import {mountAdminReset} from './admin-reset-ui.js';
 
 const states={queued:'待機中',running:'実行中',processing:'処理中',uploading:'受信中',complete:'完了',failed:'失敗',cancelled:'取消',rolled_back:'旧版へ復旧'};
 const kinds={'validate-image':'画像の検証',thumbnail:'サムネイル',preview:'動画プレビュー',transcode:'配信画質・HLS',navigation:'動画ナビゲーション',backup_metadata:'メタデータバックアップ',backup_full:'全体バックアップ'};
-export async function openAdmin({dialog,api,esc,bytes,onStatistics}){
+export async function openAdmin({dialog,api,esc,bytes,onStatistics,onReset}){
   const actor=getSession();const access=await api('/admin/access');if(!access.isServerAdmin||getSession()!==actor)throw new Error('サーバー管理者のみ利用できます。');
-  const tabs=[['overview','概要'],['jobs','ジョブ・再生成'],['cleanup','ファイル整理'],['users','アカウント'],['shelves','本棚の権限'],['statistics','統計'],['backups','バックアップ'],['updates','サーバー更新'],['audit','管理操作の記録']];
+  const tabs=[['overview','概要'],['jobs','ジョブ・再生成'],['cleanup','ファイル整理'],['users','アカウント'],['shelves','本棚の権限'],['statistics','統計'],['backups','バックアップ'],['updates','サーバー更新'],['audit','管理操作の記録'],['reset','データのリセット']];
   const node=dialog('サーバー管理',`<div class="admin-layout"><nav class="admin-nav" aria-label="サーバー管理"><span class="eyebrow">SERVER ADMINISTRATION</span>${tabs.map(([id,label])=>`<button type="button" data-admin-tab="${id}" aria-current="false">${label}</button>`).join('')}</nav><section class="admin-panel" aria-live="polite"></section></div>`,'admin-modal');
   const panel=node.querySelector('.admin-panel');let active='',revision=0,disposed=false,poll;
   const current=()=>!disposed&&getSession()===actor;
@@ -35,6 +36,8 @@ export async function openAdmin({dialog,api,esc,bytes,onStatistics}){
         if(valid())poll=setInterval(()=>loadJobs().catch(status),4000);
       }else if(tab==='cleanup'){
         mountAdminCleanup({panel,api,esc,bytes,confirm,valid,status});
+      }else if(tab==='reset'){
+        await mountAdminReset({panel,api,esc,bytes,confirm,valid,onReset});
       }else if(tab==='users'){
         panel.innerHTML='<h3>アカウント管理</h3><p class="muted">権限・認証情報を変更すると対象アカウントの全端末をログアウトします。最後の有効な管理者は停止・削除できません。</p><form class="admin-toolbar user-search"><input name="q" aria-label="アカウント検索" placeholder="名前・メールで検索"><button class="button secondary">検索</button><button type="button" class="button primary create-user">新規作成</button></form><div class="admin-users"></div><button class="button secondary next-users" hidden>次の100件</button>';
         let next='';const search=panel.querySelector('.user-search');

@@ -7,6 +7,7 @@ COPY web ./web
 COPY server/video-types.js ./server/video-types.js
 COPY server/audio-types.js ./server/audio-types.js
 COPY vite.config.js ./
+COPY scripts/pwa-icons.mjs ./scripts/pwa-icons.mjs
 RUN pnpm build
 
 FROM node:24.19.0-bookworm-slim AS dependencies
@@ -17,7 +18,7 @@ RUN pnpm install --prod --frozen-lockfile
 
 FROM node:24.19.0-bookworm-slim AS runtime
 ARG VCS_REF=unknown
-ARG VERSION=0.14.0-beta
+ARG VERSION=0.15.0-beta
 LABEL org.opencontainers.image.title="Mirea" \
       org.opencontainers.image.description="Shared video, audio and book library" \
       org.opencontainers.image.source="https://github.com/SUIREN-KazutoHashimoto/Mirea" \

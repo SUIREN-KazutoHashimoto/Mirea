@@ -20,6 +20,14 @@ export const PREVIEW_SECONDS = 6;
 export const MAX_PREVIEW_BYTES = 2 * 1024 * 1024;
 const runFile = promisify(execFile);
 export const ffmpegPath = () => mediaBinary('ffmpeg', bundledFfmpeg);
+// A stdin/eval launcher's --input-type rejects a file-based worker main.
+// Bootstrap the fixed trusted module as ESM text in that case. Leave execArgv
+// omitted: Node safely inherits runtime/permission flags, including flags that
+// cannot be copied into an explicit worker execArgv list (e.g. V8 options).
+export function mediaWorkerEntrypoint(args=process.execArgv){
+  const file=new URL('./media-worker.js',import.meta.url);
+  return args.some(arg=>arg==='--input-type'||arg.startsWith('--input-type='))?new URL('data:text/javascript,'+encodeURIComponent('import '+JSON.stringify(file.href)+';')):file;
+}
 
 const VIDEO_TIMEOUT_MS = 30_000;
 const removeOutput = destination => unlink(destination).catch(error => { if (error.code !== 'ENOENT') throw error; });
@@ -67,7 +75,7 @@ async function convertVideo(source, destination, mime, outputArgs, label, maxByt
 
 function workerOperation(data) {
   return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('./media-worker.js', import.meta.url), {
+    const worker = new Worker(mediaWorkerEntrypoint(), {
       workerData: data, resourceLimits: { maxOldGenerationSizeMb: 256 }
     });
     let receivedResult = false;

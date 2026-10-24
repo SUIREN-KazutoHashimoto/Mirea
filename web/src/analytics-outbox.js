@@ -6,19 +6,27 @@ export function memoryStore() {
   return { async list() { return [...rows.values()]; }, async put(row) { rows.set(row.key, row); }, async remove(keys) { keys.forEach(key => rows.delete(key)); } };
 }
 
+export function openAnalyticsDatabase({factory=globalThis.indexedDB,ms=2500}={}){
+  return new Promise((resolve,reject)=>{
+    let settled=false;const fail=error=>{if(settled)return;settled=true;clearTimeout(timer);reject(error);};
+    const timer=setTimeout(()=>fail(new Error('閲覧記録の保存領域を開けません。ほかのMireaタブを再読み込みしてください。')),ms);
+    let request;try{request=factory.open('mirea-analytics-v1',2);}catch(error){fail(error);return;}
+    request.onblocked=()=>fail(new Error('古いMireaタブが閲覧記録の保存領域を使用中です。'));
+    request.onupgradeneeded=()=>{
+      if(settled){request.transaction.abort();return;}
+      let store;
+      if(request.result.objectStoreNames.contains('events'))store=request.transaction.objectStore('events');
+      else{store=request.result.createObjectStore('events',{keyPath:'key'});store.createIndex('partition','partition');store.createIndex('queuedAt','queuedAt');}
+      if(!store.indexNames.contains('pending'))store.createIndex('pending',['partition','queuedAt']);
+    };
+    request.onsuccess=()=>{if(settled){request.result.close();return;}settled=true;clearTimeout(timer);request.result.onversionchange=()=>request.result.close();resolve(request.result);};request.onerror=()=>fail(request.error);
+  });
+}
+
 export async function browserStore(partition) {
   if (!globalThis.indexedDB) return memoryStore();
   try {
-    const db = await new Promise((resolve, reject) => {
-      const request = indexedDB.open('mirea-analytics-v1', 2);
-      request.onupgradeneeded = () => {
-        let store;
-        if(request.result.objectStoreNames.contains('events'))store=request.transaction.objectStore('events');
-        else{store=request.result.createObjectStore('events',{keyPath:'key'});store.createIndex('partition','partition');store.createIndex('queuedAt','queuedAt');}
-        store.createIndex('pending',['partition','queuedAt']);
-      };
-      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
-    });
+    const db = await openAnalyticsDatabase();
     const transact = (mode, run) => new Promise((resolve, reject) => {
       const tx = db.transaction('events', mode), store = tx.objectStore('events');
       const request = run(store);
