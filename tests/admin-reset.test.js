@@ -46,7 +46,7 @@ for(const separate of [false,true])test(`reset removes all media/metadata, prese
   const before=JSON.stringify({users:c.db.prepare('SELECT * FROM users ORDER BY id').all(),access:c.db.prepare('SELECT * FROM user_access ORDER BY user_id').all(),sessions:c.db.prepare('SELECT * FROM sessions ORDER BY id').all()}),key=await readFile(join(c.dataDir,'keys','download-master.key')),layout=await readFile(join(c.dataDir,'storage-layout.json'));
   await writeFile(join(c.dataDir,'server.env'),'PRIVATE_CONFIG_FIXTURE');await writeFile(join(c.dataDir,'admin-backups','saved.mireabackup'),'ENCRYPTED_BACKUP_FIXTURE');
   for(const group of [...MEDIA_GROUPS,...STATE_MEDIA_GROUPS,'admin-work']){const base=MEDIA_GROUPS.includes(group)?c.storage.mediaDir:c.dataDir;await writeFile(join(base,group,randomUUID()),'orphan fixture');}
-  const parent=randomUUID(),child=randomUUID();for(const id of [parent,child])c.db.prepare("INSERT INTO series(id,shelf_id,title,created_at,updated_at) VALUES(?,?,'series',1,1)").run(id,c.shelf);
+  const parent=randomUUID(),child=randomUUID();for(const id of [parent,child])c.db.prepare("INSERT INTO series(id,shelf_id,parent_id,title,created_at,updated_at) VALUES(?,?,?,'series',1,1)").run(id,c.shelf,id===child?parent:null);
   c.db.prepare('UPDATE series SET parent_id=? WHERE id=?').run(parent,child);c.db.prepare('INSERT INTO series_items VALUES(?,?,1,?)').run(child,c.asset,'');
   c.db.prepare("INSERT INTO thumbnail_overrides VALUES(?,? ,1)").run(c.asset,randomUUID());
   c.db.prepare("INSERT INTO admin_jobs(id,kind,state,created_at,updated_at) VALUES(?,'thumbnail','failed',1,1)").run(randomUUID());
