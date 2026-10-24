@@ -11,8 +11,9 @@ const denied=error=>['EACCES','EPERM','EROFS'].includes(error.code);
 for(const path of ['/var/tmp/mirea-sandbox-denied','/app/package.json','/usr/local/bin/node'])await assert.rejects(open(path,'a'),denied);
 await assert.rejects(writeFile('/data/outside-link','forbidden'),denied);
 await assert.rejects(truncate('/var/tmp/mirea-sandbox-owned',0),denied);
-await assert.rejects(rename('/var/tmp/mirea-sandbox-owned','/data/stolen'),denied);
-await assert.rejects(link('/var/tmp/mirea-sandbox-owned','/data/hardlink'),denied);
+// Same filesystem: EXDEV from crossing bind mounts is not sandbox evidence.
+await assert.rejects(rename('/var/tmp/mirea-sandbox-owned','/var/tmp/mirea-sandbox-renamed'),denied);
+await assert.rejects(link('/var/tmp/mirea-sandbox-owned','/var/tmp/mirea-sandbox-hardlink'),denied);
 assert.equal(await readFile('/var/tmp/mirea-sandbox-owned','utf8'),'must remain');
 for(const path of ['/data','/media','/tmp']) {
   const folder=path+'/sandbox-fixture';await mkdir(folder);
