@@ -3,18 +3,20 @@
 import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
-import {repository,registryImage,newestPublishedBeta,validatePromotion,validateChannelAdvance} from './container-channel-policy.mjs';
+import {repository,registryImage,releaseVersion,newestPublishedRelease,validatePromotion,validateChannelAdvance} from './container-channel-policy.mjs';
 
 const {GITHUB_ACTIONS,GITHUB_EVENT_NAME,GITHUB_REPOSITORY,GITHUB_EVENT_PATH,GH_TOKEN}=process.env;
 assert(GITHUB_ACTIONS==='true'&&GITHUB_REPOSITORY===repository&&GH_TOKEN&&['release','workflow_dispatch'].includes(GITHUB_EVENT_NAME),'Unexpected channel publication context');
 const event=JSON.parse(await readFile(GITHUB_EVENT_PATH,'utf8'));
 async function request(url,options={}){const r=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(30000),...options});if(!r.ok)throw Error('Release/channel request failed ('+r.status+')');return r;}
 async function api(path){return (await request('https://api.github.com'+path,{headers:{authorization:'Bearer '+GH_TOKEN,accept:'application/vnd.github+json','x-github-api-version':'2022-11-28'}})).json();}
-const releases=await api('/repos/'+repository+'/releases?per_page=100'),latest=newestPublishedBeta(releases);
-assert(latest,'No published beta release');
 const requestedTag=GITHUB_EVENT_NAME==='release'?event.release?.tag_name:event.inputs?.tag;
 assert(requestedTag,'Missing release tag');
-if(requestedTag!==latest.tag_name){console.log(JSON.stringify({skipped:true,reason:'A newer public beta exists',requestedTag,latestTag:latest.tag_name}));process.exit(0);}
+const channel=releaseVersion(requestedTag).channel;
+// Read all pages: GitHub orders by publication date, not semantic version or channel.
+const releases=[];for(let page=1;;page++){assert(page<=100,'Release history exceeds safe pagination limit');const values=await api('/repos/'+repository+'/releases?per_page=100&page='+page);releases.push(...values);if(values.length<100)break;}
+const latest=newestPublishedRelease(releases,channel);assert(latest,'No published '+channel+' release');
+if(requestedTag!==latest.tag_name){console.log(JSON.stringify({skipped:true,reason:'A newer public release exists in this channel',channel,requestedTag,latestTag:latest.tag_name}));process.exit(0);}
 const release=await api('/repos/'+repository+'/releases/'+latest.id);
 let ref=await api('/repos/'+repository+'/git/ref/tags/'+encodeURIComponent(release.tag_name));
 if(ref.object.type==='tag')ref={object:(await api('/repos/'+repository+'/git/tags/'+ref.object.sha)).object};
@@ -44,8 +46,9 @@ assert.equal(hash(manifest.bytes),plan.digestReference.split('@')[1]);assert.equ
 const image=JSON.parse(manifest.bytes);assert.equal(image.config.digest,plan.imageId);
 const config=await registry('/blobs/'+image.config.digest,{blob:true});assert.equal(hash(config.bytes),plan.imageId);const c=JSON.parse(config.bytes);
 assert(c.os==='linux'&&c.architecture==='amd64'&&c.config.User==='1000:1000');assert.equal(c.config.Labels['org.opencontainers.image.revision'],commit);assert.equal(c.config.Labels['org.opencontainers.image.version'],plan.version);
-const old=await registry('/manifests/beta',{missing:true});
+const channelManifest='/manifests/'+plan.channel;
+const old=await registry(channelManifest,{missing:true});
 if(old){const oldManifest=JSON.parse(old.bytes),oldConfig=await registry('/blobs/'+oldManifest.config.digest,{blob:true});assert.equal(hash(oldConfig.bytes),oldManifest.config.digest);const previous=JSON.parse(oldConfig.bytes);validateChannelAdvance({version:previous.config.Labels['org.opencontainers.image.version'],digestReference:registryImage+'@'+hash(old.bytes)},plan);}
-await request('https://ghcr.io/v2/'+path+'/manifests/beta',{method:'PUT',headers:{authorization:'Bearer '+registryToken,'content-type':manifest.type},body:manifest.bytes});
-const checked=await registry('/manifests/beta');assert.deepEqual(checked.bytes,manifest.bytes);assert.equal(checked.digest,hash(manifest.bytes));
+await request('https://ghcr.io/v2/'+path+channelManifest,{method:'PUT',headers:{authorization:'Bearer '+registryToken,'content-type':manifest.type},body:manifest.bytes});
+const checked=await registry(channelManifest);assert.deepEqual(checked.bytes,manifest.bytes);assert.equal(checked.digest,hash(manifest.bytes));
 console.log(JSON.stringify({success:true,...plan,publicRelease:release.html_url,exactTestedManifestPromoted:true,automaticNasRestart:false}));

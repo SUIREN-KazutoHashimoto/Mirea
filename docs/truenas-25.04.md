@@ -1,11 +1,11 @@
-# TrueNAS 25.04.2.6 Custom App — Mirea 0.15.1beta
+# TrueNAS 25.04.2.6 Custom App — Mirea
 
 この手順は導入計画です。TrueNASへのインストール・設定変更・既存WinVAI01からのデータ移行は自動実行しません。対象はDockerベースのAppsを持つTrueNAS **25.04.2.6 / x86-64**。ARM版・GPUトランスコード・複数レプリカは提供しません。
 
 ## 配布物と推奨構成
 
-- イメージ: `ghcr.io/suiren-kazutohashimoto/mirea:0.15.1beta`（linux/amd64）。`latest`は使いません。Landlock ABI 3以上が有効なホストが必須です。
-- [リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.15.1beta)の`mirea-0.15.1beta-container.json`でコミット・レジストリdigestを確認し、可能なら`image`をそこに記載した`ghcr.io/…@sha256:…`へ固定します。
+- イメージ: `ghcr.io/suiren-kazutohashimoto/mirea:0.15.3beta`（版番号固定の例、linux/amd64）。更新追従には `:beta`、初回正式版の公開後は `:stable` も使用できます。[チャネルの公開条件と運用](container-channels.md)を確認してください。`latest`は使いません。Landlock ABI 3以上が有効なホストが必須です。
+- [リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.15.3beta)の`mirea-0.15.3beta-container.json`でコミット・レジストリdigestを確認します。固定運用なら`image`をそこに記載した`ghcr.io/…@sha256:…`へ固定できます。
 - DockerがGHCRへ接続できない環境用に、同じ検証済みイメージの`container-linux-amd64.tar.gz`とSHA-256も配布します。導入操作はTrueNASのサポート範囲に従ってください。
 - 推奨は [Compose YAML](../deploy/truenas/compose.yaml) を使うCustom App。NASのローカルSSDデータセットを`/data`、大容量側を`/media`へそれぞれマウントし、HTTPSは別のリバースプロキシで終端します。
 
@@ -55,7 +55,7 @@
 
 | 25.04 GUI項目 | 設定 |
 | --- | --- |
-| Image Repository / Tag | `ghcr.io/suiren-kazutohashimoto/mirea` / `0.15.1beta` |
+| Image Repository / Tag | `ghcr.io/suiren-kazutohashimoto/mirea` / 固定運用は`0.15.3beta`、追従運用は`beta`または正式版公開後の`stable` |
 | Entrypoint / Command | 上書きしない |
 | Custom User | 有効、User ID 1000 / Group ID 1000 |
 | Privileged / Host Network | 無効 / 無効 |
@@ -83,7 +83,7 @@ Cloudflareを使う場合は[配信経路・利用条件の注意](cloudflare.md
 ## 5. 導入後の確認
 
 - 起動ログに`Mirea container sandbox enforced`があり、HTTPS事前検査を有効にした場合は`truenas_preflight_passed`もあること。
-- Appsのコンテナがhealthyになり、`/api/health`が`status:ok / version:0.15.1-beta`であること。
+- Appsのコンテナがhealthyになり、`/api/health`の`status:ok`と、`version`が更新対象のリリースに一致すること（例`0.15.3-beta`）。
 - 信頼されたHTTPSからログイン、本棚・シリーズ階層・サムネイルを確認。
 - 小さなPDF／動画／音声をテスト専用本棚へアップロードし、ジョブ完了、再生・読書・シーク・保存・再接続を確認。
 - アプリを停止・再開してもアカウント・続き位置・ダウンロード鍵が変わらないこと。
@@ -93,9 +93,9 @@ CIはLinuxコンテナの変換・再作成・データ／鍵保持を検査し�
 
 ## 6. バックアップ・更新・復帰
 
-### TrueNASの「更新」ボタンを使う場合（任意のbeta追従）
+### TrueNASの「更新」ボタンを使う場合（任意のstable／beta追従）
 
-既定の版番号タグとdigest固定は、意図せず別の版へ変わらない構成です。TrueNASが新しい版番号のタグを自動で選ぶことはありません。標準の更新検出を使う場合に限り、imageを ghcr.io/suiren-kazutohashimoto/mirea:beta へ変更できます。これは公開済み・正式CI成功済みの最新ベータ版を指す可変タグで、版番号タグやdigestは引き続き固定のまま配布します。ドラフト、未成功のビルド、古い版への再公開ではbetaを動かしません。
+既定の版番号タグとdigest固定は、意図せず別の版へ変わらない構成です。TrueNASが新しい版番号のタグを自動で選ぶことはありません。標準の更新検出を使う場合に限り、imageを `ghcr.io/suiren-kazutohashimoto/mirea:beta` または初回正式版公開後の `:stable` へ変更できます。それぞれ公開済み・正式CI成功済みの最新ベータ版／正式版を指す可変タグで、版番号タグやdigestは引き続き固定のまま配布します。正式版がない間はstableを作りません。ドラフト、未成功のビルド、古い版の再公開では追従タグを動かさず、正式版とベータ版も混ぜません。詳細は[チャネル運用](container-channels.md)を参照してください。
 
 TrueNAS側のイメージ更新検査後に「更新あり」が表示され、利用者が更新ボタンを押すと再取得・再作成します。MireaからNASのDockerやAPIを操作する機能、勝手に再起動する更新エージェントは追加しません。検出にはTrueNAS側の検査間隔があります。
 
@@ -117,7 +117,7 @@ Custom Appでは、App Versionがcustom、バージョンが1.0.0、SourceがN/A
 4. 上記の導入後確認を実施。Mireaの管理画面からDocker更新は実行しません。Dockerソケット・NAS管理資格情報・特権をWebへ与えないでください。
 5. 不調時は停止して、**旧イメージ＋更新前データ／設定の対応した組**を復元。新DBに旧サーバーを当てるダウングレードや、旧新サーバーから同じデータを同時に開く運用はしません。
 
-0.15.1betaのDBはv17のままです。今後の移行に備えて上記を毎回行います。App削除時もデータセットを削除しないでください。`docker compose down -v`は禁止です。
+0.15.1betaはDB v17、0.15.3betaはDB v18です。移行に備えて上記を毎回行います。App削除時もデータセットを削除しないでください。`docker compose down -v`は禁止です。
 
 WinVAI01から移行する場合も最初に旧サービスを停止して全データをコピーします。同じHTTPSオリジンを維持できない場合、ブラウザー／アプリの端末内保存はサーバー別管理のため再接続・再取得が必要になる場合があります。移行検証が済むまで旧データを保持します。
 
