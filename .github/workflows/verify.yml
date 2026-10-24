@@ -2,10 +2,19 @@ name: Verify Mirea
 on:
   push:
   pull_request:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Already published beta release, for example v0.15.0beta
+        required: true
+        type: string
 permissions:
   contents: read
 jobs:
   web-and-api:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,6 +32,7 @@ jobs:
       - run: pnpm test:startup
       - run: pnpm test:package
   container:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     env:
       COMPOSE_PROJECT_NAME: mirea-ci-${{ github.run_id }}-${{ github.run_attempt }}
@@ -75,6 +85,7 @@ jobs:
           docker compose down
           COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}-separated" docker compose -f compose.yaml -f compose.storage.yaml down
   android:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -121,3 +132,24 @@ jobs:
         run: node scripts/publish-container.mjs
       - if: always()
         run: docker logout ghcr.io
+  promote-beta-channel:
+    if: github.repository == 'SUIREN-KazutoHashimoto/Mirea' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop'))
+    runs-on: ubuntu-latest
+    concurrency:
+      group: mirea-beta-channel
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+      - name: Test publication policy
+        run: node --test tests/container-channel.test.js
+      - name: Promote only the exact image of the latest published verified beta
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/publish-container-channel.mjs

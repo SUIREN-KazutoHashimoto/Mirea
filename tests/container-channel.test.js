@@ -18,6 +18,6 @@ test('channel never moves backwards or changes bytes under an existing numbered 
  assert.throws(()=>validateChannelAdvance({version:'0.16.0-beta',digestReference:'newer'},plan));assert.throws(()=>validateChannelAdvance({version:plan.version,digestReference:'different'},plan));
 });
 test('channel workflow is serialized, release-gated, uses a temporary token and cannot rebuild images or access a NAS',async()=>{
- const ci=await readFile(new URL('../.github/workflows/container-channel.yml',import.meta.url),'utf8');for(const text of ['types: [published]','group: mirea-beta-channel','cancel-in-progress: false','packages: write','actions: read','scripts/publish-container-channel.mjs'])assert(ci.includes(text));
+ const ci=await readFile(new URL('../.github/workflows/verify.yml',import.meta.url),'utf8');for(const text of ['types: [published]','group: mirea-beta-channel','cancel-in-progress: false','packages: write','actions: read','scripts/publish-container-channel.mjs'])assert(ci.includes(text));
  const source=await readFile(new URL('../scripts/publish-container-channel.mjs',import.meta.url),'utf8');for(const bad of ['rejectUnauthorized:false','NODE_TLS_REJECT_UNAUTHORIZED','docker.sock','child_process','docker build'])assert(!source.includes(bad));assert(source.includes('validatePromotion(')&&source.includes('validateChannelAdvance('));
 });
