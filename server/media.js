@@ -24,9 +24,9 @@ export const ffmpegPath = () => mediaBinary('ffmpeg', bundledFfmpeg);
 // Bootstrap the fixed trusted module as ESM text in that case. Leave execArgv
 // omitted: Node safely inherits runtime/permission flags, including flags that
 // cannot be copied into an explicit worker execArgv list (e.g. V8 options).
-export function mediaWorkerEntrypoint(args=process.execArgv){
+export function mediaWorkerEntrypoint(args=process.execArgv,nodeOptions=process.env.NODE_OPTIONS??''){
   const file=new URL('./media-worker.js',import.meta.url);
-  return args.some(arg=>arg==='--input-type'||arg.startsWith('--input-type='))?new URL('data:text/javascript,'+encodeURIComponent('import '+JSON.stringify(file.href)+';')):file;
+  return args.some(arg=>arg==='--input-type'||arg.startsWith('--input-type='))||nodeOptions.includes('--input-type')?new URL('data:text/javascript,'+encodeURIComponent('import '+JSON.stringify(file.href)+';')):file;
 }
 
 const VIDEO_TIMEOUT_MS = 30_000;
