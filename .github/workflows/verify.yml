@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Already published beta release, for example v0.15.0beta
+        description: Already published stable or beta release, for example v1.0.0 or v0.15.3beta
         required: true
         type: string
 permissions:
@@ -134,10 +134,11 @@ jobs:
         run: node scripts/publish-container.mjs
       - if: always()
         run: docker logout ghcr.io
-  promote-beta-channel:
+  promote-release-channel:
     if: github.repository == 'SUIREN-KazutoHashimoto/Mirea' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop'))
     runs-on: ubuntu-latest
     concurrency:
+      # Keep the original lock name to serialize with older beta workflow runs.
       group: mirea-beta-channel
       cancel-in-progress: false
     permissions:
@@ -151,7 +152,7 @@ jobs:
           node-version: 24.19.0
       - name: Test publication policy
         run: node --test tests/container-channel.test.js
-      - name: Promote only the exact image of the latest published verified beta
+      - name: Promote only the exact verified image to its stable or beta channel
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/publish-container-channel.mjs

@@ -10,10 +10,11 @@ import {createHash} from 'node:crypto';
 import {join,basename} from 'node:path';
 import assert from 'node:assert/strict';
 import pkg from '../package.json' with {type:'json'};
+import {packageRelease} from './container-channel-policy.mjs';
 
 const {GITHUB_ACTIONS,GITHUB_EVENT_NAME,GITHUB_REF_TYPE,GITHUB_REF_NAME:tag,GITHUB_SHA:sha,GITHUB_REPOSITORY:repository,RUNNER_TEMP:folder,GH_TOKEN:token}=process.env;
-const version=pkg.version.replace('-beta','beta'),image='ghcr.io/'+(repository??'').toLowerCase();
-assert(GITHUB_ACTIONS==='true'&&GITHUB_EVENT_NAME==='push'&&GITHUB_REF_TYPE==='tag'&&tag==='v'+version&&/^\d+\.\d+\.\d+beta$/.test(version)&&/^[0-9a-f]{40}$/.test(sha)&&repository==='SUIREN-KazutoHashimoto/Mirea'&&folder&&token,'Unexpected release context');
+const releaseType=packageRelease(pkg.version),version=releaseType.imageTag,image='ghcr.io/'+(repository??'').toLowerCase();
+assert(GITHUB_ACTIONS==='true'&&GITHUB_EVENT_NAME==='push'&&GITHUB_REF_TYPE==='tag'&&tag==='v'+version&&/^[0-9a-f]{40}$/.test(sha)&&repository==='SUIREN-KazutoHashimoto/Mirea'&&folder&&token,'Unexpected release context');
 async function api(path,method='GET',body){
  const r=await fetch('https://api.github.com'+path,{method,redirect:'error',headers:{authorization:'Bearer '+token,accept:'application/vnd.github+json','x-github-api-version':'2022-11-28',...(body?{'content-type':'application/json'}:{})},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(30000)});
  if(r.status===404)return null;if(!r.ok)throw Error('GitHub request failed ('+r.status+')');return r.json();
@@ -39,7 +40,7 @@ const completed=new Promise((resolve,reject)=>{child.on('error',reject);child.on
 async function hashFile(path){const h=createHash('sha256');for await(const bytes of createReadStream(path))h.update(bytes);return h.digest('hex');}
 const sha256=await hashFile(archive);await writeFile(archive+'.sha256',sha256+'  '+basename(archive)+'\n');
 const metadata=join(folder,`mirea-${version}-container.json`);await writeFile(metadata,JSON.stringify({schemaVersion:1,version:pkg.version,tag,commit:sha,image:image+':'+version,digestReference:digestRef,imageId:tested.Id,platform:'linux/amd64',testedImagePromoted:true,nonRoot:'1000:1000',readOnlyRoot:true,dataPath:'/data',optionalMediaPath:'/media',separateStorageVerified:true,containerRecreationAndEncryptionVerified:true,archive:basename(archive),archiveSha256:sha256,workflow:`https://github.com/${repository}/actions/runs/${process.env.GITHUB_RUN_ID}`},null,2)+'\n');await writeFile(metadata+'.sha256',(await hashFile(metadata))+'  '+basename(metadata)+'\n');
-let release=await api(`/repos/${repository}/releases/tags/${tag}`);if(!release)release=await api(`/repos/${repository}/releases`,'POST',{tag_name:tag,target_commitish:sha,name:version,draft:true,prerelease:true,body:'Release preparation in progress. The exact verified container image is attached; publication requires final verification.'});assert(release.draft,'Never change an already published release');
+let release=await api(`/repos/${repository}/releases/tags/${tag}`);if(!release)release=await api(`/repos/${repository}/releases`,'POST',{tag_name:tag,target_commitish:sha,name:version,draft:true,prerelease:releaseType.prerelease,body:'Release preparation in progress. The exact verified container image is attached; publication requires final verification.'});assert(release.draft&&release.target_commitish===sha&&release.prerelease===releaseType.prerelease,'Never change an already published or mismatched release');
 for(const file of [archive,archive+'.sha256',metadata,metadata+'.sha256']){
  const digest='sha256:'+(await hashFile(file)),old=release.assets.find(a=>a.name===basename(file));if(old){assert.equal(old.digest,digest,'Existing draft asset differs');continue;}
  const size=(await stat(file)).size,response=await fetch(`https://uploads.github.com/repos/${repository}/releases/${release.id}/assets?name=${encodeURIComponent(basename(file))}`,{method:'POST',redirect:'error',headers:{authorization:'Bearer '+token,'content-type':'application/octet-stream','content-length':String(size)},body:Readable.toWeb(createReadStream(file)),duplex:'half',signal:AbortSignal.timeout(900000)});if(!response.ok)throw Error('Release asset upload failed ('+response.status+')');const asset=await response.json();assert.equal(asset.digest,digest);console.log(JSON.stringify({uploaded:asset.name,size:asset.size,sha256:digest}));
