@@ -13,7 +13,9 @@ export async function verifySeparateStorage(){
  // real free-space reserve, so place CI-only synthetic state on the data volume.
  const fixtureRoot=process.env.MIREA_STORAGE_FIXTURE_ROOT||tmpdir();
  const folder=await mkdtemp(join(fixtureRoot,'mirea-storage-smoke-')),dataDir=join(folder,'state');await mkdir(dataDir);
- const shared=process.platform==='linux'?await mkdtemp('/dev/shm/mirea-storage-smoke-'):join(folder,'media');if(process.platform!=='linux')await mkdir(shared);
+ // /tmp is a separate tmpfs in CI and is inside the mandatory sandbox. Do not
+ // widen the production write policy just to accommodate a synthetic fixture.
+ const shared=process.platform==='linux'?await mkdtemp(join(tmpdir(),'mirea-storage-media-')):join(folder,'media');if(process.platform!=='linux')await mkdir(shared);
  const options={dataDir,mediaDir:shared,rateLimit:false,cleanupGraceMs:0,serverAdminUserIds:[],backupConfigFile:join(folder,'fixture.env')},password=randomUUID()+'-fixture';await writeFile(options.backupConfigFile,'MIREA_STORAGE_FIXTURE=true\n');let app;
  const hash=b=>createHash('sha256').update(b).digest('hex');
  try{
@@ -47,6 +49,6 @@ export async function verifySeparateStorage(){
   const grant=(await req('POST','/downloads/'+download+'/open',{})).json();assert.equal(grant.expiresAt-grant.serverTime,7*86400000);const encrypted=(await req('GET','/downloads/'+download+'/files/0/parts/0')).rawPayload,decipher=createDecipheriv('aes-256-gcm',Buffer.from(grant.key,'base64'),encrypted.subarray(0,12));decipher.setAAD(Buffer.from(`mirea-download-v1|${download}|0|0|${pdfBytes.length}`));decipher.setAuthTag(encrypted.subarray(-16));assert.deepEqual(Buffer.concat([decipher.update(encrypted.subarray(12,-16)),decipher.final()]),pdfBytes);grant.key='';
   for(const id of [pdfId,imageId,audioId,videoId])assert.equal((await req('DELETE','/items/'+id)).statusCode,204);await assert.rejects(access(join(shared,'uploads',videoId)),{code:'ENOENT'});await assert.rejects(access(join(dataDir,'thumbnails',videoId+'.jpg')),{code:'ENOENT'});await assert.rejects(access(join(shared,'videos',videoId)),{code:'ENOENT'});
   return {success:true,isolatedData:true,productionDataTouched:false,separateRoots:true,realCrossDevice:crossDevice,pdfAndImageBooks:true,audioAndVideo:true,regeneration:true,customThumbnails:true,metadataAndFullBackup:true,orphanCleanup:true,accountProgressAndKeysPersisted:true,encryptedDownloadAfterRestart:true,deleteBothRoots:true,unsafeUpdaterDisabled:true};
- }finally{await app?.close();if(!resolve(folder).startsWith(resolve(fixtureRoot)+sep+'mirea-storage-smoke-'))throw Error('Unsafe fixture cleanup');await rm(folder,{recursive:true,force:true});if(process.platform==='linux'){if(!shared.startsWith('/dev/shm/mirea-storage-smoke-'))throw Error('Unsafe shared fixture cleanup');await rm(shared,{recursive:true,force:true});}}
+ }finally{await app?.close();if(!resolve(folder).startsWith(resolve(fixtureRoot)+sep+'mirea-storage-smoke-'))throw Error('Unsafe fixture cleanup');await rm(folder,{recursive:true,force:true});if(process.platform==='linux'){if(!resolve(shared).startsWith(resolve(tmpdir())+sep+'mirea-storage-media-'))throw Error('Unsafe shared fixture cleanup');await rm(shared,{recursive:true,force:true});}}
 }
 if(process.argv[1]?.endsWith('check-storage-runtime.mjs')||!process.argv[1])console.log(JSON.stringify(await verifySeparateStorage()));
