@@ -1,4 +1,4 @@
-# 0.15.2beta ライブラリ管理
+# 0.15.3beta ライブラリ管理
 
 ## 一覧・表紙の一括保存
 
@@ -26,7 +26,7 @@
 
 フォルダは階層順に作成し、作成要求IDを再利用して同じ画面内の再試行で重複を防ぎます。後続の失敗時に既に作成済みのシリーズ／アセットを自動削除しません。必要なら成功分を確認して整理してください。アセットの送信・後処理は既存の最大3並行、原本保持・権限検査・分割転送・背景転送を利用します。
 
-Webは対応ブラウザーのディレクトリ選択、Androidは[Storage Access Frameworkのフォルダ選択](https://developer.android.com/training/data-storage/shared/documents-files#grant-access-directory)を使います。全ストレージ権限は追加しません。Android側の新しい選択機能と同梱画面は0.15.2beta（code31）の署名済みAPKへの更新後に利用可能です。APKとコンテナは[0.15.2betaリリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.15.2beta)から取得できます。コンテナの更新はバックアップ後に管理者が行ってください。
+Webは対応ブラウザーのディレクトリ選択、Androidは[Storage Access Frameworkのフォルダ選択](https://developer.android.com/training/data-storage/shared/documents-files#grant-access-directory)を使います。全ストレージ権限は追加しません。Android側の新しい選択機能と同梱画面は0.15.3beta（code32）の署名済みAPKへの更新後に利用可能です。APKとコンテナは[0.15.3betaリリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.15.3beta)から取得できます。コンテナの更新はバックアップ後に管理者が行ってください。
 
 ## 更新・復旧
 
