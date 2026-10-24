@@ -41,7 +41,7 @@ test('short videos use their available frames, including one-frame and low-frame
     assert.deepEqual(await media.thumbnail(source, 'video/mp4', thumbnail), { pageCount: 1 });
     const metadata = await sharp(thumbnail).metadata();
     assert.equal(metadata.format, 'jpeg');
-    assert.equal(metadata.width, 480);
+    assert.equal(metadata.width, 64);
     const { channels } = await sharp(thumbnail).stats();
     assert.ok(channels[clip.channel].mean > 80, 'thumbnail must contain this video, not a placeholder');
     assert.ok(channels.filter((_, index) => index !== clip.channel).every(channel => channel.mean < 20));

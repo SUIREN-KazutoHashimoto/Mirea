@@ -30,7 +30,7 @@ export async function registerAdminCleanup(app,{db,dataDir,mediaDir=dataDir,admi
     try{await visit(path);}catch(error){if(error.code==='ENOENT')return null;throw error;}
     return {path,bytes,files,latest,fingerprint:hash.digest('hex')};
   }
-  const assetPaths=id=>groupNames.map(name=>join(groupPath(name),id+(name==='previews'?'.mp4':name.startsWith('thumbnails')?'.jpg':'')));
+  const assetPaths=id=>[...groupNames.map(name=>join(groupPath(name),id+(name==='previews'?'.mp4':name.startsWith('thumbnails')?'.jpg':''))),join(groupPath('thumbnails'),id+'.webp')];
   async function describe(candidate){
     const parts=[];let item;
     if(candidate.kind==='asset'){
@@ -59,8 +59,8 @@ export async function registerAdminCleanup(app,{db,dataDir,mediaDir=dataDir,admi
         const directory=await opendir(groupPath(name)).catch(error=>{if(error.code==='ENOENT')return null;throw error;});if(!directory)continue;
         for await(const file of directory){const entry=file.name;
           if(++budget>20000||candidates.length>=200){limited=true;break outer;}
-          const id=(name==='previews'?entry.replace(/\.mp4$/,''):name.startsWith('thumbnails')?entry.replace(/\.jpg$/,''):entry);
-          if(!UUID.test(id)||name==='previews'&&!entry.endsWith('.mp4')||name.startsWith('thumbnails')&&!entry.endsWith('.jpg'))continue;
+          const id=(name==='previews'?entry.replace(/\.mp4$/,''):name.startsWith('thumbnails')?entry.replace(/\.(?:jpg|webp|input)$/,''):entry);
+          if(!UUID.test(id)||name==='previews'&&!entry.endsWith('.mp4')||name.startsWith('thumbnails')&&!(/\.(?:jpg|webp|input)$/.test(entry)))continue;
           if(name==='thumbnails/custom'&&db.prepare('SELECT 1 FROM thumbnail_overrides WHERE image_id=?').get(id))continue;
           if(db.prepare('SELECT 1 FROM items WHERE id=?').get(id)||protectedUpload(id))continue;
           await add({kind:'orphan',custom:name==='thumbnails/custom',assetId:id,path:join(groupPath(name),entry),title:name+'/'+entry});

@@ -6,7 +6,7 @@ import { httpError, parseRange } from './security.js';
 
 // Generated clips are an optional cache, never the source of truth. Originals
 // remain untouched; a failed conversion always leaves the JPEG thumbnail usable.
-export async function registerVideoPreviews(app, { db, media, dataDir, uploadDir, authenticate, findItem }) {
+export async function registerVideoPreviews(app, { db, media, dataDir, uploadDir, authenticate, findItem,jobPool }) {
   const directory = join(dataDir, 'previews');
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const pending = new Map(), failed = new Map();
@@ -34,10 +34,10 @@ export async function registerVideoPreviews(app, { db, media, dataDir, uploadDir
   function start(item) {
     const id = item.id;
     if (closing || pending.size >= 4) return { state: 'busy', retryAfterMs: 2500 };
-    const job = (async () => {
+    const work = async () => {
       try {
         if (!exists(id)) return;
-        // Conversion shares the bounded serial media queue with thumbnails.
+        // Lazy previews obey the same global processing limit as uploads and regeneration.
         await media.preview(join(uploadDir, id), temporaryFor(id), item.mime_type);
         if (!exists(id)) return;
         await rename(temporaryFor(id), pathFor(id));
@@ -50,7 +50,8 @@ export async function registerVideoPreviews(app, { db, media, dataDir, uploadDir
       } finally {
         await removeFile(temporaryFor(id));
       }
-    })().catch(error => app.log.error({ err: error }, 'Video preview cleanup failed'));
+    };
+    const job=(jobPool?jobPool.run(work,'preview:'+id):work()).catch(error => app.log.error({ err: error }, 'Video preview cleanup failed'));
     pending.set(id, job);
     job.finally(() => pending.delete(id));
     return { state: 'processing', retryAfterMs: 1200 };
@@ -92,7 +93,7 @@ export async function registerVideoPreviews(app, { db, media, dataDir, uploadDir
     clearFailure(id){failed.delete(id);},
     inspect(){return [...pending.keys()].map(id=>({assetId:id,state:'running',kind:'preview'})).concat([...failed.keys()].filter(id=>(failed.get(id)??0)>Date.now()).map(id=>({assetId:id,state:'failed',kind:'preview'})));},
     async remove(id) {
-      failed.delete(id);
+      failed.delete(id);jobPool?.cancel('preview:'+id);
       // In-flight conversions check item existence and clean themselves up.
       await removeFile(pathFor(id));
       if (!pending.has(id)) await removeFile(temporaryFor(id));

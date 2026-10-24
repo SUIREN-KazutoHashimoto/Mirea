@@ -56,7 +56,7 @@ node scripts/sign-android-update.mjs --apk=/build/app-release.apk --apk-url=http
 
 実APKをapksignerで検証し、aapt2から版・最小SDKを読み、デバッグ署名を拒否してから`manifest.json`と`mirea-android-4.apk`を生成します。公開鍵が対応しない秘密鍵を拒否します。versionCodeは更新のたびに単調増加させます。同一番号のAPKを差し替えず、有効期限の更新だけを同じコマンドで行います（最大168時間、`--validity-hours=`で短縮可）。署名用端末上の公開ファイル用ディレクトリへ生成した後、公開ファイルだけをサーバーへ転送し、APK→manifestの順で反映してください。GitHubへの公開・鍵のSecrets登録・自動転送はこのスクリプトでは行いません。
 
-直接起動では`.env`の`APP_UPDATES_DIR`に公開ファイルだけのディレクトリを指定します。相対パスはインストール先基準です。未指定では更新APIは404です。Web／アセット閲覧は更新配信が未設定でも動作します。
+0.16.0betaから、通常起動で`APP_UPDATES_DIR`が未指定なら同じ公開リリースの署名付き`mirea-android-update.json`をGitHubから取得します。署名・期限・リリースURLの一致を検証し、取得不能・期限切れは503です。明示的なバンドル配信では`.env`の`APP_UPDATES_DIR`に公開ファイルだけのディレクトリを指定します。相対パスはインストール先基準です。`APP_UPDATES_SOURCE=disabled`で外部取得を無効にした場合の未配置は404です。Web／アセット閲覧は更新配信が未設定でも動作します。
 
 コンテナでは公開バンドルを読み取り専用マウントします。
 

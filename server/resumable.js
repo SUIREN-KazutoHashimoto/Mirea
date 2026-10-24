@@ -21,13 +21,13 @@ export async function registerResumableUploads(app, context) {
   const transferDir = join(uploadDir, 'transfers');
   await mkdir(transferDir, { recursive: true, mode: 0o700 });
   const locked = new Set(), jobs = new Map();
-  let queue = Promise.resolve(), closing = false, sweeping=false;
+  let closing = false, sweeping=false;
   const auth = { onRequest: async req => authenticate(req) };
   const get = id => db.prepare('SELECT * FROM upload_sessions WHERE id=?').get(id);
   // Failed sources remain retryable, but are not running work. Use the same
   // admission rule for new transfers, multipart and both retry entry points.
   const activeCount=userId=>db.prepare("SELECT COUNT(*) AS n FROM upload_sessions WHERE user_id=? AND (state='processing' OR (state='uploading' AND expires_at>?))").get(userId,Date.now()).n;
-  function requireSlot(userId){if(activeCount(userId)>=3)throw httpError(429,'同時アップロードは3件までです。処理の完了を待つか、受信中のアップロードを取り消してください。');}
+  function requireSlot(userId){if(db.prepare("SELECT COUNT(*) n FROM upload_sessions WHERE user_id=? AND state='uploading' AND expires_at>?").get(userId,Date.now()).n>=(context.processingSettings?.value.maxConcurrentUploads??3))throw httpError(429,'同時送信数の上限です。キューで待機して自動的に再開します。');}
   function owned(req) {
     const upload = get(req.params.id);
     if (!upload || upload.user_id !== req.user.id) throw httpError(404, 'アップロードが見つかりません。');
@@ -70,7 +70,7 @@ export async function registerResumableUploads(app, context) {
   }
   function schedule(id) {
     if (jobs.has(id) || closing) return jobs.get(id);
-    const job = queue.then(async () => {
+    const job = context.jobPool.run(async () => {
       const upload = get(id);
       if (!upload || upload.state !== 'processing') { if (upload?.state === 'cancelled') await discard(id); return; }
       const existing = db.prepare('SELECT 1 FROM items WHERE id=?').get(id);
@@ -106,7 +106,7 @@ export async function registerResumableUploads(app, context) {
         }
         await publishStagedUpload(context, upload, () => authorizeJob(upload));
       } catch (error) {
-        if(error.code==='SERVER_CLOSING')return; // durable processing state is recovered on startup
+        if(error.code==='SERVER_CLOSING'||get(id)?.state==='cancelled')return; // durable processing state is recovered on startup
         db.prepare("UPDATE upload_sessions SET state='failed',error=? WHERE id=? AND state='processing'").run(
           uploadErrorMessage(error), id);
         app.log.error({ err: error, uploadId: id }, 'Upload processing failed');
@@ -116,8 +116,7 @@ export async function registerResumableUploads(app, context) {
         const state=get(id)?.state;
         if (!state || state==='complete' || state==='cancelled' || state==='failed'&&!isTimedMime(JSON.parse(upload.files_json)[0].mime)) await discard(id);
       }
-    }).catch(error => { app.log.error({ err: error, uploadId: id }, 'Upload cleanup failed'); });
-    queue = job;
+    },id).catch(error => { app.log.error({ err: error, uploadId: id }, 'Upload cleanup failed'); });
     jobs.set(id, job);
     job.finally(() => jobs.delete(id));
     return job;
@@ -144,7 +143,7 @@ export async function registerResumableUploads(app, context) {
   let cleanup = Promise.resolve();
   const timer = setInterval(() => { cleanup = sweep().catch(error => app.log.error(error)); }, 30 * 60 * 1000);
   timer.unref();
-  app.addHook('onClose', async () => { closing = true; clearInterval(timer); await queue; await cleanup; });
+  app.addHook('onClose', async () => { closing = true; clearInterval(timer); await Promise.allSettled([...jobs.values()]); await cleanup; });
 
   app.post('/api/v1/shelves/:id/uploads', {
     ...auth, bodyLimit: 256 * 1024,
@@ -266,13 +265,19 @@ export async function registerResumableUploads(app, context) {
   app.delete('/api/v1/uploads/:id', auth, async (req, reply) => {
     await exclusive(req.params.id, async () => {
       const upload = owned(req);
-      if (upload.state === 'complete') throw httpError(409, '保存済みです。コンテンツ一覧から削除してください。');
+      if (upload.state === 'complete') throw httpError(409, '保存済みです。削除を確認してコンテンツ一覧から削除してください。');
       db.prepare("UPDATE upload_sessions SET state='cancelled' WHERE id=?").run(upload.id);
-      if (!jobs.has(upload.id)) await discard(upload.id);
+      context.jobPool.cancel(upload.id);
+      if(!jobs.has(upload.id))await discard(upload.id);
     });
     return reply.code(204).send();
   });
   return {
+    async cancelForDeletion(ids){
+      for(const id of ids){db.prepare("UPDATE upload_sessions SET state='cancelled' WHERE id=? AND state!='complete'").run(id);context.jobPool.cancel(id);}
+      await Promise.allSettled(ids.map(id=>jobs.get(id)).filter(Boolean));
+      for(const id of ids){await discard(id);db.prepare('DELETE FROM upload_sessions WHERE id=?').run(id);}
+    },
     async adminRetry(id,adminId,sessionId){
       await exclusive(id,async()=>{
         const upload=get(id);

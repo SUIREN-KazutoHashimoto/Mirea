@@ -44,8 +44,8 @@ public final class MireaTransferPlugin extends Plugin {
             try(Cursor c=getContext().getContentResolver().query(DocumentsContract.buildDocumentUriUsingTree(tree,root),new String[]{DocumentsContract.Document.COLUMN_DISPLAY_NAME},null,null,null)){if(c!=null&&c.moveToFirst())name=c.getString(0);}
             folderName(name);JSArray files=new JSArray();Map<String,Uri> pending=new HashMap<>();Set<String> seen=new HashSet<>();int[] count={0};long deadline=android.os.SystemClock.elapsedRealtime()+30000;
             readFolder(tree,root,name,1,files,pending,seen,count,deadline);
-            if(selected.size()+pending.size()>3000)throw new IllegalArgumentException();selected.putAll(pending);call.resolve(new JSObject().put("files",files));
-        }catch(Exception e){call.reject("フォルダを取得できません。端末内の100ファイル・16階層以内のフォルダを選んでください。");}});
+            if(selected.size()+pending.size()>10000)throw new IllegalArgumentException();selected.putAll(pending);call.resolve(new JSObject().put("files",files));
+        }catch(Exception e){call.reject("フォルダを取得できません。端末内の10000ファイル・16階層以内のフォルダを選んでください。");}});
     }
     private static void folderName(String name){if(name==null||name.trim().isEmpty()||name.length()>200||name.equals(".")||name.equals("..")||name.chars().anyMatch(c->c<32||c==127||c=='/'||c=='\\'))throw new IllegalArgumentException();}
     private void readFolder(Uri tree,String document,String path,int depth,JSArray files,Map<String,Uri> pending,Set<String> seen,int[] count,long deadline)throws Exception{
@@ -55,7 +55,7 @@ public final class MireaTransferPlugin extends Plugin {
             if(c==null)throw new IllegalArgumentException();while(c.moveToNext()){
                 if(android.os.SystemClock.elapsedRealtime()>deadline)throw new IllegalArgumentException();String id=c.getString(0),name=c.getString(1),mime=c.getString(2);folderName(name);
                 if(DocumentsContract.Document.MIME_TYPE_DIR.equals(mime))readFolder(tree,id,path+"/"+name,depth+1,files,pending,seen,count,deadline);
-                else{long size=c.isNull(3)?-1:c.getLong(3);if(size<=0||files.length()>=100)throw new IllegalArgumentException();String key=UUID.randomUUID().toString();Uri uri=DocumentsContract.buildDocumentUriUsingTree(tree,id);pending.put(key,uri);
+                else{long size=c.isNull(3)?-1:c.getLong(3);if(size<=0||files.length()>=10000)throw new IllegalArgumentException();String key=UUID.randomUUID().toString();Uri uri=DocumentsContract.buildDocumentUriUsingTree(tree,id);pending.put(key,uri);
                     files.put(new JSObject().put("nativeId",key).put("name",name).put("size",size).put("type",mime==null?"application/octet-stream":mime).put("lastModified",c.isNull(4)?0:c.getLong(4)).put("relativePath",path+"/"+name));}
             }
         }
@@ -64,7 +64,7 @@ public final class MireaTransferPlugin extends Plugin {
         if(call==null)return;if(result.getResultCode()!=Activity.RESULT_OK||result.getData()==null){call.resolve(new JSObject().put("files",new JSArray()));return;}
         try{
             Intent data=result.getData();List<Uri> uris=new ArrayList<>();if(data.getClipData()!=null){for(int n=0;n<data.getClipData().getItemCount();n++)uris.add(data.getClipData().getItemAt(n).getUri());}else if(data.getData()!=null)uris.add(data.getData());
-            if(uris.size()>1000||selected.size()+uris.size()>3000)throw new IllegalArgumentException();JSArray files=new JSArray();
+            if(uris.size()>10000||selected.size()+uris.size()>10000)throw new IllegalArgumentException();JSArray files=new JSArray();
             for(Uri uri:uris){
                 if(!"content".equals(uri.getScheme()))throw new IllegalArgumentException();String name=null;long size=-1;
                 try(Cursor cursor=getContext().getContentResolver().query(uri,new String[]{OpenableColumns.DISPLAY_NAME,OpenableColumns.SIZE},null,null,null)){if(cursor!=null&&cursor.moveToFirst()){name=cursor.getString(0);size=cursor.getLong(1);}}
@@ -93,10 +93,10 @@ public final class MireaTransferPlugin extends Plugin {
         }catch(Exception e){if(offered!=null)TransferService.discard(offered);if(api!=null)api.close();call.reject("転送を開始できません。アプリを開いて再試行してください。");}
     }
     @PluginMethod public void status(PluginCall call){try{PlaybackApi api=api(call);try{call.resolve(new JSObject().put("jobs",new JSArray(TransferService.status(api.partition).toString())));}finally{api.close();}}catch(Exception e){call.reject("転送状況を確認できません。");}}
-    @PluginMethod public void cancel(PluginCall call){try{PlaybackApi api=api(call);try{String id=call.getString("id");if(id!=null&&!PlaybackApi.uuid(id))throw new IllegalArgumentException();TransferService.cancel(id,api.partition);call.resolve();}finally{api.close();}}catch(Exception e){call.reject("転送を停止できません。");}}
+    @PluginMethod public void cancel(PluginCall call){try{PlaybackApi api=api(call);try{String id=call.getString("id");if(id!=null&&!PlaybackApi.uuid(id))throw new IllegalArgumentException();TransferService.cancel(id,api.partition,call.getBoolean("cleanup",true));call.resolve();}finally{api.close();}}catch(Exception e){call.reject("転送を停止できません。");}}
     @PluginMethod public void invalidate(PluginCall call){
         String partition=call.getString("partition","");if(!partition.matches("[0-9a-f]{64}")){call.reject("Invalid partition");return;}
-        TransferService.cancel(null,partition);io.submit(()->{new TransferLease(getContext()).clear(partition);call.resolve();});
+        TransferService.cancel(null,partition,false);io.submit(()->{new TransferLease(getContext()).clear(partition);call.resolve();});
     }
     @PluginMethod public void completed(PluginCall call){io.submit(()->{PlaybackApi api=null;try{api=api(call);call.resolve(new JSObject().put("manifests",new JSArray(new TransferCache(getContext()).completed(api.partition).toString())));}catch(Exception e){call.reject("保存内容を確認できません。");}finally{if(api!=null)api.close();}});}
     @PluginMethod public void readChunk(PluginCall call){io.submit(()->{PlaybackApi api=null;try{

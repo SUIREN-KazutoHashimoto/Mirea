@@ -10,7 +10,7 @@ test('real v11 MIME migration keeps all child rows, video metadata, keys and ser
   const folder=await mkdtemp(join(tmpdir(),'mirea-audio-migration-')),filename=join(folder,'migration.sqlite');let db=openDatabase(filename);
   try{
     db.exec(`INSERT INTO users VALUES('u','migration@example.test','Existing','hash',1);
-      INSERT INTO shelves VALUES('s','Shared','',1),('other','Other','',1);
+      INSERT INTO shelves(id,name,description,created_at) VALUES('s','Shared','',1),('other','Other','',1);
       INSERT INTO memberships VALUES('s','u','owner');
       INSERT INTO sessions VALUES('session','hash','u',9999999999999);
       INSERT INTO items VALUES('v','s','Video','old.mp4','video/mp4',200,'u',1,1,1),('b','s','Book','old.png','application/vnd.mirea.image-book',100,'u',2,1,1);
@@ -35,7 +35,7 @@ test('real v11 MIME migration keeps all child rows, video metadata, keys and ser
     const tables=db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT IN ('schema_version','sqlite_sequence') ORDER BY name").all().map(row=>row.name);
     const before=tables.map(table=>db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());db.close();db=openDatabase(filename);
     tables.forEach((table,i)=>assert.deepEqual(db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),before[i],table));
-    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,18);
+    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,19);
     assert.throws(()=>db.prepare("UPDATE items SET shelf_id='other' WHERE id='v'").run(),/before moving/);
     db.exec(`INSERT INTO items VALUES('a','s','Audio','music.m4a','audio/mp4',100,'u',3,1,1);INSERT INTO audio_assets VALUES('a','{}',0);DELETE FROM items WHERE id='a';`);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM audio_assets').get().n,0);assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
@@ -59,7 +59,7 @@ test('version 1 migration preserves accounts, shelves, items, sessions and ticke
       CREATE TABLE items(id TEXT PRIMARY KEY, shelf_id TEXT REFERENCES shelves(id) ON DELETE CASCADE, title TEXT NOT NULL, filename TEXT NOT NULL, mime_type TEXT CHECK(mime_type IN ('application/pdf','video/mp4','video/webm')), size INTEGER NOT NULL, uploaded_by TEXT REFERENCES users(id), created_at INTEGER NOT NULL);
       CREATE TABLE playback_tickets(token_hash TEXT PRIMARY KEY, session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE, item_id TEXT REFERENCES items(id) ON DELETE CASCADE, expires_at INTEGER NOT NULL);
       INSERT INTO users VALUES('user','migration@example.com','Existing user','hash',1);
-      INSERT INTO shelves VALUES('shelf','Existing shelf','',1);
+      INSERT INTO shelves(id,name,description,created_at) VALUES('shelf','Existing shelf','',1);
       INSERT INTO memberships VALUES('shelf','user','owner');
       INSERT INTO items VALUES('pdf','shelf','Existing PDF','book.pdf','application/pdf',100,'user',1);
       INSERT INTO sessions VALUES('session','session-hash','user',9999999999999);
@@ -67,7 +67,7 @@ test('version 1 migration preserves accounts, shelves, items, sessions and ticke
     `);
     db.close();
     db = openDatabase(filename);
-    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,18);
+    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,19);
     assert.equal(db.prepare('SELECT name FROM users').get().name, 'Existing user');
     assert.equal(db.prepare('SELECT title FROM items').get().title, 'Existing PDF');
     assert.equal(db.prepare('SELECT thumbnail_ready FROM items').get().thumbnail_ready, 0);
@@ -100,7 +100,7 @@ test('version 5 upgrade adds resume state without deleting detailed analytics',a
       INSERT INTO analytics_events(event_id,view_id,seq,event_type,client_at,received_at,elapsed_ms,interval_ms,visible_ms,active_ms,watch_ms,payload_json,payload_hash)
       VALUES('event','view',1,'open',1,1,0,0,0,0,0,'{}','hash');`);
     db.close();db=openDatabase(filename);
-    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,18);
+    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,19);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM asset_progress').get().n,0);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM analytics_events').get().n,1);
     assert.equal(db.prepare('SELECT asset_title FROM analytics_views').get().asset_title,'Preserved');
@@ -113,7 +113,7 @@ test('version 7 upgrade adds empty series without altering existing assets, prog
   let db=openDatabase(filename);
   try{
     db.exec(`INSERT INTO users VALUES('user','series-migration@example.test','Existing','hash',1);
-      INSERT INTO shelves VALUES('shelf','Existing shelf','',1);
+      INSERT INTO shelves(id,name,description,created_at) VALUES('shelf','Existing shelf','',1);
       INSERT INTO memberships VALUES('shelf','user','owner');
       INSERT INTO items(id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at) VALUES('item','shelf','Keep PDF','book.pdf','application/pdf',100,'user',1);
       INSERT INTO asset_progress(user_id,asset_id,revision,update_id,payload_hash,page_number,updated_at) VALUES('user','item',3,'update','hash',1,42);
@@ -129,7 +129,7 @@ test('version 7 upgrade adds empty series without altering existing assets, prog
     const tables=['users','memberships','items','asset_progress','encrypted_downloads','analytics_views','analytics_events'];
     const before=tables.map(table=>db.prepare(`SELECT * FROM ${table}`).all());
     db.close();db=openDatabase(filename);
-    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,18);
+    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,19);
     tables.forEach((table,index)=>assert.deepEqual(db.prepare(`SELECT * FROM ${table}`).all(),before[index],table));
     assert.equal(db.prepare('SELECT COUNT(*) n FROM series').get().n,0);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM series_items').get().n,0);
@@ -142,7 +142,7 @@ for (const oldVersion of [8,9]) test(`real version ${oldVersion} item-table rebu
   let db=openDatabase(filename);
   try{
     db.exec(`INSERT INTO users VALUES('u','u@example.test','Uploader','hash',1),('v','v@example.test','Viewer','hash',1);
-      INSERT INTO shelves VALUES('s','Shared','',1),('other','Other','',1);
+      INSERT INTO shelves(id,name,description,created_at) VALUES('s','Shared','',1),('other','Other','',1);
       INSERT INTO memberships VALUES('s','v','owner'),('s','u','editor');
       INSERT INTO sessions VALUES('session','token','v',9999999999999);
       INSERT INTO items VALUES('i','s','Images','p.png','application/vnd.mirea.image-book',100,'u',1,1,1);
@@ -166,7 +166,7 @@ for (const oldVersion of [8,9]) test(`real version ${oldVersion} item-table rebu
     const before=tables.map(table=>db.prepare(`SELECT * FROM ${table}`).all());
     db.close();db=openDatabase(filename);
     tables.forEach((table,index)=>assert.deepEqual(db.prepare(`SELECT * FROM ${table}`).all(),before[index],table));
-    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,18);
+    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,19);
     db.prepare("INSERT INTO items VALUES('epub','s','EPUB','book.epub','application/epub+zip',100,NULL,1,2,1)").run();
     assert.throws(()=>db.prepare("UPDATE items SET shelf_id='other' WHERE id='i'").run(),/before moving/);
     assert.throws(()=>db.prepare("UPDATE series SET shelf_id='other' WHERE id='series'").run(),/before moving/);
@@ -182,7 +182,7 @@ test('v10 to current preserves existing download IDs/manifests and upload retent
   const folder=await mkdtemp(join(tmpdir(),'mirea-video-migration-')),filename=join(folder,'migration.sqlite');let db=openDatabase(filename);
   try{
     db.exec(`INSERT INTO users VALUES('u','video-migration@example.test','User','hash',1);
-      INSERT INTO shelves VALUES('s','Shelf','',1);
+      INSERT INTO shelves(id,name,description,created_at) VALUES('s','Shelf','',1);
       INSERT INTO memberships VALUES('s','u','owner');
       INSERT INTO items VALUES('i','s','Legacy video','legacy.webm','video/webm',42,'u',1,1,1);
       DROP TABLE video_assets;
@@ -195,7 +195,7 @@ test('v10 to current preserves existing download IDs/manifests and upload retent
       INSERT INTO upload_sessions VALUES('upload','s','u','session','Old upload','[]',8388608,'uploading',NULL,1,9999999999999);
       UPDATE schema_version SET version=10;`);
     const items=db.prepare('SELECT * FROM items').all(),downloads=db.prepare('SELECT * FROM encrypted_downloads').all();db.close();db=openDatabase(filename);
-    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,18);
+    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,19);
     assert.deepEqual(db.prepare('SELECT * FROM items').all(),items);assert.deepEqual(db.prepare('SELECT * FROM encrypted_downloads').all(),downloads);
     assert.equal(db.prepare('SELECT retain_original FROM upload_sessions').get().retain_original,0);
     db.exec(`INSERT INTO encrypted_downloads VALUES('another-quality','u','i','{}',2)`);

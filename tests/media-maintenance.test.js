@@ -94,7 +94,7 @@ test('whole-asset regeneration includes assets with no history, drains more than
   const deleted=randomUUID();c.db.prepare("INSERT INTO admin_jobs(id,kind,state,created_at,updated_at) VALUES(?,'thumbnail','complete',0,0)").run(deleted);
   const r=await c.req('POST','/admin/assets/regenerate-all',c.admin,{kind:'thumbnail',acknowledgeCost:true});assert.equal(r.statusCode,202,r.body);assert.equal(r.json().accepted,25);
   const running=(await c.req('GET','/admin/jobs',c.admin)).json();assert.equal(running.currentCount,25);assert(running.currentJobs.every(j=>['queued','running'].includes(j.state)));assert(running.history.jobs.some(j=>j.id===deleted));
-  for(const job of c.db.prepare('SELECT id FROM admin_jobs WHERE asset_id IS NOT NULL').all())assert.equal((await c.wait(job.id)).state,'complete');assert.equal(maximum,1);
+  for(const job of c.db.prepare('SELECT id FROM admin_jobs WHERE asset_id IS NOT NULL').all())assert.equal((await c.wait(job.id)).state,'complete');assert.equal(maximum,5);
   const finished=(await c.req('GET','/admin/jobs',c.admin)).json();assert.equal(finished.currentCount,0);assert.equal(finished.currentJobs.length,0);assert.equal(finished.history.jobs.length,26);
   const videos=await c.req('POST','/admin/assets/regenerate-all',c.admin,{kind:'transcode',acknowledgeCost:true});assert.equal(videos.json().accepted,0);
 });

@@ -79,7 +79,7 @@ export function openDatabase(filename) {
         UPDATE schema_version SET version = 2;
       `));
     } finally { db.exec('PRAGMA foreign_keys = ON'); }
-  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
+  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
   if (version < 10) {
     // v10 adds EPUB while retaining v9's nullable uploader attribution.
     // Account deletion removes attribution, not another member's shared assets.
@@ -396,6 +396,21 @@ export function openDatabase(filename) {
       PRIMARY KEY(playlist_id,asset_id),UNIQUE(playlist_id,position));
     UPDATE schema_version SET version=18;
   `));
+  transaction(db,()=>{
+    if(!db.prepare('PRAGMA table_info(shelves)').all().some(c=>c.name==='private'))db.exec('ALTER TABLE shelves ADD COLUMN private INTEGER NOT NULL DEFAULT 0 CHECK(private IN (0,1))');
+    db.exec(`CREATE TABLE IF NOT EXISTS server_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS history_hidden(user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,asset_id TEXT NOT NULL,hidden_at INTEGER NOT NULL,PRIMARY KEY(user_id,asset_id));
+      CREATE TABLE IF NOT EXISTS bootstrap_accounts(user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,initial_hash TEXT NOT NULL);
+      UPDATE schema_version SET version=19;`);
+    // Preserve existing duplicate paths without renaming or merging the owner's data.
+    // Triggers reject NEW collisions, while allowing unrelated edits to old rows.
+    db.exec(`CREATE TRIGGER IF NOT EXISTS series_unique_path_insert BEFORE INSERT ON series
+      WHEN EXISTS(SELECT 1 FROM series WHERE shelf_id=NEW.shelf_id AND parent_id IS NEW.parent_id AND title=NEW.title)
+      BEGIN SELECT RAISE(ABORT,'Duplicate series path');END;
+      CREATE TRIGGER IF NOT EXISTS series_unique_path_update BEFORE UPDATE OF title,parent_id,shelf_id ON series
+      WHEN (NEW.title!=OLD.title OR NEW.parent_id IS NOT OLD.parent_id OR NEW.shelf_id!=OLD.shelf_id) AND EXISTS(SELECT 1 FROM series WHERE id!=NEW.id AND shelf_id=NEW.shelf_id AND parent_id IS NEW.parent_id AND title=NEW.title)
+      BEGIN SELECT RAISE(ABORT,'Duplicate series path');END;`);
+  });
   if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Database foreign key validation failed');
   return db;
 }

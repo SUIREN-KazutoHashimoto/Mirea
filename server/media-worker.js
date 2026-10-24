@@ -27,7 +27,7 @@ try {
     parentPort.postMessage({ width: swap ? metadata.height : metadata.width, height: swap ? metadata.width : metadata.height, size: input.byteLength });
   } else if (mode === 'image-thumbnail') {
     await sharp(await readFile(source), imageOptions).rotate().flatten({ background: '#ffffff' })
-      .resize({ width: 480, height: 720, fit: 'inside', withoutEnlargement: true })
+      .resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true })
       .jpeg({ quality: 82 }).toFile(destination);
     parentPort.postMessage({ pageCount: 1 });
   } else if (mode === 'pdf-thumbnail') {
@@ -50,7 +50,7 @@ try {
     try {
       const page = await document.getPage(1);
       const original = page.getViewport({ scale: 1 });
-      const viewport = page.getViewport({ scale: Math.min(480 / original.width, 720 / original.height, 1) });
+      const viewport = page.getViewport({ scale: Math.min(1024 / original.width, 1024 / original.height, 1) });
       const canvas = createCanvas(Math.max(1, Math.ceil(viewport.width)), Math.max(1, Math.ceil(viewport.height)));
       await page.render({ canvasContext: canvas.getContext('2d'), viewport, background: '#ffffff' }).promise;
       await sharp(canvas.toBuffer('image/png')).jpeg({ quality: 82 }).toFile(destination);

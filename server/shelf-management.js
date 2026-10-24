@@ -3,10 +3,11 @@ import {transaction} from './database.js';
 export function registerShelfManagement(app,{db,authenticate,membership,maintenance,removeFiles,cleanupUploads,adminAccess,rateLimit}){
   const auth={onRequest:async req=>{authenticate(req);membership(req.params.id,req.user.id,['owner']);},config:{rateLimit:rateLimit===false?false:{max:10,timeWindow:'1 minute'}}};
   const string=(maxLength)=>({type:'string',minLength:1,maxLength});
-  app.patch('/api/v1/shelves/:id',{...auth,schema:{body:{type:'object',additionalProperties:false,required:['name'],properties:{name:string(100)}}}},async req=>{
+  app.patch('/api/v1/shelves/:id',{...auth,schema:{body:{type:'object',additionalProperties:false,required:['name'],properties:{name:string(100),private:{type:'boolean'}}}}},async req=>{
     const name=req.body.name.trim();if(!name)throw httpError(400,'本棚の名前を入力してください。');
     membership(req.params.id,req.user.id,['owner']);db.prepare('UPDATE shelves SET name=? WHERE id=?').run(name,req.params.id);
-    return {id:req.params.id,name};
+    if(req.body.private!==undefined)db.prepare('UPDATE shelves SET private=? WHERE id=?').run(req.body.private?1:0,req.params.id);
+    return {id:req.params.id,name,private:req.body.private};
   });
   app.delete('/api/v1/shelves/:id',{...auth,schema:{body:{type:'object',additionalProperties:false,required:['currentPassword','confirmName','acknowledgeDelete'],properties:{currentPassword:string(128),confirmName:string(100),acknowledgeDelete:{const:true}}}}},async(req,reply)=>{
     const user=db.prepare('SELECT password_hash FROM users WHERE id=?').get(req.user.id);

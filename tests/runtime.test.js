@@ -133,7 +133,7 @@ test('direct Node entry serves built web, uploads/streams a PDF and retains acco
   assert.equal(status.state, 'complete', JSON.stringify(status));
   const thumb = await request(first.url, status.item.thumbnailUrl, { headers });
   assert.equal(thumb.status, 200);
-  assert.equal(thumb.headers.get('content-type'), 'image/jpeg');
+  assert.equal(thumb.headers.get('content-type'), 'image/webp');
   await thumb.arrayBuffer();
   await stop(first.child);
   const second = await startNative(t, directory, dataDir);

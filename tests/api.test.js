@@ -92,8 +92,8 @@ test('PDF upload, authorized byte serving, scoped tickets and immediate membersh
   assert.equal(content.headers['cache-control'], 'private, no-store, no-transform');
   const cover = await app.inject({ url: `${path}/thumbnail`, headers: bearer(viewer) });
   assert.equal(cover.statusCode, 200, cover.body);
-  assert.equal(cover.headers['content-type'], 'image/jpeg');
-  assert.equal((await sharp(cover.rawPayload).metadata()).format, 'jpeg');
+  assert.equal(cover.headers['content-type'], 'image/webp');
+  assert.equal((await sharp(cover.rawPayload).metadata()).format, 'webp');
   assert.equal((await app.inject(`${path}/thumbnail`)).statusCode, 401);
   assert.equal((await app.inject({ url: `${path}/thumbnail`, headers: bearer(outsider) })).statusCode, 404);
   assert.ok(content.headers['content-disposition'].includes('UTF-8'));
@@ -127,7 +127,7 @@ test('editor permissions, video signatures, session-ticket revocation and file d
   const item = response.json().item;
   const cover = await app.inject({ url: `/api/v1/items/${item.id}/thumbnail`, headers: bearer(editor) });
   assert.equal(cover.statusCode, 200);
-  assert.equal((await sharp(cover.rawPayload).metadata()).format, 'jpeg');
+  assert.equal((await sharp(cover.rawPayload).metadata()).format, 'webp');
   const ticket = (await app.inject({ method: 'POST', url: `/api/v1/items/${item.id}/playback-ticket`, headers: bearer(editor) })).json();
   assert.equal((await app.inject(ticket.url)).headers['content-type'], 'video/mp4');
   await app.inject({ method: 'POST', url: '/api/v1/auth/logout', headers: bearer(editor) });

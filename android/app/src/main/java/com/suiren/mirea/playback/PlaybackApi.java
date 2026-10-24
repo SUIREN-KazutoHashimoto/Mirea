@@ -23,6 +23,7 @@ public final class PlaybackApi {
         byte[] digest=MessageDigest.getInstance("SHA-256").digest((this.origin+"|"+userId).getBytes(StandardCharsets.UTF_8));
         StringBuilder hex=new StringBuilder();for(byte b:digest)hex.append(String.format("%02x",b));partition=hex.toString();
     }
+    public PlaybackApi fork()throws Exception{if(closed)throw new IOException("Closed context");return new PlaybackApi(origin,token,userId);}
     public static boolean uuid(String value){return value!=null&&value.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");}
     public HttpURLConnection connection(String path,String method)throws IOException{
         if(closed||!safePath(path))throw new IOException("Playback context closed or invalid path");

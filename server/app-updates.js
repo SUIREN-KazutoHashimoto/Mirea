@@ -1,3 +1,4 @@
+import {createReleaseUpdate} from './remote-app-update.js';
 import { createHash } from 'node:crypto';
 import { open, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -5,10 +6,12 @@ import { parseRange, httpError } from './security.js';
 import { verifyUpdateEnvelope } from './update-manifest.js';
 
 // This directory contains PUBLIC distribution files, never signing keys or credentials.
-export function registerAppUpdates(app, { directory, publicKey } = {}) {
+export function registerAppUpdates(app, { directory, publicKey, releaseVersion, fetcher } = {}) {
   const root = directory ? resolve(directory) : null;
+  const release=!root&&releaseVersion?createReleaseUpdate(releaseVersion,{fetcher,publicKey}):null;
   let trustedKey, verifiedFingerprint, verification;
   async function bundle() {
+    if(!root&&release){try{return {...await release(),file:{close:async()=>{}},remote:true};}catch{throw httpError(503,'署名付きのAPK更新情報を取得できません。GitHubへの接続と更新情報の期限を確認してください。');}}
     if (!root) throw httpError(404, 'アプリの更新はまだ公開されていません。');
     let file;
     try {
@@ -61,10 +64,11 @@ export function registerAppUpdates(app, { directory, publicKey } = {}) {
   }});
   const apkHandler=async (req, reply) => {
     if (req.params.code!==undefined&&!/^[1-9]\d{0,9}$/.test(req.params.code)) throw httpError(404, '更新ファイルが見つかりません。');
-    const { metadata, file } = await bundle();
+    const { metadata, file, remote } = await bundle();
     let handedOff = false;
     try {
       if (req.params.code!==undefined&&String(metadata.versionCode) !== req.params.code) throw httpError(404, '更新ファイルが見つかりません。');
+      if(remote)return reply.code(302).header('Location',metadata.apkUrl).send();
       let range;
       try { range = parseRange(req.headers.range, metadata.size); }
       catch (error) { reply.header('Content-Range', `bytes */${metadata.size}`); throw error; }

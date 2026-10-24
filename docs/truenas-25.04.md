@@ -4,8 +4,8 @@
 
 ## 配布物と推奨構成
 
-- イメージ: `ghcr.io/suiren-kazutohashimoto/mirea:0.15.3beta`（版番号固定の例、linux/amd64）。更新追従には `:beta`、初回正式版の公開後は `:stable` も使用できます。[チャネルの公開条件と運用](container-channels.md)を確認してください。`latest`は使いません。Landlock ABI 3以上が有効なホストが必須です。
-- [リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.15.3beta)の`mirea-0.15.3beta-container.json`でコミット・レジストリdigestを確認します。固定運用なら`image`をそこに記載した`ghcr.io/…@sha256:…`へ固定できます。
+- イメージ: `ghcr.io/suiren-kazutohashimoto/mirea:0.16.0beta`（版番号固定の例、linux/amd64）。更新追従には `:beta`、初回正式版の公開後は `:stable` も使用できます。[チャネルの公開条件と運用](container-channels.md)を確認してください。`latest`は使いません。Landlock ABI 3以上が有効なホストが必須です。
+- [リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.16.0beta)の`mirea-0.16.0beta-container.json`でコミット・レジストリdigestを確認します。固定運用なら`image`をそこに記載した`ghcr.io/…@sha256:…`へ固定できます。
 - DockerがGHCRへ接続できない環境用に、同じ検証済みイメージの`container-linux-amd64.tar.gz`とSHA-256も配布します。導入操作はTrueNASのサポート範囲に従ってください。
 - 推奨は [Compose YAML](../deploy/truenas/compose.yaml) を使うCustom App。NASのローカルSSDデータセットを`/data`、大容量側を`/media`へそれぞれマウントし、HTTPSは別のリバースプロキシで終端します。
 
@@ -23,7 +23,7 @@
 | ログ | json-file、10 MiB × 3 |
 | セキュリティ | 読取専用root FS、cap_drop ALL、no-new-privileges、特権・Host Networkなし |
 
-資源値はMireaの運用開始用の目安で、NAS上での実測保証ではありません。変換はソフトウェアH.264＋AACです。GPU割当だけでは高速化しません。稼働中ジョブ・CPU・RAM・空き容量を見て調整します。
+資源値はMireaの運用開始用の目安で、NAS上での実測保証ではありません。変換はソフトウェアH.264＋AACです。0.16から後処理は既定5並列です。資源が少ないNASでは管理者メニューの「転送・後処理設定」で1〜2件へ下げてください。GPU割当だけでは高速化しません。稼働中ジョブ・CPU・RAM・空き容量を見て調整します。
 
 ## 1. 保存先を先に作る
 
@@ -44,7 +44,7 @@
 - 同じNASホスト上のプロキシが127.0.0.1:13000へ接続する構成が初期値です。**別コンテナ内の127.0.0.1はNAS自身ではありません**。別コンテナなら明示した私設ネットワークで接続するか、NASのLANアドレスへ限定bindし、プロキシだけが到達できるファイアウォールを用意します。
 - プロキシが別PCの場合もNASの特定LANアドレスへ変更し、13000番へ直接クライアントを接続させません。`0.0.0.0`による不用意な全面公開やルーターのポート開放は不要です。
 - `CORS_ORIGINS=https://localhost`はAndroid同梱画面用です。通常のWebは同一オリジンです。任意オリジン・`*`は追加しません。
-- 新規登録は初回だけ`ALLOW_REGISTRATION=true`。LAN境界の内側で自分のアカウントを作成したら`ALLOW_REGISTRATION=false`に変更して再起動します。初期管理者パスワードはありません。
+- 新規登録は初回だけ`ALLOW_REGISTRATION=true`。LAN境界の内側で自分のアカウントを作成したら`ALLOW_REGISTRATION=false`に変更して再起動します。新規の空環境だけ初期管理者 `admin@example.com` / `ChangeMe` を作成します。外部公開前にメールアドレスとパスワードの両方を変更してください。既存環境には作成しません。
 - 管理者はログインした本人の`/api/v1/auth/me`のユーザーUUIDを確認し、`SERVER_ADMIN_USER_IDS`へ設定します（メールアドレスではありません）。既存データ移行時は現在の管理権限を確認して引き継ぎます。
 
 イメージ内にAPK署名秘密鍵・証明書・利用者データはありません。Android APKはリリースから取得できます。既存の署名済み更新バンドルを別途配信する場合は公開APK・署名済みmanifest・公開鍵だけを読み取り専用で配置し、接続先URLに合ったmanifestをオフライン署名者が発行してください。秘密署名鍵をNASのWebサービスへ持たせません。
@@ -55,7 +55,7 @@
 
 | 25.04 GUI項目 | 設定 |
 | --- | --- |
-| Image Repository / Tag | `ghcr.io/suiren-kazutohashimoto/mirea` / 固定運用は`0.15.3beta`、追従運用は`beta`または正式版公開後の`stable` |
+| Image Repository / Tag | `ghcr.io/suiren-kazutohashimoto/mirea` / 固定運用は`0.16.0beta`、追従運用は`beta`または正式版公開後の`stable` |
 | Entrypoint / Command | 上書きしない |
 | Custom User | 有効、User ID 1000 / Group ID 1000 |
 | Privileged / Host Network | 無効 / 無効 |
@@ -117,7 +117,7 @@ Custom Appでは、App Versionがcustom、バージョンが1.0.0、SourceがN/A
 4. 上記の導入後確認を実施。Mireaの管理画面からDocker更新は実行しません。Dockerソケット・NAS管理資格情報・特権をWebへ与えないでください。
 5. 不調時は停止して、**旧イメージ＋更新前データ／設定の対応した組**を復元。新DBに旧サーバーを当てるダウングレードや、旧新サーバーから同じデータを同時に開く運用はしません。
 
-0.15.1betaはDB v17、0.15.3betaはDB v18です。移行に備えて上記を毎回行います。App削除時もデータセットを削除しないでください。`docker compose down -v`は禁止です。
+0.15.1betaはDB v17、0.16.0betaはDB v19です。移行に備えて上記を毎回行います。App削除時もデータセットを削除しないでください。`docker compose down -v`は禁止です。
 
 WinVAI01から移行する場合も最初に旧サービスを停止して全データをコピーします。同じHTTPSオリジンを維持できない場合、ブラウザー／アプリの端末内保存はサーバー別管理のため再接続・再取得が必要になる場合があります。移行検証が済むまで旧データを保持します。
 

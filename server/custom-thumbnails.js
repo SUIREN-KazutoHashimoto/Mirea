@@ -27,7 +27,7 @@ export async function registerCustomThumbnails(app,{db,thumbnailDir,media,authen
     return ids;
   }
   async function collect(images){
-    for(const id of new Set(images))if(!db.prepare('SELECT 1 FROM thumbnail_overrides WHERE image_id=?').get(id))await unlink(join(directory,id+'.jpg')).catch(error=>{if(error.code!=='ENOENT')app.log.error({err:error},'Unused custom cover requires cleanup');});
+    for(const id of new Set(images))if(!db.prepare('SELECT 1 FROM thumbnail_overrides WHERE image_id=?').get(id))await Promise.all(['.jpg','.webp'].map(ext=>unlink(join(directory,id+ext)).catch(error=>{if(error.code!=='ENOENT')throw error;}))).catch(error=>{if(error.code!=='ENOENT')app.log.error({err:error},'Unused custom cover requires cleanup');});
   }
   function change(req,imageId){
     authenticate(req);return transaction(db,()=>{
@@ -46,7 +46,7 @@ export async function registerCustomThumbnails(app,{db,thumbnailDir,media,authen
     try{
       await mkdir(directory,{recursive:true,mode:0o700});await writeFile(source,bytes,{flag:'wx',mode:0o600});await media.validateImage(source);await media.thumbnail(source,req.body.image.mime,temp);await rename(temp,final);
       const result=change(req,id);committed=true;await collect(result.old);return {updated:result.ids.length};
-    }finally{await Promise.allSettled([unlink(source),unlink(temp),...(!committed?[unlink(final)]:[])]);}
+    }finally{await Promise.allSettled([unlink(temp),...(!committed?[unlink(source),unlink(final)]:[])]);}
   });
   app.delete('/api/v1/thumbnails/custom',{...auth,schema:schema(false)},async req=>{
     const result=change(req,null);await collect(result.old);return {updated:result.ids.length};

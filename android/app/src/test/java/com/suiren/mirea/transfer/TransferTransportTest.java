@@ -37,6 +37,26 @@ public class TransferTransportTest {
   Response opened=requests.stream().filter(r->r.getURL().getPath().endsWith("/open")).findFirst().get();assertEquals("application/json",opened.getRequestProperty("Content-Type"));assertEquals("{}",opened.request.toString(StandardCharsets.UTF_8));
   assertNotNull(leases.load(api,id));assertTrue(api.closed);
  }
+ @Test public void uploadReleasesNetworkWorkerAtAcceptanceAndMonitorsConversionSeparately()throws Exception{
+  Context c=RuntimeEnvironment.getApplication();PlaybackApi api=new PlaybackApi("https://mirea.example.test","c".repeat(43),UUID.randomUUID().toString());
+  File file=File.createTempFile("synthetic-upload-",".pdf",c.getCacheDir());try{
+   try(FileOutputStream out=new FileOutputStream(file)){out.write("synthetic fixture".getBytes(StandardCharsets.UTF_8));}
+   String id=UUID.randomUUID().toString(),shelf=UUID.randomUUID().toString();int[] reads={0};boolean[] complete={false};
+   JSONObject state=new JSONObject().put("id",id).put("state","uploading").put("chunkSize",64).put("files",new JSONArray().put(new JSONObject().put("receivedParts",new JSONArray()).put("receivedHashes",new JSONObject())));
+   TransferEngine.ConnectionFactory transport=(identity,path,method)->{try{
+    if(path.endsWith("/complete"))return new Response(path,method,202,new JSONObject().put("state","processing").toString().getBytes(StandardCharsets.UTF_8));
+    if(method.equals("PUT"))return new Response(path,method,204,new byte[0]);
+    if(path.equals("/api/v1/uploads/"+id)){reads[0]++;JSONObject status=new JSONObject().put("state",complete[0]?"complete":"processing");if(complete[0])status.put("item",new JSONObject().put("id",id));return new Response(path,method,200,status.toString().getBytes(StandardCharsets.UTF_8));}
+    return new Response(path,method,201,state.toString().getBytes(StandardCharsets.UTF_8));
+   }catch(Exception error){throw new IOException(error);}};
+   JSONObject source=new JSONObject().put("uri",file.toURI().toString()).put("name","fixture.pdf").put("type","application/pdf").put("size",file.length());
+   TransferEngine.Job job=new TransferEngine.Job("upload",api,new JSONObject().put("shelfId",shelf).put("title","Synthetic handoff").put("files",new JSONArray().put(source)));
+   TransferEngine engine=new TransferEngine(c,()->{},transport,new TransferLease(c));engine.run(job);
+   assertEquals("processing",job.state);assertFalse(api.closed);assertEquals(0,reads[0]);
+   engine.poll(job);assertEquals("processing",job.state);assertFalse(api.closed);complete[0]=true;engine.poll(job);
+   assertEquals("complete",job.state);assertTrue(api.closed);assertEquals(id,job.result.getJSONObject("item").getString("id"));
+  }finally{file.delete();}
+ }
  @Test public void redirectsNeverTransferBearerOrCreateAnAuthorizedDownload()throws Exception{
   Context c=RuntimeEnvironment.getApplication();PlaybackApi api=new PlaybackApi("https://mirea.example.test","b".repeat(43),UUID.randomUUID().toString());JSONObject m=manifest();int[] requests={0};
   TransferEngine.ConnectionFactory transport=(identity,path,method)->{requests[0]++;try{return new Response(path,method,302,new byte[0]);}catch(Exception e){throw new IOException(e);}};
