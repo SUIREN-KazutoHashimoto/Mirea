@@ -74,7 +74,7 @@ test('audio upload, Range streaming, resume, series, detailed logs and encrypted
   await assert.rejects(stat(join(c.dataDir,'originals',item.id)),{code:'ENOENT'});
   for(const dir of ['uploads/staging','uploads/transfers'])assert.ok(!(await readdir(join(c.dataDir,dir))).includes(item.id));
   const listing=await c.req('GET',`/shelves/${c.shelf}/items`,c.viewer);assert.equal(listing.statusCode,200,listing.body);assert.equal(listing.json().items[0].kind,'audio');
-  const thumbnail=await c.req('GET',`/items/${item.id}/thumbnail`,c.viewer);assert.equal(thumbnail.statusCode,200);assert.equal(thumbnail.headers['content-type'],'image/jpeg');
+  const thumbnail=await c.req('GET',`/items/${item.id}/thumbnail`,c.viewer);assert.equal(thumbnail.statusCode,200);assert.equal(thumbnail.headers['content-type'],'image/webp');
   // A missing thumbnail can be repaired without needing the deleted source.
   await unlink(join(c.dataDir,'thumbnails',item.id+'.jpg'));
   assert.equal((await c.req('GET',`/items/${item.id}/thumbnail`,c.owner)).statusCode,200);

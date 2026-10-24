@@ -1,3 +1,4 @@
+import {defaultCredentialWarning} from './bootstrap-admin.js';
 import {hashToken,httpError} from './security.js';
 const name='__Secure-mirea_session',path='/api/v1',tokenPattern=/^[A-Za-z0-9_-]{43}$/;
 export function readRememberToken(req){
@@ -19,7 +20,7 @@ export function registerRememberSessions(app,{db,authenticate,enabled,rateLimit}
     if(!row||!enabled(row.id)){if(token)clearRememberCookie(reply);return reply.code(401).send({error:'保持されたログインは無効です。ログインしてください。'});}
     // This never renews or creates a session. The original thirty-day deadline
     // and server-side revocation still apply. Other APIs remain Bearer-only.
-    return {user:{id:row.id,name:row.name,email:row.email},token,expiresAt:row.expires_at};
+    return {user:{id:row.id,name:row.name,email:row.email,...(defaultCredentialWarning(db,row.id)?{defaultCredentialWarning:true}:{})},token,expiresAt:row.expires_at};
   });
   app.post('/api/v1/auth/remember',{...limit,onRequest:async req=>authenticate(req)},async(req,reply)=>{
     const token=req.headers.authorization.slice(7);issueRememberCookie(reply,token,req.session.expires_at);return {remembered:true};

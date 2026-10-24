@@ -1,3 +1,4 @@
+import {defaultCredentialWarning} from './bootstrap-admin.js';
 import {verifyPassword, httpError} from './security.js';
 
 export function createAdminAccess(db, options, authenticate) {
@@ -8,7 +9,7 @@ export function createAdminAccess(db, options, authenticate) {
   const enabled = id => !db.prepare('SELECT disabled FROM user_access WHERE user_id=?').get(id)?.disabled;
   const isAdmin = id => role(id)==='admin' && enabled(id) && Boolean(db.prepare('SELECT 1 FROM users WHERE id=?').get(id));
   const lastAdmin = id => isAdmin(id) && ![...new Set([...configured(),...db.prepare("SELECT user_id FROM user_access WHERE server_role='admin' AND disabled=0").all().map(row=>row.user_id)])].some(other=>other!==id && isAdmin(other));
-  const requireAdmin = req => {authenticate(req);if(!isAdmin(req.user.id))throw httpError(403,'サーバー管理者のみ利用できます。');};
+  const requireAdmin = req => {authenticate(req);if(defaultCredentialWarning(db,req.user.id))throw httpError(403,'初期管理者のメールアドレスとパスワードを変更してください。');if(!isAdmin(req.user.id))throw httpError(403,'サーバー管理者のみ利用できます。');};
   const audit = (req,action,target=null,detail={}) => db.prepare('INSERT INTO admin_audit(actor_id,action,target_id,detail_json,created_at) VALUES(?,?,?,?,?)').run(req.user.id,action,target,JSON.stringify(detail),Date.now());
   async function reauthenticate(req) {
     requireAdmin(req);

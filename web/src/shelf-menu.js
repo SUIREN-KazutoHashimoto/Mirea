@@ -1,7 +1,8 @@
 export function showShelfMenu({shelf,dialog,api,esc,renameDone,deleteDone,share,statistics,isCurrent}){
   const owner=shelf.role==='owner';
-  const node=dialog(`${shelf.name} の本棚メニュー`,`<div class="modal-body shelf-menu"><p class="muted">${owner?'この本棚の所有者です。名前・共有・削除を管理できます。':'この本棚の名前変更・削除・共有設定は所有者だけが行えます。'}</p>${owner?'<button class="button secondary shelf-rename">本棚の名前を変更</button><button class="button secondary shelf-share">共有設定</button><button class="button secondary shelf-statistics">本棚の匿名集計</button><button class="button danger shelf-delete">本棚を削除</button>':''}</div>`);
+  const node=dialog(`${shelf.name} の本棚メニュー`,`<div class="modal-body shelf-menu"><p class="muted">${owner?'この本棚の所有者です。名前・共有・削除を管理できます。':'この本棚の名前変更・削除・共有設定は所有者だけが行えます。'}</p>${owner?'<button class="button secondary shelf-rename">本棚の名前を変更</button><label><input type="checkbox" class="shelf-private">プライベート本棚（すべてのコンテンツに表示しない）</label><button class="button secondary shelf-share">共有設定</button><button class="button secondary shelf-statistics">本棚の匿名集計</button><button class="button danger shelf-delete">本棚を削除</button>':''}</div>`);
   if(!owner)return;
+  const privateBox=node.querySelector('.shelf-private');privateBox.checked=Boolean(shelf.private);privateBox.onchange=async()=>{privateBox.disabled=true;try{await api('/shelves/'+shelf.id,{method:'PATCH',body:{name:shelf.name,private:privateBox.checked}});if(isCurrent())await renameDone();}catch(error){privateBox.checked=!privateBox.checked;privateBox.title=error.message;}finally{privateBox.disabled=false;}};
   node.querySelector('.shelf-share').onclick=()=>{node.close();if(isCurrent())share(shelf.id);};
   node.querySelector('.shelf-statistics').onclick=()=>{node.close();if(isCurrent())statistics(shelf.id);};
   node.querySelector('.shelf-rename').onclick=()=>{

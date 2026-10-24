@@ -16,9 +16,12 @@ public final class TransferEngine {
         public volatile boolean cancelled;public volatile HttpURLConnection connection;public volatile JSONObject result;
         public Job(String direction,PlaybackApi api,JSONObject data)throws Exception{this.direction=direction;this.api=api;this.data=data;title=data.optString("title","Mirea");if(title.length()>200)throw new IllegalArgumentException();}
         public boolean active(){return state.equals("queued")||state.equals("running")||state.equals("processing");}
-        public synchronized void cancel(){cancelled=true;api.close();HttpURLConnection c=connection;if(c!=null)c.disconnect();if(active())state="cancelled";}
+        public void cancel(){cancel(false);}
+        public synchronized void cancel(boolean cleanupSource){if(cancelled)return;cancelled=true;
+            String upload=data.optString("uploadId");if(cleanupSource&&direction.equals("upload")&&PlaybackApi.uuid(upload)&&!state.equals("complete"))try{PlaybackApi cleanup=api.fork();new Thread(()->{try{cleanup.json("/uploads/"+upload,"DELETE",null);}catch(Exception ignored){}finally{cleanup.close();}},"Mirea-cancel").start();}catch(Exception ignored){}
+            api.close();HttpURLConnection c=connection;if(c!=null)c.disconnect();if(active())state="cancelled";}
         public void check()throws IOException{if(cancelled||api.closed||Thread.currentThread().isInterrupted())throw new InterruptedIOException("Transfer stopped");}
-        public JSONObject snapshot()throws Exception{return new JSONObject().put("id",id).put("direction",direction).put("title",title).put("state",state).put("received",received).put("total",total).put("percent",total>0?Math.min(100,received*100/total):0).put("status",status).put("error",error).put("result",result==null?JSONObject.NULL:result);}
+        public JSONObject snapshot()throws Exception{return new JSONObject().put("id",id).put("direction",direction).put("title",title).put("state",state).put("received",received).put("total",total).put("percent",total>0?Math.min(100,received*100/total):0).put("status",status).put("error",error).put("uploadId",data.optString("uploadId")).put("result",result==null?JSONObject.NULL:result);}
     }
     interface ConnectionFactory{HttpURLConnection open(PlaybackApi api,String path,String method)throws IOException;}
     private final ConnectionFactory transport;private final TransferLease leases;
@@ -41,9 +44,9 @@ public final class TransferEngine {
     }
     private void pause(Job j,long ms)throws Exception{for(long n=0;n<ms;n+=100){j.check();Thread.sleep(Math.min(100,ms-n));}}
     public void run(Job j){
-        try{j.check();j.state="running";changed.run();if(j.direction.equals("upload"))upload(j);else download(j);j.check();j.state="complete";}
+        try{j.check();j.state="running";changed.run();if(j.direction.equals("upload"))upload(j);else download(j);j.check();if(!j.state.equals("processing"))j.state="complete";}
         catch(Exception e){if(!j.cancelled){j.state="failed";j.status=e instanceof HttpFailure?((HttpFailure)e).status:e instanceof PlaybackApi.Failure?((PlaybackApi.Failure)e).status:0;j.error=j.status==401?"ログインの有効期限が切れました。":j.status==403?"転送する権限がありません。":j.status==429?"サーバーの同時処理上限です。転送状況を確認して再試行してください。":"転送に失敗しました。ネットワーク・空き容量を確認して再開してください。";}}
-        finally{j.api.close();changed.run();}
+        finally{if(!j.state.equals("processing"))j.api.close();changed.run();}
     }
     private void download(Job j)throws Exception{
         String asset=j.data.getString("assetId");if(!PlaybackApi.uuid(asset))throw new IllegalArgumentException();
@@ -65,7 +68,7 @@ public final class TransferEngine {
         if(!grant.getJSONObject("manifest").getString("id").equals(id))throw new IOException("Lease mismatch");
         try{
             HttpURLConnection cover=transport.open(j.api,"/api/v1/items/"+asset+"/thumbnail","GET");j.connection=cover;
-            try{if(cover.getResponseCode()==200){byte[] image=PlaybackApi.read(cover.getInputStream(),262144);grant.put("cover",new JSONObject().put("mime","image/jpeg").put("bytes",Base64.getEncoder().encodeToString(image)));}}finally{cover.disconnect();j.connection=null;}
+            try{if(cover.getResponseCode()==200){byte[] image=PlaybackApi.read(cover.getInputStream(),2097152);grant.put("cover",new JSONObject().put("mime",cover.getContentType().split(";")[0]).put("bytes",Base64.getEncoder().encodeToString(image)));}}finally{cover.disconnect();j.connection=null;}
         }catch(IOException ignored){/* Missing artwork cannot invalidate encrypted content. */}
         synchronized(j){j.check();leases.save(j.api,grant);}grant.remove("cover");
         if(m.getString("kind").equals("audio")||m.getString("kind").equals("video")){
@@ -93,7 +96,7 @@ public final class TransferEngine {
         SharedPreferences prefs=context.getSharedPreferences("mirea-upload-resume-v1",Context.MODE_PRIVATE);String saved=prefs.getString(fingerprint,null);JSONObject state=null;
         if(PlaybackApi.uuid(saved))try{state=retry(j,()->json(j,"/uploads/"+saved,"GET",null));if(Arrays.asList("cancelled","failed").contains(state.getString("state")))state=null;}catch(HttpFailure e){if(e.status!=404&&e.status!=410)throw e;}
         if(state==null){JSONObject body=new JSONObject().put("title",j.title).put("retainOriginal",j.data.optBoolean("retainOriginal",true)).put("files",publicFiles);String series=j.data.optString("seriesId","");if(!series.isEmpty()){if(!PlaybackApi.uuid(series))throw new IllegalArgumentException();body.put("seriesId",series);}
-            state=json(j,"/shelves/"+shelf+"/uploads","POST",body);prefs.edit().putString(fingerprint,state.getString("id")).commit();
+            for(;;){try{state=json(j,"/shelves/"+shelf+"/uploads","POST",body);break;}catch(HttpFailure error){if(error.status!=429)throw error;pause(j,2000);}}prefs.edit().putString(fingerprint,state.getString("id")).commit();
         }
         String id=state.getString("id");j.data.put("uploadId",id);
         if("uploading".equals(state.getString("state"))){
@@ -116,9 +119,16 @@ public final class TransferEngine {
             }
             state=retry(j,()->json(j,"/uploads/"+id+"/complete","POST",null));
         }
-        j.state="processing";changed.run();
-        while("processing".equals(state.getString("state"))){pause(j,1500);state=retry(j,()->json(j,"/uploads/"+id,"GET",null));changed.run();}
-        if(!"complete".equals(state.getString("state"))||!state.has("item"))throw new IOException("Server processing failed");
-        prefs.edit().remove(fingerprint).commit();j.result=new JSONObject().put("item",state.getJSONObject("item")).put("seriesWarning",state.optString("seriesWarning",""));
+        j.data.put("resumeKey",fingerprint);j.state="processing";changed.run();
+    }
+    public void poll(Job j){
+        if(j.cancelled||!j.state.equals("processing"))return;
+        try{JSONObject state=json(j,"/uploads/"+j.data.getString("uploadId"),"GET",null);
+            if("processing".equals(state.optString("state")))return;
+            if(!"complete".equals(state.optString("state"))||!state.has("item"))throw new IOException("Server processing failed");
+            context.getSharedPreferences("mirea-upload-resume-v1",Context.MODE_PRIVATE).edit().remove(j.data.optString("resumeKey")).commit();
+            j.result=new JSONObject().put("item",state.getJSONObject("item")).put("seriesWarning",state.optString("seriesWarning",""));j.state="complete";j.api.close();
+        }catch(Exception error){if(error instanceof HttpFailure&&((HttpFailure)error).status<500){j.state="failed";j.error="サーバーの処理状況を確認できません。";j.api.close();}}
+        finally{changed.run();}
     }
 }

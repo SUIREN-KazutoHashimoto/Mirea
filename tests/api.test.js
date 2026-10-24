@@ -92,7 +92,7 @@ test('PDF upload, authorized byte serving, scoped tickets and immediate membersh
   assert.equal(content.headers['cache-control'], 'private, no-store, no-transform');
   const cover = await app.inject({ url: `${path}/thumbnail`, headers: bearer(viewer) });
   assert.equal(cover.statusCode, 200, cover.body);
-  assert.equal(cover.headers['content-type'], 'image/jpeg');
+  assert.equal(cover.headers['content-type'], 'image/webp');
   assert.equal((await sharp(cover.rawPayload).metadata()).format, 'jpeg');
   assert.equal((await app.inject(`${path}/thumbnail`)).statusCode, 401);
   assert.equal((await app.inject({ url: `${path}/thumbnail`, headers: bearer(outsider) })).statusCode, 404);

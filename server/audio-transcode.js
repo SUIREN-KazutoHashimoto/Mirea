@@ -1,3 +1,4 @@
+import {jobCancellationSignal} from './job-context.js';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, stat } from 'node:fs/promises';
@@ -18,7 +19,7 @@ export async function probeAudio(source) {
     if (!ffprobePath()) throw Object.assign(new Error('Missing FFprobe'),{code:'ENOENT'});
     const {stdout} = await exec(ffprobePath(),['-v','error','-max_alloc','268435456',...INPUT,
       '-show_entries','format=duration:stream=index,codec_type,codec_name,profile,channels,sample_rate,duration,width,height:stream_disposition=attached_pic',
-      '-of','json',source],{timeout:30000,maxBuffer:1024*1024,windowsHide:true,killSignal:'SIGKILL'});
+      '-of','json',source],{timeout:30000,maxBuffer:1024*1024,signal:jobCancellationSignal(),windowsHide:true,killSignal:'SIGKILL'});
     const data=JSON.parse(stdout),audio=data.streams?.find(s=>s.codec_type==='audio');
     const duration=Number(audio?.duration || data.format?.duration);
     if (!audio || !Number.isFinite(duration) || duration<=0 || duration>MAX_SECONDS ||
@@ -36,13 +37,13 @@ export async function probeAudio(source) {
 }
 
 export function createAudioTranscoder() {
-  let tail=Promise.resolve(),closed=false;
+  let closed=false;
   const children=new Set();
   async function run(args,{authorize,deadline,output,onProgress,duration}) {
     authorize();if(closed)throw closingError();
     if(!ffmpegPath())throw httpError(503,'音声変換用のFFmpegが見つかりません。');
     const child=spawn(ffmpegPath(),['-hide_banner','-loglevel','error','-nostdin','-y',
-      '-threads','1','-filter_threads','1','-max_alloc','268435456',...args],{windowsHide:true,stdio:['ignore','pipe','pipe']});
+      '-threads','1','-filter_threads','1','-max_alloc','268435456',...args],{windowsHide:true,stdio:['ignore','pipe','pipe'],signal:jobCancellationSignal(),killSignal:'SIGKILL'});
     let failure,stderr='',progress='',checking=false;
     const kill=error=>{failure??=error;child.kill('SIGKILL');};
     const active={kill};children.add(active);
@@ -95,5 +96,5 @@ export function createAudioTranscoder() {
       throw Object.assign(httpError(422,'音声の変換・検証に失敗しました。原本を保持しています。空き容量・FFmpeg設定・対応形式を確認して再試行してください。'),{cause:error});
     }
   }
-  return {convert(...args){const job=tail.then(()=>convert(...args));tail=job.catch(()=>{});return job;},close(){closed=true;for(const child of children)child.kill(closingError());}};
+  return {convert(...args){return convert(...args);},close(){closed=true;for(const child of children)child.kill(closingError());}};
 }

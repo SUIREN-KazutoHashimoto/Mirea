@@ -5,7 +5,7 @@ export function folderParts(path){
   return parts;
 }
 export function folderUploadJobs(files,plan){
-  if(files.length>100)throw Error('フォルダの一括アップロードは100ファイルまでです。');
+  if(files.length>10000)throw Error('フォルダの一括アップロードは10000ファイルまでです。');
   const jobs=[],paths=new Set();
   for(const [index,file] of Array.from(files).entries()){
     const path=file.relativePath||file.webkitRelativePath,parts=folderParts(path);
@@ -24,8 +24,8 @@ export async function prepareFolderSeries(jobs,{api,shelfId,parentId=null,record
     let row=records.get(path);if(row?.id)continue;if(!row){row={requestId:crypto.randomUUID()};records.set(path,row);}
     const parts=path.split('/'),parent=parts.length===1?parentId:records.get(parts.slice(0,-1).join('/'))?.id;
     if(parts.length>1&&!parent)throw Error('親シリーズを作成できません。');
-    const response=await api(`/shelves/${shelfId}/series`,{method:'POST',body:{title:parts.at(-1),parentId:parent,requestId:row.requestId}});
-    row.id=response.series.id;
+    const response=await api(`/shelves/${shelfId}/series`,{method:'POST',body:{title:parts.at(-1),parentId:parent,requestId:row.requestId,reuseExisting:true}});
+    row.id=response.series.id;row.created=response.created!==false;
   }
   return new Map(jobs.map(j=>[j.key,records.get(j.folderPath).id]));
 }

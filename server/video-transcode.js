@@ -1,3 +1,4 @@
+import {jobCancellationSignal} from './job-context.js';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, stat, readFile, readdir } from 'node:fs/promises';
@@ -21,7 +22,7 @@ export async function probeVideo(source) {
     if(!ffprobePath())throw Object.assign(new Error('No FFprobe executable'),{code:'ENOENT'});
     const { stdout } = await exec(ffprobePath(), ['-v','error','-threads','1','-max_alloc','268435456','-protocol_whitelist','file,pipe','-format_whitelist',FORMATS,
       '-show_entries','format=format_name,duration:stream=index,codec_type,codec_name,width,height,bit_rate,pix_fmt,duration,sample_aspect_ratio,color_transfer:stream_disposition=attached_pic:stream_tags=rotate:stream_side_data=rotation',
-      '-of','json',source], {timeout:30000,maxBuffer:1024*1024,windowsHide:true,killSignal:'SIGKILL'});
+      '-of','json',source], {timeout:30000,maxBuffer:1024*1024,signal:jobCancellationSignal(),windowsHide:true,killSignal:'SIGKILL'});
     const data = JSON.parse(stdout), video = data.streams?.find(s => s.codec_type === 'video' && !s.disposition?.attached_pic);
     if(!video)throw Object.assign(new Error('No decoded video stream'),{code:'EMPTY_VIDEO_OUTPUT'});
     const duration = Number(video?.duration || data.format?.duration);
@@ -55,13 +56,13 @@ export function videoLadder(width,height) {
 }
 
 export function createVideoTranscoder() {
-  let tail=Promise.resolve(),closed=false;
+  let closed=false;
   const controllers=new Set();
   async function run(args,{authorize,deadline,onProgress,folder,controller,duration}) {
     authorize();
     if (closed) throw closingError();
     if(!ffmpegPath())throw httpError(503,'動画変換用のFFmpegが見つかりません。');
-    const child=spawn(ffmpegPath(),['-hide_banner','-loglevel','error','-nostdin','-y','-threads','1','-filter_threads','1','-filter_complex_threads','1','-max_alloc','268435456',...args],{cwd:folder,windowsHide:true,stdio:['ignore','pipe','pipe']});
+    const child=spawn(ffmpegPath(),['-hide_banner','-loglevel','error','-nostdin','-y','-threads','1','-filter_threads','1','-filter_complex_threads','1','-max_alloc','268435456',...args],{cwd:folder,windowsHide:true,stdio:['ignore','pipe','pipe'],signal:jobCancellationSignal(),killSignal:'SIGKILL'});
     let failure,stderr='',progress='',checking=false;
     const kill=error=>{failure??=error;child.kill('SIGKILL');};
     const aborted=()=>kill(controller.signal.reason??closingError());
@@ -144,5 +145,5 @@ export function createVideoTranscoder() {
       throw Object.assign(httpError(422,'動画の変換・検証に失敗しました。原本を保持しています。空き容量・FFmpeg設定・対応形式を確認して再試行してください。'),{cause:error});
     }finally{controllers.delete(controller);}
   }
-  return {convert(...args){const task=tail.then(()=>convert(...args));tail=task.catch(()=>{});return task;},close(){closed=true;for(const controller of controllers)controller.abort(closingError());}};
+  return {convert(...args){return convert(...args);},close(){closed=true;for(const controller of controllers)controller.abort(closingError());}};
 }

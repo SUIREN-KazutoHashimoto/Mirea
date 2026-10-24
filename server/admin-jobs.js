@@ -18,7 +18,7 @@ const retryBody=(properties={})=>({type:'object',additionalProperties:false,prop
 export async function registerAdminJobs(app,context) {
   const {db,adminAccess:a,media,videoTranscoder,uploadDir,booksDir,thumbnailDir,previewDir,videoDir,originalDir,dataDir,uploads,maintenance}=context;
   const root=join(dataDir,'admin-work');await mkdir(root,{recursive:true,mode:0o700});
-  let tail=Promise.resolve(),closing=false;const pending=new Map();
+  let closing=false;const pending=new Map();
   const get=id=>db.prepare('SELECT * FROM admin_jobs WHERE id=?').get(id);
   const safe=row=>({id:row.id,kind:row.kind,assetId:row.asset_id,state:row.state,progress:JSON.parse(row.progress_json),error:row.error,createdAt:row.created_at,updatedAt:row.updated_at});
   const uploadSafe=row=>({id:row.id,title:row.title,state:row.state,error:row.error,processing:JSON.parse(row.processing_json),createdAt:row.created_at,assetExists:Boolean(db.prepare('SELECT 1 FROM items WHERE id=?').get(row.id))});
@@ -34,7 +34,7 @@ export async function registerAdminJobs(app,context) {
   }
   function schedule(id){
     if(pending.has(id)||closing)return;
-    const job=tail.then(async()=>{
+    const job=context.jobPool.run(async()=>{
       const row=get(id);if(!row||row.state!=='queued')return;
       const item=db.prepare('SELECT * FROM items WHERE id=?').get(row.asset_id);
       const authorize=()=>{if(!db.prepare('SELECT 1 FROM items WHERE id=?').get(row.asset_id)||!a.isAdmin(row.requested_by))throw httpError(403,'アセットが削除されたか、実行者の管理権限が解除されました。');};
@@ -98,11 +98,11 @@ export async function registerAdminJobs(app,context) {
         if(row.kind==='transcode'&&!published&&row.asset_id&&!generationReferenced())await removeItemDirectory(join(videoDir,row.asset_id),id);
       }
     }).catch(error=>app.log.error({err:error},'Admin job cleanup failed'));
-    tail=job;pending.set(id,job);job.finally(()=>{pending.delete(id);pump();});
+    pending.set(id,job);job.finally(()=>{pending.delete(id);pump();});
   }
   db.prepare("UPDATE admin_jobs SET state='queued' WHERE state='running' AND kind IN ('thumbnail','preview','transcode')").run();
   pump();
-  app.addHook('onClose',async()=>{closing=true;await tail;});
+  app.addHook('onClose',async()=>{closing=true;await Promise.allSettled([...pending.values()]);});
   const auth={onRequest:async req=>a.requireAdmin(req)};
   app.get('/api/v1/admin/jobs',auth,async()=>({
     jobs:db.prepare("SELECT * FROM admin_jobs ORDER BY created_at DESC LIMIT 100").all().map(safe),

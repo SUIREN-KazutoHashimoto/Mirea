@@ -46,14 +46,14 @@ export async function generateNavigation(source,{signal,authorize=()=>{}}={}){
   return {durationMs,chapters,captions,image,storyboard:{count,columns,rows,width:160,height:90,intervalMs}};
 }
 export async function registerVideoNavigation(app,context){
-  const {db,authenticate,findItem,membership,maintenance}=context;let closing=false,tail=Promise.resolve();const pending=new Map(),controllers=new Set();
+  const {db,authenticate,findItem,membership,maintenance}=context;let closing=false;const pending=new Map(),controllers=new Set();
   const get=id=>db.prepare('SELECT * FROM video_navigation WHERE item_id=?').get(id);
   const asset=req=>{const item=findItem(req.params.id,req.user.id);if(!item.mime_type.startsWith('video/'))throw httpError(400,'動画ではありません。');return item;};
   const publicData=(item,userId)=>{const row=get(item.id);return {revision:row?.revision??0,state:row?.state??'missing',durationMs:row?.duration_ms??0,chapters:JSON.parse(row?.chapters_json??'[]'),captions:JSON.parse(row?.captions_json??'[]'),storyboard:row?.storyboard_json?{...JSON.parse(row.storyboard_json),url:`/api/v1/items/${item.id}/navigation/storyboard?revision=${row.revision}`} :null,canEdit:['owner','editor'].includes(membership(item.shelf_id,userId))};};
   const auth={onRequest:async req=>authenticate(req)};
   function schedule(row){
     if(closing||pending.has(row.item_id))return;
-    const work=tail.then(async()=>{
+    const work=context.jobPool.run(async()=>{
       const live=get(row.item_id);if(live?.state!=='queued')return;const controller=new AbortController();controllers.add(controller);
       const authorize=()=>{if(closing)throw Object.assign(Error('Closing'),{code:'SERVER_CLOSING'});const item=db.prepare('SELECT * FROM items WHERE id=?').get(row.item_id);if(!item||!row.requester_id||!db.prepare('SELECT 1 FROM users WHERE id=?').get(row.requester_id)||db.prepare('SELECT disabled FROM user_access WHERE user_id=?').get(row.requester_id)?.disabled||!db.prepare('SELECT 1 FROM memberships WHERE shelf_id=? AND user_id=?').get(item.shelf_id,row.requester_id))throw httpError(403,'準備の権限が失効しました。');return item;};
       const guard=setInterval(()=>{try{authorize();}catch(error){controller.abort(error);}},1000);
@@ -63,7 +63,7 @@ export async function registerVideoNavigation(app,context){
         transaction(db,()=>{const current=get(item.id),manual=JSON.parse(current.captions_json).filter(c=>!c.id.startsWith('embedded-'));const tracks=[...manual,...result.captions].slice(0,12);if(Buffer.byteLength(JSON.stringify(tracks))>MAX)throw Error('Caption limit');db.prepare("UPDATE video_navigation SET revision=revision+1,state='ready',duration_ms=?,chapters_json=?,captions_json=?,storyboard_json=?,storyboard=?,error=NULL,updated_at=? WHERE item_id=?").run(result.durationMs,current.chapters_manual?current.chapters_json:JSON.stringify(result.chapters),JSON.stringify(tracks),JSON.stringify(result.storyboard),result.image,Date.now(),item.id);db.prepare("UPDATE admin_jobs SET state='complete',progress_json='{}',updated_at=? WHERE id=?").run(Date.now(),live.job_id);});
       }catch(error){const state=closing?'queued':'failed';db.prepare('UPDATE video_navigation SET state=?,error=?,updated_at=? WHERE item_id=?').run(state,closing?null:'場面画像の準備に失敗しました。動画の再生は引き続き利用できます。',Date.now(),row.item_id);db.prepare('UPDATE admin_jobs SET state=?,error=?,updated_at=? WHERE id=?').run(state,closing?null:'動画ナビゲーションの準備に失敗しました。',Date.now(),live.job_id);if(!closing)app.log.warn({err:error},'Video navigation preparation failed');}
       finally{clearInterval(guard);controllers.delete(controller);}
-    }).finally(()=>pending.delete(row.item_id));tail=work.catch(error=>app.log.error({err:error},'Video navigation queue failure'));pending.set(row.item_id,tail);
+    }).finally(()=>pending.delete(row.item_id));const watched=work.catch(error=>app.log.error({err:error},'Video navigation queue failure'));pending.set(row.item_id,watched);
   }
   db.prepare("UPDATE video_navigation SET state='queued' WHERE state='running'").run();db.prepare("UPDATE admin_jobs SET state='queued' WHERE kind='navigation' AND state='running'").run();
   for(const row of db.prepare("SELECT * FROM video_navigation WHERE state='queued'").all())schedule(row);
@@ -89,6 +89,6 @@ export async function registerVideoNavigation(app,context){
     if(Buffer.byteLength(JSON.stringify(captions))>MAX)throw httpError(400,'字幕データが大きすぎます。');
     db.prepare('UPDATE video_navigation SET revision=revision+1,chapters_json=?,chapters_manual=?,captions_json=?,updated_at=? WHERE item_id=?').run(JSON.stringify(chapters),body.chapters!==undefined?1:row.chapters_manual,JSON.stringify(captions),Date.now(),item.id);return publicData(item,req.user.id);
   });
-  app.addHook('onClose',async()=>{closing=true;for(const c of controllers)c.abort();await tail;});
+  app.addHook('onClose',async()=>{closing=true;for(const c of controllers)c.abort();await Promise.allSettled([...pending.values()]);});
   return {get busy(){return pending.size>0;}};
 }

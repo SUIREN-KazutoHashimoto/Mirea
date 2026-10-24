@@ -1,3 +1,5 @@
+import {jobCancellationSignal} from './job-context.js';
+import {createJobPool} from './job-pool.js';
 import { Worker } from 'node:worker_threads';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -35,7 +37,7 @@ const emptyVideoOutput = () => Object.assign(new Error('No video frames were gen
 const isEmptyVideoOutput = error => error.code === 'EMPTY_VIDEO_OUTPUT' ||
   (!error.killed && /Output file is empty, nothing was encoded/.test(error.stderr ?? ''));
 
-async function convertVideo(source, destination, mime, outputArgs, label, maxBytes = Infinity) {
+async function convertVideo(source, destination, mime, outputArgs, label, maxBytes = Infinity, seekSeconds=0) {
   const deadline = Date.now() + VIDEO_TIMEOUT_MS;
   let failure;
   // Preserve authored edits first. Only an empty MP4 result permits the
@@ -49,8 +51,8 @@ async function convertVideo(source, destination, mime, outputArgs, label, maxByt
         await runFile(executable, [
           '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-abort_on', 'empty_output',
           '-protocol_whitelist', 'file,pipe', ...(ignoreEdits ? ['-ignore_editlist', '1'] : []),
-          '-i', source, ...outputArgs, destination
-        ], { timeout: Math.max(1, deadline - Date.now()), maxBuffer: 1024 * 1024, windowsHide: true, killSignal: 'SIGKILL' });
+          ...(seekSeconds>0?['-ss',String(seekSeconds)]:[]),'-i', source, ...outputArgs, destination
+        ], { timeout: Math.max(1, deadline - Date.now()), maxBuffer: 1024 * 1024, windowsHide: true, killSignal: 'SIGKILL',signal:jobCancellationSignal() });
       } catch (error) {
         // ENOENT from launching the executable is not the same as a missing
         // generated image. Keep that distinction in both the UI and logs.
@@ -74,10 +76,13 @@ async function convertVideo(source, destination, mime, outputArgs, label, maxByt
 }
 
 function workerOperation(data) {
+  const signal=jobCancellationSignal();if(signal?.aborted)return Promise.reject(signal.reason);
   return new Promise((resolve, reject) => {
     const worker = new Worker(mediaWorkerEntrypoint(), {
       workerData: data, resourceLimits: { maxOldGenerationSizeMb: 256 }
     });
+    const abort=()=>{receivedResult=true;clearTimeout(timer);worker.terminate();reject(signal.reason);};
+    signal?.addEventListener('abort',abort,{once:true});
     let receivedResult = false;
     const timer = setTimeout(() => { worker.terminate(); reject(httpError(422, '本・画像の処理が時間内に完了しませんでした。')); }, 30_000);
     worker.once('message', async result => {
@@ -90,18 +95,17 @@ function workerOperation(data) {
       else resolve(result);
     });
     worker.once('error', error => { clearTimeout(timer); reject(error); });
-    worker.once('exit', () => { clearTimeout(timer); if (!receivedResult) reject(httpError(422, 'メディアの処理に失敗しました。')); });
+    worker.once('exit', () => { signal?.removeEventListener('abort',abort);clearTimeout(timer); if (!receivedResult) reject(httpError(422, 'メディアの処理に失敗しました。')); });
   });
 }
 
 // Serialize decoding to avoid allocating one large canvas per concurrent upload.
 export function createMediaProcessor() {
-  let tail = Promise.resolve();
+  const pool=createJobPool(()=>5);
   let sequence=0;const activity=new Map();
   const enqueue = (kind,job) => {
     const id='media-'+(++sequence),row={id,kind,state:'queued'};activity.set(id,row);
-    const current = tail.then(async()=>{row.state='running';try{return await job();}finally{activity.delete(id);}});
-    tail = current.catch(() => {});
+    const current = pool.run(async()=>{row.state='running';try{return await job();}finally{activity.delete(id);}});
     return current;
   };
   return {
@@ -124,14 +128,17 @@ export function createMediaProcessor() {
       return enqueue('thumbnail',async () => {
         if (isAudio(mime)) { await audioPlaceholder(destination); return { pageCount: 1 }; }
         if (mime.startsWith('video/')) {
-          // Sample at most 30 frames from the opening 2.5 seconds. At EOF,
-          // thumbnail uses the available batch, even for a single-frame clip;
-          // eof_action=pass prevents sub-frame-duration clips being discarded.
+          await removeOutput(destination);
+          try{await access(ffmpegPath()??'');}catch(error){if(error.code==='ENOENT')throw Object.assign(httpError(503,'動画サムネイル用のFFmpegが見つかりません。サーバー設定を確認してください。'),{cause:error});throw error;}
+          const {probeVideo}=await import('./video-transcode.js');
+          const {duration}=await probeVideo(source);
+          const seek=duration<1?0:duration*(.4+Math.random()*.2);
+          // Short clips still use their available frame; seek long clips before decoding.
           await convertVideo(source, destination, mime, [
             '-map', '0:v:0', '-frames:v', '1', '-an', '-threads', '1',
-            '-vf', 'setpts=PTS-STARTPTS,fps=12:eof_action=pass,thumbnail=30,scale=480:720:force_original_aspect_ratio=decrease',
+            '-vf', 'setpts=PTS-STARTPTS,fps=12:eof_action=pass,thumbnail=2,scale=w=\'min(1024,iw)\':h=\'min(1024,ih)\':force_original_aspect_ratio=decrease',
             '-c:v', 'mjpeg', '-f', 'image2'
-          ], 'サムネイル');
+          ], 'サムネイル',Infinity,seek);
           return { pageCount: 1 };
         }
         return workerOperation({ source, destination, bundlePath, mode: mime === EPUB_MIME ? 'epub-thumbnail' : mime === 'application/pdf' ? 'pdf-thumbnail' : 'image-thumbnail' });

@@ -24,16 +24,17 @@ export function nativeUpload(context,shelfId,files,title,onProgress,{retainOrigi
   return nativeTransferTask(context,'upload',{shelfId,files,title,retainOriginal,...(seriesId?{seriesId}:{})},row=>onProgress(row.state==='processing'||row.state==='complete'?100:Math.min(99,row.percent),row.state==='processing'?{stage:'processing'}:undefined));
 }
 export function nativeTransferTask(context,direction,job,update=()=>{}){
-  let id,stopped=false,processing=false;
+  let id,stopped=false,processing=false,transferredResolve,transferredReject;
+  const transferred=new Promise((resolve,reject)=>{transferredResolve=resolve;transferredReject=reject;});transferred.catch(()=>{});
   const promise=(async()=>{
     listener??=NativeTransfer.addListener('transferChanged',()=>refreshNativeTransfers().catch(()=>{}));
     await listener;
     const queued=await NativeTransfer.enqueue({...context,direction,job});id=queued.id;
     if(stopped){await NativeTransfer.cancel({...context,id});throw new DOMException('一時停止しました。','AbortError');}
-    return new Promise((resolve,reject)=>{waiting.set(id,{context,resolve,reject,update:row=>{processing=row.state==='processing';update(row);}});refreshNativeTransfers().catch(reject);});
-  })();
-  function abort(){stopped=true;if(id){NativeTransfer.cancel({...context,id}).catch(()=>{});const task=waiting.get(id);waiting.delete(id);task?.reject(new DOMException('一時停止しました。','AbortError'));}}
-  return {promise,get processing(){return processing;},abort,detach:abort};
+    return new Promise((resolve,reject)=>{waiting.set(id,{context,resolve,reject,update:row=>{processing=row.state==='processing';if(processing||row.state==='complete')transferredResolve({id:row.uploadId});update(row);}});refreshNativeTransfers().catch(reject);});
+  })().catch(error=>{transferredReject(error);throw error;});
+  function abort(cleanup=true){stopped=true;if(id){NativeTransfer.cancel({...context,id,cleanup}).catch(()=>{});const task=waiting.get(id);waiting.delete(id);task?.reject(new DOMException('一時停止しました。','AbortError'));}}
+  return {promise,transferred,get processing(){return processing;},abort,detach:()=>abort(false)};
 }
 export function invalidateTransfers(partition){
   for(const task of waiting.values())task.reject(new DOMException('ログイン先が変更されました。','AbortError'));waiting.clear();

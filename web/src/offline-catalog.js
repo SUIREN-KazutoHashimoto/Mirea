@@ -6,7 +6,7 @@ const number=v=>Number.isFinite(v)&&v>=0?v:0;
 const role=v=>['owner','editor','viewer'].includes(v)?v:'viewer';
 const fields=(value,names)=>Object.fromEntries(names.filter(n=>value[n]!==undefined).map(n=>[n,value[n]]));
 const coverSlot=id=>'catalog-cover:'+id;
-const COVER_BYTES=262144,COVER_AGE=86400000;
+const COVER_BYTES=2097152,COVER_AGE=86400000;
 const validCover=(item,url)=>typeof url==='string'&&new RegExp('^/api/v1/items/'+item.id+'/thumbnail(?:\\?revision=[0-9a-f-]{36})?$').test(url);
 
 // Explicit allowlists: never persist an API response containing tokens, paths,
@@ -16,7 +16,7 @@ export function normalizeCatalog(input,userId){
   for(const name of ['shelves','series','items'])if(!Array.isArray(input[name])||input[name].length>100000)throw Error('一覧情報が不正です。');
   const unique=rows=>{const ids=new Set();for(const row of rows){if(!uuid.test(row.id)||ids.has(row.id))throw Error('一覧情報が不正です。');ids.add(row.id);}return ids;};
   const shelfIds=unique(input.shelves),seriesIds=unique(input.series);unique(input.items);
-  const shelves=input.shelves.map(s=>({id:s.id,name:text(s.name,100),description:text(s.description,500),createdAt:number(s.created_at??s.createdAt),role:role(s.role),itemCount:number(s.itemCount),memberCount:number(s.memberCount)}));
+  const shelves=input.shelves.map(s=>({id:s.id,name:text(s.name,100),description:text(s.description,500),createdAt:number(s.created_at??s.createdAt),role:role(s.role),private:Boolean(s.private),itemCount:number(s.itemCount),memberCount:number(s.memberCount)}));
   const byShelf=new Map(shelves.map(s=>[s.id,s]));
   const series=input.series.map(s=>{
     if(!shelfIds.has(s.shelfId)||s.parentId&&!seriesIds.has(s.parentId))throw Error('シリーズ情報が不正です。');
@@ -70,7 +70,7 @@ export function createCatalogCache(vault,{now=Date.now}={}){
     },
     async cover(partition,item){
       const saved=await vault.unseal(partition,coverSlot(item.id));
-      if(!saved||saved.url!==item.thumbnailUrl||!['image/jpeg','image/png','image/webp'].includes(saved.mime)||typeof saved.base64!=='string'||saved.base64.length>350000)return null;
+      if(!saved||saved.url!==item.thumbnailUrl||!['image/jpeg','image/png','image/webp'].includes(saved.mime)||typeof saved.base64!=='string'||saved.base64.length>2796204)return null;
       return new Blob([Uint8Array.from(atob(saved.base64),c=>c.charCodeAt(0))],{type:saved.mime});
     },
     async saveCover(partition,item,blob,{current=()=>true}={}){
@@ -80,17 +80,18 @@ export function createCatalogCache(vault,{now=Date.now}={}){
       await vault.seal(partition,coverSlot(item.id),{url:item.thumbnailUrl,mime:blob.type,base64:btoa(raw),savedAt:now()});return current();
     },
     async syncCovers(partition,catalog,fetchCover,{current=()=>true,force=false,onProgress=()=>{}}={}){
-      const own=generation,queue=[...catalog.items];let saved=0,failed=0,skipped=0,done=0;
-      const active=()=>current()&&generation===own;
+      const queue=[...catalog.items];let saved=0,failed=0,skipped=0,done=0;
+      const active=()=>current();
       const worker=async()=>{while(queue.length&&active()){
         const item=queue.shift();try{
           const cached=await vault.unseal(partition,coverSlot(item.id));if(!active())break;
           if(!force&&cached?.url===item.thumbnailUrl&&cached.savedAt<=now()&&cached.savedAt>now()-COVER_AGE){skipped++;continue;}
-          const blob=await fetchCover(item,AbortSignal.timeout(force?10000:2500));if(!active())break;
+          let blob;for(let attempt=0;attempt<3;attempt++){try{blob=await fetchCover(item,AbortSignal.timeout(force?30000:10000));break;}catch(error){if(!active()||attempt===2)throw error;await new Promise(resolve=>setTimeout(resolve,300*(attempt+1)));}}
+          if(!active())break;
           if(await this.saveCover(partition,item,blob,{current:active}))saved++;else failed++;
         }catch{failed++;}finally{done++;if(active())onProgress({done,total:catalog.items.length,saved,failed,skipped});}
       }};
-      await Promise.all(Array.from({length:3},worker));return {saved,failed,skipped,cancelled:!active()};
+      await Promise.all(Array.from({length:2},worker));return {saved,failed,skipped,cancelled:!active()};
     }
   };
 }

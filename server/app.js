@@ -47,13 +47,19 @@ import {pendingShelfUploads} from './pending-uploads.js';
 import {registerShelfManagement} from './shelf-management.js';
 import {registerRememberSessions,issueRememberCookie,clearRememberCookie} from './remember-session.js';
 
+import {thumbnailWebp} from './thumbnail-webp.js';
+import {createJobPool} from './job-pool.js';
+import {createProcessingSettings,registerProcessingSettings} from './processing-settings.js';
+import {registerHistoryRemoval} from './history.js';
+import {initializeDefaultAdmin,defaultCredentialWarning} from './bootstrap-admin.js';
+
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const TICKET_MS = 60 * 60 * 1000;
 const text = (maxLength, minLength = 1) => ({ type: 'string', minLength, maxLength });
 const object = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
 const email = { type: 'string', minLength: 3, maxLength: 254, pattern: '^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$' };
 const password = text(128, 12);
-const credentials = object({ email, password,remember:{type:'boolean',default:true} },['email','password']);
+const credentials = object({ email, password:text(128,1),remember:{type:'boolean',default:true} },['email','password']);
 const memberRole = { type: 'string', enum: ['editor', 'viewer'] };
 const publicUser = u => ({ id: u.id, email: u.email, name: u.name });
 const basePublicItem = i => ({
@@ -69,6 +75,8 @@ export async function createApp(options = {}) {
   await initializeStorage(storage);
   const {mediaDir,uploadDir,stagingDir,booksDir,thumbnailDir,videoDir,originalDir,previewDir}=storage;
   const db = openDatabase(join(dataDir, 'mirea.sqlite'));
+  if(options.bootstrapAdmin)await initializeDefaultAdmin(db);
+  const processingSettings=createProcessingSettings(db),jobPool=createJobPool(()=>processingSettings.value.maxConcurrentJobs);
   const reset=createMediaReset({db,storage});
   try{await reset.recover();}catch(error){db.close();throw error;}
   const media = options.mediaProcessor ?? createMediaProcessor();
@@ -130,7 +138,7 @@ export async function createApp(options = {}) {
     if (!session) throw httpError(401, 'ログインしてください。');
     if(!adminAccess.enabled(session.user_id))throw httpError(401,'アカウントは停止中です。');
     req.session = session;
-    req.user = { id: session.user_id, email: session.email, name: session.name };
+    req.user = { id: session.user_id, email: session.email, name: session.name,...(defaultCredentialWarning(db,session.user_id)?{defaultCredentialWarning:true}:{}) };
   }
   function membership(shelfId, userId, roles) {
     const member = db.prepare('SELECT role FROM memberships WHERE shelf_id=? AND user_id=?').get(shelfId, userId);
@@ -150,18 +158,20 @@ export async function createApp(options = {}) {
     const expiresAt = Date.now() + SESSION_MS;
     db.prepare('INSERT INTO sessions (id, token_hash, user_id, expires_at) VALUES (?, ?, ?, ?)').run(randomUUID(), hashToken(token), user.id, expiresAt);
     if(reply){if(remember)issueRememberCookie(reply,token,expiresAt);else clearRememberCookie(reply);}
-    return { user: publicUser(user), token, expiresAt };
+    return { user: {...publicUser(user),...(defaultCredentialWarning(db,user.id)?{defaultCredentialWarning:true}:{})}, token, expiresAt };
   }
   const auth = { preHandler: async req => authenticate(req) };
   const adminAccess=createAdminAccess(db,options,authenticate);
+  registerProcessingSettings(app,{processingSettings,jobPool,adminAccess});
+  registerHistoryRemoval(app,{db,authenticate,findItem});
   registerRememberSessions(app,{db,authenticate,enabled:adminAccess.enabled,rateLimit:options.rateLimit});
   const authLimits = { config: { rateLimit: options.rateLimit === false ? false : { max: 10, timeWindow: '1 minute' } } };
   app.get('/api/health', async () => ({ status: 'ok',version:packageInfo.version,maintenanceLocked:maintenance.locked }));
   const updatesPath = options.appUpdatesDir ?? process.env.APP_UPDATES_DIR;
-  registerAppUpdates(app, { directory: updatesPath ? resolve(PROJECT_ROOT, updatesPath) : undefined });
+  registerAppUpdates(app, { directory: updatesPath ? resolve(PROJECT_ROOT, updatesPath) : undefined,releaseVersion:options.remoteUpdates?packageInfo.version:undefined });
   let analytics;
-  app.get('/api/v1/config', async () => ({ allowRegistration, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadSessionHours: 24, analytics,
-    version: packageInfo.version, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.15.3beta/mirea-0.15.3beta-android.apk' }));
+  app.get('/api/v1/config', async () => ({ allowRegistration, ...processingSettings.value, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadSessionHours: 24, analytics,
+    version: packageInfo.version, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.16.0beta/mirea-0.16.0beta-android.apk' }));
   app.post('/api/v1/auth/register', { ...authLimits, schema: { body: object({ email, password, name: text(80),remember:{type:'boolean',default:true} },['email','password','name']) } }, async (req, reply) => {
     if (!allowRegistration) throw httpError(403, '新規登録は現在停止しています。');
     const normalizedEmail = req.body.email.trim().toLowerCase();
@@ -184,7 +194,7 @@ export async function createApp(options = {}) {
     return loginResult(user,reply,req.body.remember);
   });
   app.get('/api/v1/auth/me', auth, async req => ({ user: req.user }));
-  app.get('/api/v1/history',auth,async req=>({items:db.prepare(`SELECT i.*,s.name AS shelfName,m.role,MAX(v.last_received_at) AS lastSeenAt FROM analytics_views v JOIN items i ON i.id=v.asset_id JOIN shelves s ON s.id=i.shelf_id JOIN memberships m ON m.shelf_id=i.shelf_id AND m.user_id=? WHERE v.user_id=? AND v.context='viewer' AND v.counted=1 GROUP BY i.id ORDER BY lastSeenAt DESC,i.id LIMIT 1000`).all(req.user.id,req.user.id).map(item=>({...publicItem(item),shelfName:item.shelfName,role:item.role,lastSeenAt:item.lastSeenAt,progress:publicProgress(db.prepare('SELECT * FROM asset_progress WHERE user_id=? AND asset_id=?').get(req.user.id,item.id))}))}));
+  app.get('/api/v1/history',auth,async req=>({items:db.prepare(`SELECT i.*,s.name AS shelfName,m.role,MAX(v.last_received_at) AS lastSeenAt FROM analytics_views v JOIN items i ON i.id=v.asset_id JOIN shelves s ON s.id=i.shelf_id JOIN memberships m ON m.shelf_id=i.shelf_id AND m.user_id=? WHERE v.user_id=? AND v.context='viewer' AND v.counted=1 AND v.first_received_at>COALESCE((SELECT hidden_at FROM history_hidden h WHERE h.user_id=v.user_id AND h.asset_id=v.asset_id),0) GROUP BY i.id ORDER BY lastSeenAt DESC,i.id LIMIT 1000`).all(req.user.id,req.user.id).map(item=>({...publicItem(item),shelfName:item.shelfName,role:item.role,lastSeenAt:item.lastSeenAt,progress:publicProgress(db.prepare('SELECT * FROM asset_progress WHERE user_id=? AND asset_id=?').get(req.user.id,item.id))}))}));
   app.post('/api/v1/auth/logout', auth, async (req, reply) => {
     db.prepare('DELETE FROM sessions WHERE id=?').run(req.session.id);
     clearRememberCookie(reply);
@@ -201,7 +211,7 @@ export async function createApp(options = {}) {
     if (!name) throw httpError(400, '本棚の名前を入力してください。');
     const id = randomUUID();
     transaction(db, () => {
-      db.prepare('INSERT INTO shelves VALUES (?, ?, ?, ?)').run(id, name, req.body.description?.trim() ?? '', Date.now());
+      db.prepare('INSERT INTO shelves(id,name,description,created_at) VALUES (?, ?, ?, ?)').run(id, name, req.body.description?.trim() ?? '', Date.now());
       db.prepare('INSERT INTO memberships VALUES (?, ?, ?)').run(id, req.user.id, 'owner');
     });
     return reply.code(201).send({ id });
@@ -242,19 +252,19 @@ export async function createApp(options = {}) {
   });
   await registerCustomThumbnails(app,{db,thumbnailDir,media,authenticate,findItem,membership});
   const uploads = await registerResumableUploads(app, {
-    db, media, videoTranscoder, audioTranscoder, uploadDir, stagingDir, booksDir, thumbnailDir, videoDir, originalDir, previewDir, authenticate, membership, maxUploadBytes, chunkSize, publicItem,adminAccess,maintenance
+    db, media, videoTranscoder, audioTranscoder, uploadDir, stagingDir, booksDir, thumbnailDir, videoDir, originalDir, previewDir, authenticate, membership, maxUploadBytes, chunkSize, publicItem,adminAccess,maintenance,processingSettings,jobPool
   });
   registerVideoStreams(app,{db,videoDir,authenticate,findItem});
   registerAccounts(app, { db, authenticate, membership, loginResult, cleanupUploads: uploads.cleanupUploads, rateLimit: options.rateLimit,adminAccess });
   const videoPreviews = await registerVideoPreviews(app, { db, media, dataDir, uploadDir, authenticate, findItem });
-    const navigation = await registerVideoNavigation(app,{db,uploadDir,originalDir,videoDir,authenticate,findItem,membership,maintenance,rateLimit:options.rateLimit,generateNavigation:options.generateNavigation});
+    const navigation = await registerVideoNavigation(app,{db,uploadDir,originalDir,videoDir,authenticate,findItem,membership,maintenance,rateLimit:options.rateLimit,jobPool,generateNavigation:options.generateNavigation});
   async function removeAssetFiles(item){return Promise.allSettled([
     item.mime_type===IMAGE_BOOK_MIME?removeItemDirectory(booksDir,item.id):unlink(join(uploadDir,item.id)),
-    ...(item.mime_type===EPUB_MIME?[removeItemDirectory(booksDir,item.id)]:[]),unlink(join(thumbnailDir,item.id+'.jpg')),
+    ...(item.mime_type===EPUB_MIME?[removeItemDirectory(booksDir,item.id)]:[]),unlink(join(thumbnailDir,item.id+'.jpg')),unlink(join(thumbnailDir,item.id+'.webp')),
     videoPreviews.remove(item.id),removeItemDirectory(videoDir,item.id),unlink(join(originalDir,item.id))
   ]);}
   registerShelfManagement(app,{db,authenticate,membership,maintenance,removeFiles:removeAssetFiles,cleanupUploads:uploads.cleanupUploads,adminAccess,rateLimit:options.rateLimit});
-  const adminJobs=await registerAdminJobs(app,{db,adminAccess,media,videoTranscoder,uploadDir,booksDir,thumbnailDir,previewDir,videoDir,originalDir,dataDir,uploads,maintenance,videoPreviews,ensureThumbnail,rateLimit:options.rateLimit});
+  const adminJobs=await registerAdminJobs(app,{db,adminAccess,media,videoTranscoder,uploadDir,booksDir,thumbnailDir,previewDir,videoDir,originalDir,dataDir,uploads,maintenance,videoPreviews,ensureThumbnail,jobPool,rateLimit:options.rateLimit});
   registerAdmin(app,{db,adminAccess,uploads,rateLimit:options.rateLimit});
   maintenance.setBusy(()=>uploads.busy||adminJobs.busy||videoPreviews.busy||navigation.busy||media.busy);
   await registerAdminCleanup(app,{db,dataDir,mediaDir,adminAccess,maintenance,options});
@@ -266,7 +276,7 @@ export async function createApp(options = {}) {
   app.addHook('onClose',async()=>{videoTranscoder.close();audioTranscoder.close();});
   analytics = await registerAnalytics(app, { db, authenticate, membership, findItem, options,adminAccess });
   registerProgress(app,{db,authenticate,findItem,options});
-  registerSeries(app,{db,authenticate,membership,findItem,publicItem});
+  registerSeries(app,{db,authenticate,membership,findItem,publicItem,removeAssetFiles,uploads});
   registerPlaylists(app,{db,authenticate,findItem});
   try{await registerDownloads(app,{db,dataDir,uploadDir,booksDir,videoDir,authenticate,findItem,options});}catch(error){await app.close();throw error;}
   app.post('/api/v1/shelves/:id/items', auth, async (req, reply) => {
@@ -369,7 +379,7 @@ export async function createApp(options = {}) {
     const results = await Promise.allSettled([
       item.mime_type === IMAGE_BOOK_MIME ? removeItemDirectory(booksDir, item.id) : unlink(join(uploadDir, item.id)),
       ...(item.mime_type===EPUB_MIME?[removeItemDirectory(booksDir,item.id)]:[]),
-      unlink(join(thumbnailDir, `${item.id}.jpg`)),
+      unlink(join(thumbnailDir, `${item.id}.jpg`)),unlink(join(thumbnailDir, `${item.id}.webp`)),
       videoPreviews.remove(item.id)
       ,removeItemDirectory(videoDir,item.id),unlink(join(originalDir,item.id))
     ]);
@@ -378,10 +388,10 @@ export async function createApp(options = {}) {
   });
   app.route({ method: ['GET', 'HEAD'], url: '/api/v1/items/:id/thumbnail', ...auth, handler: async (req, reply) => {
     const item = findItem(req.params.id, req.user.id);
-    const path = await ensureThumbnail(item);
+    const path = await thumbnailWebp(await ensureThumbnail(item));
     authenticate(req);
     findItem(item.id, req.user.id);
-    reply.type('image/jpeg');
+    reply.type('image/webp');
     if (req.method === 'HEAD') return reply.send();
     return reply.send(createReadStream(path));
   } });

@@ -2,7 +2,7 @@
 
 ブラウザー版は[PWAとしてインストール](docs/pwa.md)できます。ログイン画面・設定に案内があり、既存の暗号化ダウンロードと7日間のオフライン視聴を利用します。
 
-**0.15.3beta**（内部 `0.15.3-beta`、Android versionCode 32）。[配布リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.15.3beta)、[変更履歴・制限](RELEASE.md)、[TrueNAS 25.04.2.6 Custom App手順](docs/truenas-25.04.md)を参照してください。既存の専用APK署名を維持し、旧デバッグ署名からの初回移行だけは手動です。
+**0.16.0beta**（内部 `0.16.0-beta`、Android versionCode 33）。[配布リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.16.0beta)、[変更履歴・制限](RELEASE.md)、[TrueNAS 25.04.2.6 Custom App手順](docs/truenas-25.04.md)を参照してください。既存の専用APK署名を維持し、旧デバッグ署名からの初回移行だけは手動です。
 
 コンテナは[stable／betaの追従タグ](docs/container-channels.md)に対応します。`beta`は最新の公開済みベータ版、`stable`は最初の正式版公開後から最新正式版を指します。版番号タグ・Gitタグは固定し、更新前のバックアップとNAS側での更新操作は引き続き必要です。
 
@@ -19,6 +19,8 @@
 [動画のPiP／動画・音楽のバックグラウンド再生](docs/background-playback.md)も収録します。Webの背景再生バーとOSメディア操作、Androidの独立した再生サービス・通知／ロック画面操作に対応します。
 
 [管理者専用メニュー](docs/admin.md)でジョブ確認・再生成、アカウントと本棚権限の管理、匿名統計、メタデータ／メディア込みの暗号化バックアップができます。WinVAI01向け更新ヘルパーは初期導入が必要です。本人の詳細ログ画面は設定からのNDJSON取得へ変更し、簡単な閲覧履歴は残しています。
+
+運用変更・転送／後処理の並列数・シリーズの再帰削除・APK更新配信は [0.16.0betaの運用と制限](docs/0.16.0beta.md) を参照してください。
 
 [DB／ユーザー情報とメディア本体のストレージ分離](docs/storage.md)に対応します。`MEDIA_DIR`未設定なら従来配置を維持。TrueNAS用YAMLは`/data`と`/media`の2マウント構成です。既存環境は停止・全バックアップ・検証付きコピーで移行してから有効化します。
 

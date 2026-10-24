@@ -24,7 +24,7 @@ if(mode==='prepare'){
  const part=await fetch(base+`/api/v1/uploads/${upload.id}/files/0/parts/0`,{method:'PUT',headers:{authorization:'Bearer '+token,'content-type':'application/octet-stream','x-chunk-sha256':hash(bytes)},body:bytes,signal:AbortSignal.timeout(15000)});assert.equal(part.status,204);
  await json('/uploads/'+upload.id+'/complete',{token,method:'POST'});let status;
  for(let n=0;n<300;n++){status=await json('/uploads/'+upload.id,{token});if(status.state!=='processing')break;await new Promise(r=>setTimeout(r,100));}assert.equal(status.state,'complete');
- const cover=await request(status.item.thumbnailUrl,{token});assert.equal(cover.status,200);assert.equal(cover.headers.get('content-type'),'image/jpeg');assert((await cover.arrayBuffer()).byteLength>100);
+ const cover=await request(status.item.thumbnailUrl,{token});assert.equal(cover.status,200);assert.equal(cover.headers.get('content-type'),'image/webp');assert((await cover.arrayBuffer()).byteLength>100);
  const p=await json('/items/'+upload.id+'/progress',{token});await json('/items/'+upload.id+'/progress',{token,method:'PUT',body:{revision:p.revision,updateId:randomUUID(),page:1,scrollX:0,scrollY:.5,zoom:'fit'}});
  const download=(await json('/items/'+upload.id+'/download',{token,method:'POST'})).manifest.id;
  await writeFile(statePath,JSON.stringify({token,userId:session.user.id,shelf:shelf.id,parent:parent.id,child:child.id,item:upload.id,download,sha256:hash(bytes)}),{mode:0o600,flag:'wx'});

@@ -62,6 +62,8 @@ export function createResumableUpload({ endpoint, token, userId, unauthorized },
       xhr.send(blob);
     });
   }
+  let transferredResolve,transferredReject;
+  const transferred=new Promise((resolve,reject)=>{transferredResolve=resolve;transferredReject=reject;});transferred.catch(()=>{});
   const promise = (async () => {
     files = Array.isArray(files) ? files : [files];
     // Small samples plus file metadata identify a reselected local file without
@@ -84,9 +86,10 @@ export function createResumableUpload({ endpoint, token, userId, unauthorized },
     if (!state) {
       // Do not automatically retry creation: a lost response must not allocate
       // several server sessions. Individual parts and completion are idempotent.
-      state = await request(`/shelves/${shelfId}/uploads`, 'POST', {
+      for(;;){try{state = await request(`/shelves/${shelfId}/uploads`, 'POST', {
         title, retainOriginal, ...(seriesId?{seriesId}:{}), files: files.map(file => ({ filename: file.name, mime: file.type, size: file.size }))
       });
+      break;}catch(error){if(error.status!==429)throw error;onProgress(0,{stage:'waiting-slot'});await sleep(2000);}}
       save({ id: state.id, expiresAt: state.expiresAt });
     }
     uploadId = state.id;
@@ -118,7 +121,7 @@ export function createResumableUpload({ endpoint, token, userId, unauthorized },
       }
       state = await retry(() => request(`/uploads/${uploadId}/complete`, 'POST'));
     }
-    processing = state.state === 'processing';
+    processing = state.state === 'processing';transferredResolve({id:uploadId});
     onProgress(100,state.processing);
     while (state.state === 'processing') {
       await sleep(1500);
@@ -129,10 +132,11 @@ export function createResumableUpload({ endpoint, token, userId, unauthorized },
     save(null);
     return { item: state.item,seriesWarning:state.seriesWarning??'' };
   })().catch(error => {
+    transferredReject(error);
     if (cancelled) throw abortError();
     throw error;
   });
-  return { promise, get processing(){return processing;}, detach(){controller.abort();xhr?.abort();}, abort() {
+  return { promise,transferred, get uploadId(){return uploadId;}, get processing(){return processing;}, detach(){controller.abort();xhr?.abort();}, abort() {
     cancelled = true;
     controller.abort();
     xhr?.abort();

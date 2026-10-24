@@ -15,17 +15,18 @@ import java.util.concurrent.*;
 public final class TransferService extends Service {
     public static final String EVENT="com.suiren.mirea.TRANSFER_CHANGED";private static final String CHANNEL="mirea-transfers-v1";private static final int NOTICE=120;
     private static final Map<String,TransferEngine.Job> jobs=new LinkedHashMap<>();public static volatile TransferService current;
-    private final ExecutorService workers=Executors.newFixedThreadPool(3);private final Handler main=new Handler(Looper.getMainLooper());private PowerManager.WakeLock wake;private long lastNotice,reservedUntil;private boolean destroying;
-    public static synchronized String offer(TransferEngine.Job job){if(jobs.values().stream().filter(TransferEngine.Job::active).count()>=1000)throw new IllegalStateException("Queue full");jobs.entrySet().removeIf(e->!e.getValue().active()&&jobs.size()>1200);jobs.put(job.id,job);return job.id;}
+    private final ExecutorService workers=Executors.newFixedThreadPool(3);private final ScheduledExecutorService monitors=Executors.newSingleThreadScheduledExecutor();private final Handler main=new Handler(Looper.getMainLooper());private PowerManager.WakeLock wake;private long lastNotice,reservedUntil;private boolean destroying;
+    public static synchronized String offer(TransferEngine.Job job){if(jobs.values().stream().filter(TransferEngine.Job::active).count()>=10000)throw new IllegalStateException("Queue full");jobs.entrySet().removeIf(e->!e.getValue().active()&&jobs.size()>10200);jobs.put(job.id,job);return job.id;}
     public static synchronized void discard(String id){TransferEngine.Job j=jobs.remove(id);if(j!=null)j.cancel();}
     public static synchronized JSONArray status(String partition)throws Exception{JSONArray result=new JSONArray();for(TransferEngine.Job j:jobs.values())if(j.api.partition.equals(partition))result.put(j.snapshot());return result;}
-    public static synchronized void cancel(String id,String partition){for(TransferEngine.Job j:jobs.values())if(j.api.partition.equals(partition)&&(id==null||j.id.equals(id)))j.cancel();if(current!=null)current.changed();}
+    public static synchronized void cancel(String id,String partition){cancel(id,partition,true);}
+    public static synchronized void cancel(String id,String partition,boolean cleanup){for(TransferEngine.Job j:jobs.values())if(j.api.partition.equals(partition)&&(id==null||j.id.equals(id)))j.cancel(cleanup);if(current!=null)current.changed();}
     public static synchronized void cancelAsset(String partition,String asset){for(TransferEngine.Job j:jobs.values())if(j.direction.equals("download")&&j.api.partition.equals(partition)&&asset.equals(j.data.optString("assetId")))j.cancel();if(current!=null)current.changed();}
     private static synchronized List<TransferEngine.Job> snapshot(){return new ArrayList<>(jobs.values());}
-    @Override public void onCreate(){super.onCreate();current=this;getSystemService(NotificationManager.class).createNotificationChannel(new NotificationChannel(CHANNEL,"アップロード・ダウンロード",NotificationManager.IMPORTANCE_LOW));}
+    @Override public void onCreate(){super.onCreate();current=this;monitors.scheduleWithFixedDelay(()->{for(TransferEngine.Job job:snapshot())if(job.state.equals("processing"))new TransferEngine(this,this::changed).poll(job);},1500,1500,TimeUnit.MILLISECONDS);getSystemService(NotificationManager.class).createNotificationChannel(new NotificationChannel(CHANNEL,"アップロード・ダウンロード",NotificationManager.IMPORTANCE_LOW));}
     @Override public int onStartCommand(Intent intent,int flags,int startId){
         if(intent==null){stopSelf();return START_NOT_STICKY;}
-        if("cancel".equals(intent.getAction())){reservedUntil=0;for(TransferEngine.Job j:snapshot())j.cancel();changed();return START_NOT_STICKY;}
+        if("cancel".equals(intent.getAction())){reservedUntil=0;for(TransferEngine.Job j:snapshot())j.cancel(true);changed();return START_NOT_STICKY;}
         if("reserve".equals(intent.getAction())){reservedUntil=SystemClock.elapsedRealtime()+60000;UpdateEngine.setTransferBusy(true);startForegroundNow();main.postDelayed(this::changed,60000);return START_NOT_STICKY;}
         reservedUntil=0;UpdateEngine.setTransferBusy(true);startForegroundNow();String id=intent.getStringExtra("id");TransferEngine.Job job;
         synchronized(TransferService.class){job=jobs.get(id);}
@@ -52,6 +53,6 @@ public final class TransferService extends Service {
         if(!active){UpdateEngine.setTransferBusy(false);stopForeground(STOP_FOREGROUND_DETACH);stopSelf();}
     });}
     @Override public void onTimeout(int startId,int type){for(TransferEngine.Job j:snapshot())j.cancel();stopForeground(STOP_FOREGROUND_REMOVE);stopSelf();}
-    @Override public void onDestroy(){destroying=true;for(TransferEngine.Job j:snapshot())if(j.active())j.cancel();workers.shutdownNow();if(wake!=null&&wake.isHeld())wake.release();current=null;UpdateEngine.setTransferBusy(false);super.onDestroy();}
+    @Override public void onDestroy(){destroying=true;for(TransferEngine.Job j:snapshot())if(j.active())j.cancel();workers.shutdownNow();monitors.shutdownNow();if(wake!=null&&wake.isHeld())wake.release();current=null;UpdateEngine.setTransferBusy(false);super.onDestroy();}
     @Override public IBinder onBind(Intent intent){return null;}
 }

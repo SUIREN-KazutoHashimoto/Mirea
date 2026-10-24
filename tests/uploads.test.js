@@ -181,7 +181,7 @@ test('image books retain manifest order and original bytes; corrupted persisted 
   const manifest = (await ctx.request('GET', `/items/${item.id}/pages`, ctx.owner)).json();
   assert.deepEqual(manifest.pages.map(page => page.filename), files.map(file => file.filename));
   assert.deepEqual((await ctx.request('GET', `/items/${item.id}/pages/1/content`, ctx.owner)).rawPayload, webp);
-  assert.equal((await sharp((await ctx.request('GET', `/items/${item.id}/thumbnail`, ctx.owner)).rawPayload).metadata()).format, 'jpeg');
+  assert.equal((await sharp((await ctx.request('GET', `/items/${item.id}/thumbnail`, ctx.owner)).rawPayload).metadata()).format, 'webp');
   const broken = await ctx.start();
   await ctx.send(broken);
   await writeFile(join(ctx.dataDir, 'uploads', 'transfers', broken.id, '0-0'), Buffer.alloc(256));
@@ -227,7 +227,7 @@ test('chunked short MP4 with an invalid edit list normalizes playback and preser
   const { item } = await ctx.wait(upload.id);
   const thumbnail = await ctx.request('GET', `/items/${item.id}/thumbnail`, ctx.owner);
   assert.equal(thumbnail.statusCode, 200, thumbnail.body);
-  assert.equal((await sharp(thumbnail.rawPayload).metadata()).format, 'jpeg');
+  assert.equal((await sharp(thumbnail.rawPayload).metadata()).format, 'webp');
   assert.deepEqual(await readFile(join(ctx.dataDir,'originals',item.id)),video);
   assert.notDeepEqual((await ctx.request('GET',`/items/${item.id}/content`,ctx.owner)).rawPayload,video);
 });

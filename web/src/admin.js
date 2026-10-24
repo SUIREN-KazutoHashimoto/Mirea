@@ -8,7 +8,7 @@ const states={queued:'待機中',running:'実行中',processing:'処理中',uplo
 const kinds={'validate-image':'画像の検証',thumbnail:'サムネイル',preview:'動画プレビュー',transcode:'配信画質・HLS',navigation:'動画ナビゲーション',backup_metadata:'メタデータバックアップ',backup_full:'全体バックアップ'};
 export async function openAdmin({dialog,api,esc,bytes,onStatistics,onReset}){
   const actor=getSession();const access=await api('/admin/access');if(!access.isServerAdmin||getSession()!==actor)throw new Error('サーバー管理者のみ利用できます。');
-  const tabs=[['overview','概要'],['jobs','ジョブ・再生成'],['cleanup','ファイル整理'],['users','アカウント'],['shelves','本棚の権限'],['statistics','統計'],['backups','バックアップ'],['updates','サーバー更新'],['audit','管理操作の記録'],['reset','データのリセット']];
+  const tabs=[['overview','概要'],['jobs','ジョブ・再生成'],['processing','転送・後処理設定'],['cleanup','ファイル整理'],['users','アカウント'],['shelves','本棚の権限'],['statistics','統計'],['backups','バックアップ'],['updates','サーバー更新'],['audit','管理操作の記録'],['reset','データのリセット']];
   const node=dialog('サーバー管理',`<div class="admin-layout"><nav class="admin-nav" aria-label="サーバー管理"><span class="eyebrow">SERVER ADMINISTRATION</span>${tabs.map(([id,label])=>`<button type="button" data-admin-tab="${id}" aria-current="false">${label}</button>`).join('')}</nav><section class="admin-panel" aria-live="polite"></section></div>`,'admin-modal');
   const panel=node.querySelector('.admin-panel');let active='',revision=0,disposed=false,poll;
   const current=()=>!disposed&&getSession()===actor;
@@ -31,6 +31,12 @@ export async function openAdmin({dialog,api,esc,bytes,onStatistics,onReset}){
       if(tab==='overview'){
         const data=await api('/admin/overview');if(!valid())return;
         panel.innerHTML=`<span class="eyebrow">MIREA CONTROL ROOM</span><h3>サーバーの状態</h3><p class="muted">サーバー管理権限は、本棚への閲覧権限とは別です。個人の閲覧ログは表示しません。</p><div class="admin-metrics"><article><strong>${data.accounts}</strong><small>登録アカウント</small></article><article><strong>${data.shelves}</strong><small>本棚</small></article><article><strong>${data.assets.reduce((n,a)=>n+a.count,0)}</strong><small>アセット</small></article><article><strong>${bytes(data.assets.reduce((n,a)=>n+a.canonicalBytes,0))}</strong><small>基本メディアの合計（派生データ除外）</small></article></div><h4>アップロード</h4>${data.uploads.map(row=>`<p>${esc(states[row.state])}: ${row.count}件</p>`).join('')||'<p>処理はありません。</p>'}<p class="muted">データベーススキーマ v${data.schema}</p>`;
+      }else if(tab==='processing'){
+        const [settings,conflicts]=await Promise.all([api('/admin/processing-settings'),api('/admin/series-name-conflicts')]);if(!valid())return;
+        panel.innerHTML='<h3>転送・後処理の設定</h3><p class="muted">送信と後処理は別枠です。変換完了を待たず次の転送を開始します。上限変更は待機中・新規処理から適用します。CPU・メモリー・空き容量に合わせて調整してください。</p><form class="processing-settings"><label>ユーザーごとの同時送信数<input type="number" min="1" max="32" name="maxConcurrentUploads" required></label><label>サーバーの同時後処理数（初期値5）<input type="number" min="1" max="16" name="maxConcurrentJobs" required></label><label>一括選択できるアセット数<input type="number" min="1" max="10000" name="maxUploadAssets" required></label><label>現在の管理者パスワード<input name="currentPassword" type="password" required autocomplete="current-password"></label><button class="button primary">設定を保存</button></form>';
+        if(conflicts.groups){const warning=document.createElement('p');warning.className='permission-note';warning.textContent='既存の同階層・同名シリーズが'+conflicts.groups+'組あります。自動改名・統合は行っていません。本棚の所有者が整理してください。';panel.prepend(warning);}
+        const form=panel.querySelector('form');for(const key of Object.keys(settings))form.elements[key].value=settings[key];
+        form.onsubmit=async event=>{event.preventDefault();const button=form.querySelector('button');button.disabled=true;try{await api('/admin/processing-settings',{method:'PATCH',body:{maxConcurrentUploads:Number(form.elements.maxConcurrentUploads.value),maxConcurrentJobs:Number(form.elements.maxConcurrentJobs.value),maxUploadAssets:Number(form.elements.maxUploadAssets.value),currentPassword:form.elements.currentPassword.value}});form.elements.currentPassword.value='';status('設定を保存しました。');}catch(error){status(error);}finally{button.disabled=false;}};
       }else if(tab==='jobs'){
         const loadJobs=await mountAdminJobs({panel,api,esc,bytes,confirm,valid,status});
         if(valid())poll=setInterval(()=>loadJobs().catch(status),4000);
