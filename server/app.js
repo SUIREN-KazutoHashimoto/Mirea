@@ -256,7 +256,7 @@ export async function createApp(options = {}) {
   });
   registerVideoStreams(app,{db,videoDir,authenticate,findItem});
   registerAccounts(app, { db, authenticate, membership, loginResult, cleanupUploads: uploads.cleanupUploads, rateLimit: options.rateLimit,adminAccess });
-  const videoPreviews = await registerVideoPreviews(app, { db, media, dataDir, uploadDir, authenticate, findItem });
+  const videoPreviews = await registerVideoPreviews(app, { db, media, dataDir, uploadDir, authenticate, findItem,jobPool });
     const navigation = await registerVideoNavigation(app,{db,uploadDir,originalDir,videoDir,authenticate,findItem,membership,maintenance,rateLimit:options.rateLimit,jobPool,generateNavigation:options.generateNavigation});
   async function removeAssetFiles(item){return Promise.allSettled([
     item.mime_type===IMAGE_BOOK_MIME?removeItemDirectory(booksDir,item.id):unlink(join(uploadDir,item.id)),

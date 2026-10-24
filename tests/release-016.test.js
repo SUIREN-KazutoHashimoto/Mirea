@@ -13,6 +13,7 @@ import {thumbnailWebp} from '../server/thumbnail-webp.js';
 import {createUploadBatch} from '../web/src/upload-batch.js';
 import {signUpdateEnvelope} from '../server/update-manifest.js';
 import {registerAppUpdates} from '../server/app-updates.js';
+import {registerVideoPreviews} from '../server/video-previews.js';
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
 async function fixture(t,options={}){
@@ -112,4 +113,12 @@ test('history removal is per user and presentation-only; an old heartbeat does n
   c.db.prepare('UPDATE analytics_views SET first_received_at=? WHERE id=?').run(hidden+10,view);
   assert.equal((await c.req('GET','/history',c.owner)).json().items.length,1);
   assert.equal((await c.req('DELETE','/history',c.owner)).statusCode,204);
+});
+
+test('lazy preview generation waits for the same global processing pool as other jobs',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'mirea-016-preview-')),app=Fastify(),pool=createJobPool(()=>1),hold=deferred(),running=pool.run(()=>hold.promise),id=randomUUID();let calls=0;
+  t.after(async()=>{hold.resolve();await running;await app.close();await rm(dir,{recursive:true,force:true});});
+  await registerVideoPreviews(app,{dataDir:dir,uploadDir:dir,jobPool:pool,db:{prepare:()=>({get:()=>({id})})},media:{preview:async(_source,path)=>{calls++;await writeFile(path,'preview');}},authenticate:req=>{req.user={id:'synthetic'};},findItem:()=>({id,mime_type:'video/mp4'})});
+  assert.equal((await app.inject({method:'POST',url:'/api/v1/items/'+id+'/preview'})).statusCode,202);await tick();assert.equal(calls,0);assert.equal(pool.queued,1);
+  hold.resolve();await running;for(let n=0;n<50&&calls===0;n++)await tick();assert.equal(calls,1);
 });
