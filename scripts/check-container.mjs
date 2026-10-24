@@ -16,6 +16,7 @@ const bytes=pdf();
 if(mode==='prepare'){
  const id=execFileSync('docker',['compose','ps','-q','mirea'],{encoding:'utf8'}).trim();assert(id);
  const [c]=JSON.parse(execFileSync('docker',['inspect',id],{encoding:'utf8'}));assert.equal(c.Config.Labels['com.docker.compose.project'],process.env.COMPOSE_PROJECT_NAME);assert.equal(c.Config.User,'1000:1000');assert.equal(c.HostConfig.Privileged,false);assert.equal(c.HostConfig.ReadonlyRootfs,true);assert(c.HostConfig.CapDrop.includes('ALL'));assert(c.HostConfig.SecurityOpt.some(v=>v.startsWith('no-new-privileges')));assert(!c.Mounts.some(v=>v.Destination.includes('docker.sock')));
+ assert.deepEqual(c.Config.Entrypoint,['/usr/local/bin/mirea-launch']);
  assert.equal((await(await request('/api/health')).json()).version,pkg.version);
  const session=await json('/auth/register',{method:'POST',body:{name:'Isolated container test',email:randomUUID()+'@example.invalid',password:randomUUID()+'-fixture-only'}}),token=session.token;
  const shelf=await json('/shelves',{token,method:'POST',body:{name:'Persistent CI shelf'}}),parent=(await json('/shelves/'+shelf.id+'/series',{token,method:'POST',body:{title:'Parent'}})).series,child=(await json('/shelves/'+shelf.id+'/series',{token,method:'POST',body:{title:'Child',parentId:parent.id}})).series;

@@ -2,6 +2,8 @@
 # signing identities, local credentials or release archives to the builder.
 **
 !Dockerfile
+!container/
+!container/launcher.c
 !package.json
 !pnpm-lock.yaml
 !pnpm-workspace.yaml

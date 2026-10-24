@@ -1,11 +1,11 @@
-# TrueNAS 25.04.2.6 Custom App — Mirea 0.15.0beta
+# TrueNAS 25.04.2.6 Custom App — Mirea 0.15.1beta
 
 この手順は導入計画です。TrueNASへのインストール・設定変更・既存WinVAI01からのデータ移行は自動実行しません。対象はDockerベースのAppsを持つTrueNAS **25.04.2.6 / x86-64**。ARM版・GPUトランスコード・複数レプリカは提供しません。
 
 ## 配布物と推奨構成
 
-- イメージ: `ghcr.io/suiren-kazutohashimoto/mirea:0.15.0beta`（linux/amd64）。`latest`は使いません。
-- [リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.15.0beta)の`mirea-0.15.0beta-container.json`でコミット・レジストリdigestを確認し、可能なら`image`をそこに記載した`ghcr.io/…@sha256:…`へ固定します。
+- イメージ: `ghcr.io/suiren-kazutohashimoto/mirea:0.15.1beta`（linux/amd64）。`latest`は使いません。Landlock ABI 3以上が有効なホストが必須です。
+- [リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.15.1beta)の`mirea-0.15.1beta-container.json`でコミット・レジストリdigestを確認し、可能なら`image`をそこに記載した`ghcr.io/…@sha256:…`へ固定します。
 - DockerがGHCRへ接続できない環境用に、同じ検証済みイメージの`container-linux-amd64.tar.gz`とSHA-256も配布します。導入操作はTrueNASのサポート範囲に従ってください。
 - 推奨は [Compose YAML](../deploy/truenas/compose.yaml) を使うCustom App。NASのローカルSSDデータセットを`/data`、大容量側を`/media`へそれぞれマウントし、HTTPSは別のリバースプロキシで終端します。
 
@@ -51,20 +51,26 @@
 
 ## 3. GUIのCustom Appを使う場合の対応表
 
-YAMLのほうが安全設定を再現しやすいため推奨です。GUIを使うなら上の値に加えて次を確認します。
+0.15.1beta以降はGUIからも、イメージ内の非root起動ランチャーを使って導入できます。[保護の範囲・必須条件・HTTPS事前検査](container-security.md)を先に確認してください。これはYAMLのDocker保護設定そのものを再現する方式ではありません。
 
 | 25.04 GUI項目 | 設定 |
 | --- | --- |
-| Image Repository / Tag | `ghcr.io/suiren-kazutohashimoto/mirea` / `0.15.0beta` |
+| Image Repository / Tag | `ghcr.io/suiren-kazutohashimoto/mirea` / `0.15.1beta` |
 | Entrypoint / Command | 上書きしない |
 | Custom User | 有効、User ID 1000 / Group ID 1000 |
 | Privileged / Host Network | 無効 / 無効 |
+| Capabilities Add | 空。追加しない |
 | Disable Builtin Healthcheck | 無効（イメージの検査を使用） |
 | Storage Type / Mount Path | Host Pathを2件、状態用 `/data`・本体用 `/media`、いずれもRead Onlyは無効 |
 | 環境変数 | YAMLのenvironmentを転記、HOST=0.0.0.0 / PORT=3000 / DATA_DIR=/data / MEDIA_DIR=/media |
 | CPU / Memory | 2 / 4096 MiBから開始 |
+| `/tmp` | tmpfs、256 MiB（GUIで指定可能な場合） |
 
-GUIがホストbindアドレス・cap_drop・読取専用root FS等を表現できない場合は、保護を省かずYAML方式を使います。UID/GID・ポート・Host Path等の名称は[25.04公式リファレンス](https://www.truenas.com/docs/scale/25.04/scaleuireference/apps/installcustomappscreens/)に対応します。
+GUIはcap_drop・読取専用root FS・no-new-privilegesを指定できませんが、イメージのランチャーはNode開始前にno_new_privsとLandlockを強制します。適用できない場合はデータを初期化せず停止します。Entrypointを迂回したり特権で起動させないでください。ホストbindは対象のLAN IPを明示し、全インターフェースへの公開を避けます。
+
+直接HTTPSを使う新規導入では、`MIREA_TRUENAS_PREFLIGHT=1`と[事前検査の全変数](container-security.md#truenas-https事前検査)を追加します。証明書と実行IDはそのNASで用意したものを使い、秘密鍵はHost Path内だけに置きます。初回の空領域検査は既存データを消す指示ではありません。初回アカウントは新しく登録し、リセット前のユーザーUUIDを管理者設定へ流用しません。
+
+UID/GID・ポート・Host Path等の名称は[25.04公式リファレンス](https://www.truenas.com/docs/scale/25.04/scaleuireference/apps/installcustomappscreens/)に対応します。
 
 ## 4. HTTPSとAD CS
 
@@ -76,7 +82,8 @@ Cloudflareを使う場合は[配信経路・利用条件の注意](cloudflare.md
 
 ## 5. 導入後の確認
 
-- Appsのコンテナがhealthyになり、`/api/health`が`status:ok / version:0.15.0-beta`であること。
+- 起動ログに`Mirea container sandbox enforced`があり、HTTPS事前検査を有効にした場合は`truenas_preflight_passed`もあること。
+- Appsのコンテナがhealthyになり、`/api/health`が`status:ok / version:0.15.1-beta`であること。
 - 信頼されたHTTPSからログイン、本棚・シリーズ階層・サムネイルを確認。
 - 小さなPDF／動画／音声をテスト専用本棚へアップロードし、ジョブ完了、再生・読書・シーク・保存・再接続を確認。
 - アプリを停止・再開してもアカウント・続き位置・ダウンロード鍵が変わらないこと。
@@ -110,7 +117,7 @@ Custom Appでは、App Versionがcustom、バージョンが1.0.0、SourceがN/A
 4. 上記の導入後確認を実施。Mireaの管理画面からDocker更新は実行しません。Dockerソケット・NAS管理資格情報・特権をWebへ与えないでください。
 5. 不調時は停止して、**旧イメージ＋更新前データ／設定の対応した組**を復元。新DBに旧サーバーを当てるダウングレードや、旧新サーバーから同じデータを同時に開く運用はしません。
 
-0.15.0betaのDBはv17のままです。今後の移行に備えて上記を毎回行います。App削除時もデータセットを削除しないでください。`docker compose down -v`は禁止です。
+0.15.1betaのDBはv17のままです。今後の移行に備えて上記を毎回行います。App削除時もデータセットを削除しないでください。`docker compose down -v`は禁止です。
 
 WinVAI01から移行する場合も最初に旧サービスを停止して全データをコピーします。同じHTTPSオリジンを維持できない場合、ブラウザー／アプリの端末内保存はサーバー別管理のため再接続・再取得が必要になる場合があります。移行検証が済むまで旧データを保持します。
 

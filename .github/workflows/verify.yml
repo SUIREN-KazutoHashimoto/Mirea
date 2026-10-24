@@ -43,10 +43,12 @@ jobs:
         with:
           node-version: 24.19.0
       - run: docker compose build --build-arg VCS_REF=${{ github.sha }}
+      - name: Verify the unprivileged sandbox with TrueNAS GUI security defaults
+        run: node scripts/check-container-sandbox.mjs
       - run: docker compose up -d --wait
       - run: curl --fail http://localhost:3000/
       - name: Verify video and audio conversion inside the read-only container
-        run: docker compose exec -T mirea node --input-type=module < scripts/check-media-runtime.mjs
+        run: docker compose run --rm --no-deps -T mirea /usr/local/bin/node --input-type=module < scripts/check-media-runtime.mjs
       - name: Create isolated accounts, nested series, PDF, progress and encrypted download
         run: node scripts/check-container.mjs prepare
       - run: docker compose up -d --force-recreate --wait
@@ -55,7 +57,7 @@ jobs:
       - name: Verify separate storage across a real filesystem boundary
         # Exercise the formerly broken stdin launcher too: file workers must
         # support inherited --input-type without dropping runtime permissions.
-        run: docker compose exec -e MIREA_EXPECT_CROSS_DEVICE=1 -e MIREA_STORAGE_FIXTURE_ROOT=/data -T mirea node --input-type=module < scripts/check-storage-runtime.mjs
+        run: docker compose run --rm --no-deps -e MIREA_EXPECT_CROSS_DEVICE=1 -e MIREA_STORAGE_FIXTURE_ROOT=/data -T mirea /usr/local/bin/node --input-type=module < scripts/check-storage-runtime.mjs
       - name: Verify opt-in persistent media volume and recreation
         run: |
           docker compose down

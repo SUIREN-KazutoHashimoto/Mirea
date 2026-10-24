@@ -7,7 +7,7 @@ import pkg from '../package.json' with {type:'json'};
 const read=p=>readFile(new URL('../'+p,import.meta.url),'utf8');
 test('container context is source-only and excludes attachments, keys, production data and generated files',async()=>{
  const lines=(await read('.dockerignore')).split(/\r?\n/).map(s=>s.trim()).filter(s=>s&&!s.startsWith('#'));assert.equal(lines[0],'**');const allowed=path=>lines.slice(1).some(l=>l.startsWith('!')&&(l.endsWith('/**')?path.startsWith(l.slice(1,-2)):path===l.slice(1)));
- for(const path of ['scripts/prepare-media-storage.mjs','web/src/main.js','web/public/brand/orbit-icon.svg','server/app.js','package.json','pnpm-lock.yaml','Dockerfile'])assert(allowed(path),path);
+ for(const path of ['container/launcher.c','scripts/prepare-media-storage.mjs','web/src/main.js','web/public/brand/orbit-icon.svg','server/app.js','package.json','pnpm-lock.yaml','Dockerfile'])assert(allowed(path),path);
  for(const path of ['.git/config','.env','.local/signing.properties','.codex-remote-attachments/file.mp4','data/mirea.sqlite','releases/package.apk','android/keystore.p12','certificate.key','dist/index.html'])assert(!allowed(path),path);
  assert(allowed('scripts/pwa-icons.mjs'));assert((await read('Dockerfile')).includes('COPY scripts/pwa-icons.mjs ./scripts/pwa-icons.mjs'));
  const docker=await read('Dockerfile');for(const v of ['USER 1000:1000','server/healthcheck.mjs','fonts-noto-cjk ffmpeg','org.opencontainers.image.revision','mkdir -p /data /media'])assert(docker.includes(v));assert(!docker.includes('COPY . '));assert(docker.includes('org.opencontainers.image.licenses="Apache-2.0"'));assert((await read('LICENSE')).includes('Apache License'));
@@ -16,7 +16,14 @@ test('release and TrueNAS configurations pin image, isolate data and avoid privi
  for(const path of ['compose.release.yaml','deploy/truenas/compose.yaml']){const yaml=await read(path);for(const v of ['ghcr.io/suiren-kazutohashimoto/mirea:'+pkg.version.replace('-beta','beta'),'user: "1000:1000"','read_only: true','no-new-privileges:true','cap_drop:','stop_grace_period: 2m','DATA_DIR: /data','host_ip:'])assert(yaml.includes(v),path+' '+v);assert(!yaml.includes('privileged: true'));assert(!yaml.includes('docker.sock'));assert(!yaml.includes(':latest'));}
  const nas=await read('deploy/truenas/compose.yaml');for(const v of ['create_host_path: false','host_ip: 127.0.0.1','mem_limit: 4g','pids_limit: 256','published: "13000"'])assert(nas.includes(v));
  const ci=await read('.github/workflows/verify.yml');for(const v of ['needs: [web-and-api, container, android]','scripts/check-container.mjs prepare','scripts/check-container.mjs verify','--force-recreate','packages: write'])assert(ci.includes(v));
- assert(ci.includes('mirea node --input-type=module < scripts/check-storage-runtime.mjs'));
+ assert(ci.includes('mirea /usr/local/bin/node --input-type=module < scripts/check-storage-runtime.mjs'));
+ assert(ci.includes('scripts/check-container-sandbox.mjs'));
+});
+
+test('image starts through the mandatory pre-thread sandbox and code is not runtime-owned',async()=>{
+ const docker=await read('Dockerfile');assert(docker.includes('ENTRYPOINT ["/usr/local/bin/mirea-launch"]'));assert(docker.includes('/app/server/container-entry.mjs'));assert(!docker.includes('--chown=node:node'));assert(docker.includes('-Werror'));
+ const launcher=await read('container/launcher.c');for(const v of ['PR_SET_NO_NEW_PRIVS','SYS_landlock_restrict_self','LANDLOCK_ACCESS_FS_TRUNCATE','LANDLOCK_ACCESS_FS_REFER','SYS_close_range','abi < 3','PR_GET_SECCOMP','execv(argv[1]'])assert(launcher.includes(v));
+ const entry=await read('server/container-entry.mjs');assert(entry.indexOf('await preflightTrueNas()')<entry.indexOf("await import('./index.js')"));
 });
 test('health probe is local-only, version checked, bounded and does not bypass TLS or follow redirects',async t=>{
  let code=200,body={status:'ok',version:pkg.version};const server=http.createServer((req,res)=>{assert.equal(req.url,'/api/health');res.writeHead(code,{'content-type':'application/json',location:'http://evil.test/'});res.end(JSON.stringify(body));});await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>new Promise(r=>server.close(r)));const env={PORT:String(server.address().port)};
