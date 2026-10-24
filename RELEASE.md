@@ -1,3 +1,11 @@
+# 0.15.1beta
+
+- TrueNAS 25.04.2.6のGUI Custom App用に、非rootのLinux起動ランチャーを追加。Nodeのスレッド生成前にno_new_privsとLandlockを適用し、子プロセス・PDFワーカーにも継承。書き込み先を`/data`・任意の`/media`・`/tmp`へ限定し、実行コードをroot所有に変更。
+- Landlock ABI 3以上・Dockerのseccomp・非root UID/GID・有効capabilityなしを必須化。対応しないホストで制限を弱めるフォールバックはありません。通常のCompose保護も維持。Dockerのread_only/cap_dropと同一設定だとは扱いません。
+- GUIから選べるTrueNAS HTTPS事前検査を追加。証明書／公開鍵の指紋、DNS/IP、署名・期限・秘密鍵の一致、保存先／TLS権限をDB初期化前に確認。初回は証明書だけがある空の保存先を要求し、既存データを自動採用・削除しない。
+- CIでGUI既定の書込可能root・通常のcapability境界集合でも保護を検証。書込・切詰め・rename/link・スレッド／子の継承・未対応ホストの拒否、既存のメディア変換・再作成後のデータ／暗号鍵保持を確認。
+- DB v17・Windows直接起動・証明書・保存先・LAN境界を維持。Androidは0.15.0beta／code 30を継続し、署名鍵の再作成や端末内保存の削除は行いません。
+
 # 0.15.0beta
 
 - 失敗したアップロードを同時処理枠から除外し、新規・個別再試行・管理者再試行・動画／音声multipartで同じ上限を適用。失敗した動画・音声の原本は再試行用に保持。

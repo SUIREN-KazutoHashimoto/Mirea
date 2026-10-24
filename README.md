@@ -2,7 +2,7 @@
 
 ブラウザー版は[PWAとしてインストール](docs/pwa.md)できます。ログイン画面・設定に案内があり、既存の暗号化ダウンロードと7日間のオフライン視聴を利用します。
 
-**0.15.0beta**（内部 `0.15.0-beta`、Android versionCode 30）。[配布リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.15.0beta)、[変更履歴・制限](RELEASE.md)、[TrueNAS 25.04.2.6 Custom App手順](docs/truenas-25.04.md)を参照してください。既存の専用APK署名を維持し、旧デバッグ署名からの初回移行だけは手動です。
+**0.15.1beta**（内部 `0.15.1-beta`、サーバー／コンテナの更新。Androidは0.15.0beta・versionCode 30を継続）。[配布リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.15.1beta)、[変更履歴・制限](RELEASE.md)、[TrueNAS 25.04.2.6 Custom App手順](docs/truenas-25.04.md)を参照してください。既存の専用APK署名を維持し、旧デバッグ署名からの初回移行だけは手動です。
 
 動画・音声・音楽・PDF・EPUB・複数画像の本を、本棚単位で共有できるクライアント・サーバー型メディアライブラリです。PCのWebブラウザとAndroidアプリが、同じAPI・アカウント・本棚を使います。
 
@@ -63,7 +63,7 @@
 
 ### Dockerコンテナで起動
 
-Docker EngineとCompose v2が必要です。配布済みイメージ（linux/amd64）を使う場合:
+Docker EngineとCompose v2、Landlock ABI 3以上が有効なLinuxホスト（通常Linux 6.2以降）が必要です。未対応時は保護を省かず起動を停止します。[コンテナの保護・対応条件](docs/container-security.md)を参照してください。配布済みイメージ（linux/amd64）を使う場合:
 
 ```sh
 docker compose -f compose.release.yaml up -d

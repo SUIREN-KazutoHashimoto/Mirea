@@ -24,6 +24,7 @@ assert(runs.workflow_runs.some(r=>r.head_sha===sha&&r.head_branch==='develop'&&r
 function docker(args,options={}){try{return execFileSync('docker',args,{encoding:'utf8',maxBuffer:16*1024*1024,stdio:['pipe','pipe','pipe'],...options}).trim();}catch(error){throw Error('Docker '+args[0]+' failed ('+error.status+')');}}
 docker(['load','-i',join(folder,'mirea-container-tested.tar.gz')]);
 const [tested]=JSON.parse(docker(['image','inspect','mirea:ci']));assert.equal(tested.Config.User,'1000:1000');assert.equal(tested.Os,'linux');assert.equal(tested.Architecture,'amd64');assert.equal(tested.Config.Labels['org.opencontainers.image.revision'],sha);assert.equal(tested.Config.Labels['org.opencontainers.image.version'],pkg.version);
+assert.deepEqual(tested.Config.Entrypoint,['/usr/local/bin/mirea-launch']);
 docker(['login','ghcr.io','--username',repository.split('/')[0],'--password-stdin'],{input:token});
 const packageInfo=await api(`/users/${repository.split('/')[0]}/packages/container/mirea`);
 for(const name of [version,'sha-'+sha]){
