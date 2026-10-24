@@ -1,6 +1,7 @@
 import {shelfSeries,shelfSeriesMembership} from './series.js';
 import {publicProgress} from './progress.js';
 import {pendingShelfUploads} from './pending-uploads.js';
+import {userPlaylists} from './playlists.js';
 
 // A complete, authenticated snapshot. No pagination/selected-shelf ambiguity:
 // removing a membership also removes its entire tree from the next snapshot.
@@ -20,7 +21,8 @@ export function registerLibraryCatalog(app,{db,authenticate,publicItem}){
         items.push(...db.prepare('SELECT * FROM items WHERE shelf_id=? ORDER BY created_at DESC,id').all(shelf.id).map(i=>({...publicItem(i),...context,series:membership.get(i.id)??null,progress:progress.get(i.id)??null})),
           ...pendingShelfUploads(db,shelf.id).map(i=>({...i,...context})));
       }
-      db.exec('COMMIT');return {version:1,userId:req.user.id,serverTime:Date.now(),shelves,series,items};
+      const playlists=userPlaylists(db,req.user.id);
+      db.exec('COMMIT');return {version:1,userId:req.user.id,serverTime:Date.now(),shelves,series,items,playlists};
     }catch(error){db.exec('ROLLBACK');throw error;}
   });
 }

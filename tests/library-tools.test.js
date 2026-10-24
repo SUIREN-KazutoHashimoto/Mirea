@@ -1,0 +1,64 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {DatabaseSync} from 'node:sqlite';
+import {createApp} from '../server/app.js';
+import {compareCollection,loadCollectionSort,saveCollectionSort} from '../web/src/collection-sort.js';
+import {folderParts,folderUploadJobs,prepareFolderSeries} from '../web/src/folder-upload.js';
+import {planUploads,validateUploadPlan} from '../web/src/upload-batch.js';
+import {normalizeCatalog,createCatalogCache} from '../web/src/offline-catalog.js';
+
+test('personal playlists span authorized shelves, retain order after restart, hide other accounts and revoke inaccessible references',async t=>{
+ const dataDir=await mkdtemp(join(tmpdir(),'mirea-playlist-'));let app=await createApp({dataDir,rateLimit:false});const db=new DatabaseSync(join(dataDir,'mirea.sqlite'));db.exec('PRAGMA foreign_keys=ON');
+ t.after(async()=>{db.close();await app.close();await rm(dataDir,{recursive:true,force:true});});
+ const req=(method,path,user,body)=>app.inject({method,url:'/api/v1'+path,headers:user?{authorization:'Bearer '+user.token}:{},...(body?{payload:body}:{})});
+ const a=(await req('POST','/auth/register',null,{email:'a@example.test',name:'A',password:'playlist-password'})).json(),b=(await req('POST','/auth/register',null,{email:'b@example.test',name:'B',password:'playlist-password'})).json();
+ const shelf=async(user,name)=>(await req('POST','/shelves',user,{name})).json().id,s1=await shelf(a,'Own'),s2=await shelf(b,'Shared');
+ await req('POST',`/shelves/${s2}/members`,b,{email:a.user.email,role:'viewer'});
+ const asset=s=>{const id=randomUUID();db.prepare('INSERT INTO items(id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?,?)').run(id,s,'Title','fixture.pdf','application/pdf',1,b.user.id,1);return id;},one=asset(s1),two=asset(s2);
+ const requestId=randomUUID();let p=(await req('POST','/playlists',a,{title:'Mixed',requestId})).json().playlist;
+ assert.equal((await req('POST','/playlists',a,{title:'Mixed',requestId})).json().playlist.id,p.id);assert.equal((await req('GET','/playlists',a)).json().playlists.length,1);assert.equal((await req('POST','/playlists',b,{title:'Foreign request',requestId})).statusCode,409);
+ assert.equal((await req('PUT','/playlists/'+p.id,a,{revision:p.revision,title:p.title,assetIds:[two,one]})).statusCode,200);
+ assert.equal((await req('PUT','/playlists/'+p.id,a,{revision:p.revision,title:p.title,assetIds:[one]})).statusCode,409);
+ p=(await req('GET','/playlists',a)).json().playlists[0];assert.deepEqual(p.assetIds,[two,one]);
+ assert.equal((await req('PUT','/playlists/'+p.id,b,{revision:p.revision,title:'stolen',assetIds:[two]})).statusCode,404);
+ assert.deepEqual((await req('GET','/playlists',b)).json().playlists,[]);assert.equal((await req('GET','/playlists',null)).statusCode,401);
+ assert.equal((await req('PUT','/playlists/'+p.id,a,{revision:p.revision,title:p.title,assetIds:[one,one]})).statusCode,400);
+ await app.close();app=await createApp({dataDir,rateLimit:false});assert.deepEqual((await req('GET','/playlists',a)).json().playlists[0].assetIds,[two,one]);
+ await req('DELETE',`/shelves/${s2}/members/${a.user.id}`,b);
+ const catalog=(await req('GET','/library/catalog',a)).json();assert.deepEqual(catalog.playlists[0].assetIds,[one]);assert(!JSON.stringify(catalog).includes(two));
+ const cache=normalizeCatalog(catalog,a.user.id);assert.deepEqual(cache.playlists[0].assetIds,[one]);
+ assert.equal((await req('PUT','/playlists/'+p.id,a,{revision:p.revision,title:p.title,assetIds:[two]})).statusCode,404);
+ const count=db.prepare('SELECT COUNT(*) n FROM items').get().n;assert.equal((await req('DELETE','/playlists/'+p.id,a,{revision:p.revision})).statusCode,204);assert.equal(db.prepare('SELECT COUNT(*) n FROM items').get().n,count);
+ assert.equal(db.prepare('SELECT version FROM schema_version').get().version,18);assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
+});
+test('sorting is numeric/stable in both directions, size/progress work and preferences survive unavailable storage',()=>{
+ const a={id:'a',title:'Track 2',createdAt:2,size:20,progress:{updatedAt:50}},b={id:'b',title:'Track 10',createdAt:1,size:10,progress:{completed:true,updatedAt:100}};
+ for(const sort of ['name','recent','size-desc','progress'])assert(compareCollection(a,b,sort)<0,sort);
+ for(const sort of ['name-desc','oldest','size-asc'])assert(compareCollection(a,b,sort)>0,sort);
+ const storage={setItem(k,v){this.value=v;},getItem(){return this.value;}};saveCollectionSort('size-desc',storage);assert.equal(loadCollectionSort(storage),'size-desc');assert.equal(saveCollectionSort('unsafe',storage),'recent');assert.equal(loadCollectionSort({getItem(){throw Error();}}),'recent');
+});
+test('folder imports keep each file separate, numeric ordering and same-basename files in distinct folders; reject unsafe paths and retry series idempotently',async()=>{
+ const file=path=>{const f=new File(['fixture'],path.split('/').at(-1),{lastModified:1});Object.defineProperty(f,'webkitRelativePath',{value:path});return f;};
+ const jobs=folderUploadJobs(['Album/Disc 2/01.mp3','Album/Disc 1/01.mp3','Album/Disc 1/10.png','Album/Disc 1/2.png'].map(file),planUploads);
+ assert.equal(jobs.length,4);assert.deepEqual(jobs.map(j=>j.relativePath),['Album/Disc 1/01.mp3','Album/Disc 1/2.png','Album/Disc 1/10.png','Album/Disc 2/01.mp3']);assert(jobs.every(j=>j.files.length===1));
+ assert.equal(validateUploadPlan(jobs,{maxUploadBytes:1000,maxBookPages:500,maxImageBytes:1000}),'');
+ for(const path of ['../x.mp3','Album//x.mp3','/x.mp3','Album/../x.mp3','Album\\x.mp3','a/'.repeat(17)+'x.mp3'])assert.throws(()=>folderParts(path),path);
+ assert.throws(()=>folderUploadJobs([file('A/a.pdf'),file('A/a.pdf')],planUploads),/重複/);
+ const records=new Map(),seen=new Map(),calls=[];let failed=true;
+ const api=async(path,{body})=>{calls.push({...body});if(body.title==='Disc 2'&&failed){failed=false;throw Error('network');}if(!seen.has(body.requestId))seen.set(body.requestId,{id:randomUUID()});return {series:seen.get(body.requestId)};};
+ await assert.rejects(prepareFolderSeries(jobs,{api,shelfId:'s',records}),/network/);const before=calls.length;
+ const mapping=await prepareFolderSeries(jobs,{api,shelfId:'s',records});assert.equal(calls.length,before+1);assert.equal(calls.at(-1).requestId,calls.at(-2).requestId);assert.equal(mapping.size,4);assert.equal(mapping.get(jobs[0].key),mapping.get(jobs[1].key));assert.notEqual(mapping.get(jobs[0].key),mapping.get(jobs.at(-1).key));
+});
+test('explicit catalog cover bulk refresh reports exact progress, forces cached images, exposes failures and supports cancellation',async()=>{
+ const rows=new Map(),vault={unseal:async(p,k)=>rows.get(k),seal:async(p,k,v)=>rows.set(k,v)},cache=createCatalogCache(vault);const id=randomUUID(),catalog={items:[{id,thumbnailUrl:'/api/v1/items/'+id+'/thumbnail'}]};let fetches=0;const progress=[];
+ const fetch=async()=>{fetches++;return new Blob(['fixture'],{type:'image/jpeg'});};
+ assert.equal((await cache.syncCovers('p',catalog,fetch,{force:true,onProgress:p=>progress.push(p)})).saved,1);assert.equal(progress[0].done,1);
+ assert.equal((await cache.syncCovers('p',catalog,fetch)).skipped,1);assert.equal(fetches,1);
+ assert.equal((await cache.syncCovers('p',catalog,fetch,{force:true})).saved,1);assert.equal(fetches,2);
+ assert.equal((await cache.syncCovers('p',catalog,async()=>{throw Error('offline');},{force:true})).failed,1);
+ assert.equal((await cache.syncCovers('p',catalog,fetch,{current:()=>false})).cancelled,true);
+});

@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import {registerLibraryCatalog} from './library-catalog.js';
+import {registerPlaylists} from './playlists.js';
 import {registerCustomThumbnails} from './custom-thumbnails.js';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
@@ -266,6 +267,7 @@ export async function createApp(options = {}) {
   analytics = await registerAnalytics(app, { db, authenticate, membership, findItem, options,adminAccess });
   registerProgress(app,{db,authenticate,findItem,options});
   registerSeries(app,{db,authenticate,membership,findItem,publicItem});
+  registerPlaylists(app,{db,authenticate,findItem});
   try{await registerDownloads(app,{db,dataDir,uploadDir,booksDir,videoDir,authenticate,findItem,options});}catch(error){await app.close();throw error;}
   app.post('/api/v1/shelves/:id/items', auth, async (req, reply) => {
     membership(req.params.id, req.user.id, ['owner', 'editor']);

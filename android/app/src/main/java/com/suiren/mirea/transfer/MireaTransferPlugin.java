@@ -5,6 +5,7 @@ import android.content.*;
 import android.database.Cursor;
 import android.net.Uri;
 import android.provider.OpenableColumns;
+import android.provider.DocumentsContract;
 import androidx.activity.result.ActivityResult;
 import androidx.core.content.ContextCompat;
 import com.getcapacitor.*;
@@ -28,6 +29,36 @@ public final class MireaTransferPlugin extends Plugin {
     @PluginMethod public void chooseFiles(PluginCall call){
         Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*").putExtra(Intent.EXTRA_ALLOW_MULTIPLE,true).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         startActivityForResult(call,intent,"chosenFiles");
+    }
+    @PluginMethod public void chooseFolder(PluginCall call){
+        Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        startActivityForResult(call,intent,"chosenFolder");
+    }
+    @ActivityCallback private void chosenFolder(PluginCall call,ActivityResult result){
+        if(call==null)return;if(result.getResultCode()!=Activity.RESULT_OK||result.getData()==null||result.getData().getData()==null){call.resolve(new JSObject().put("files",new JSArray()));return;}
+        Uri tree=result.getData().getData();
+        io.submit(()->{try{
+            if(!"content".equals(tree.getScheme()))throw new IllegalArgumentException();
+            getContext().getContentResolver().takePersistableUriPermission(tree,Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            String root=DocumentsContract.getTreeDocumentId(tree),name=null;
+            try(Cursor c=getContext().getContentResolver().query(DocumentsContract.buildDocumentUriUsingTree(tree,root),new String[]{DocumentsContract.Document.COLUMN_DISPLAY_NAME},null,null,null)){if(c!=null&&c.moveToFirst())name=c.getString(0);}
+            folderName(name);JSArray files=new JSArray();Map<String,Uri> pending=new HashMap<>();Set<String> seen=new HashSet<>();int[] count={0};long deadline=android.os.SystemClock.elapsedRealtime()+30000;
+            readFolder(tree,root,name,1,files,pending,seen,count,deadline);
+            if(selected.size()+pending.size()>3000)throw new IllegalArgumentException();selected.putAll(pending);call.resolve(new JSObject().put("files",files));
+        }catch(Exception e){call.reject("フォルダを取得できません。端末内の100ファイル・16階層以内のフォルダを選んでください。");}});
+    }
+    private static void folderName(String name){if(name==null||name.trim().isEmpty()||name.length()>200||name.equals(".")||name.equals("..")||name.chars().anyMatch(c->c<32||c==127||c=='/'||c=='\\'))throw new IllegalArgumentException();}
+    private void readFolder(Uri tree,String document,String path,int depth,JSArray files,Map<String,Uri> pending,Set<String> seen,int[] count,long deadline)throws Exception{
+        if(depth>16||!seen.add(document)||++count[0]>300||android.os.SystemClock.elapsedRealtime()>deadline)throw new IllegalArgumentException();
+        String[] columns={DocumentsContract.Document.COLUMN_DOCUMENT_ID,DocumentsContract.Document.COLUMN_DISPLAY_NAME,DocumentsContract.Document.COLUMN_MIME_TYPE,DocumentsContract.Document.COLUMN_SIZE,DocumentsContract.Document.COLUMN_LAST_MODIFIED};
+        try(Cursor c=getContext().getContentResolver().query(DocumentsContract.buildChildDocumentsUriUsingTree(tree,document),columns,null,null,null)){
+            if(c==null)throw new IllegalArgumentException();while(c.moveToNext()){
+                if(android.os.SystemClock.elapsedRealtime()>deadline)throw new IllegalArgumentException();String id=c.getString(0),name=c.getString(1),mime=c.getString(2);folderName(name);
+                if(DocumentsContract.Document.MIME_TYPE_DIR.equals(mime))readFolder(tree,id,path+"/"+name,depth+1,files,pending,seen,count,deadline);
+                else{long size=c.isNull(3)?-1:c.getLong(3);if(size<=0||files.length()>=100)throw new IllegalArgumentException();String key=UUID.randomUUID().toString();Uri uri=DocumentsContract.buildDocumentUriUsingTree(tree,id);pending.put(key,uri);
+                    files.put(new JSObject().put("nativeId",key).put("name",name).put("size",size).put("type",mime==null?"application/octet-stream":mime).put("lastModified",c.isNull(4)?0:c.getLong(4)).put("relativePath",path+"/"+name));}
+            }
+        }
     }
     @ActivityCallback private void chosenFiles(PluginCall call,ActivityResult result){
         if(call==null)return;if(result.getResultCode()!=Activity.RESULT_OK||result.getData()==null){call.resolve(new JSObject().put("files",new JSArray()));return;}

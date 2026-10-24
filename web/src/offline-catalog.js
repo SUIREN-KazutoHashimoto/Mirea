@@ -31,13 +31,19 @@ export function normalizeCatalog(input,userId){
       shelfName:byShelf.get(i.shelfId).name,role:byShelf.get(i.shelfId).role,series:s?{id:s.id,title:s.title,position:number(i.series.position),label:text(i.series.label,80)}:null,
       progress:i.progress?fields(i.progress,['revision','positionMs','durationMs','page','scrollX','scrollY','zoom','completed','updatedAt']):null};
   });
-  return {version:1,userId,serverTime:input.serverTime,shelves,series,items};
+  const inputPlaylists=input.playlists??[],assetIds=new Set(items.map(i=>i.id));
+  if(!Array.isArray(inputPlaylists)||inputPlaylists.length>200)throw Error('プレイリスト情報が不正です。');unique(inputPlaylists);
+  const playlists=inputPlaylists.map(p=>{
+    if(!Array.isArray(p.assetIds)||p.assetIds.length>1000||new Set(p.assetIds).size!==p.assetIds.length||p.assetIds.some(id=>!uuid.test(id)))throw Error('プレイリスト情報が不正です。');
+    return {id:p.id,title:text(p.title,200),revision:number(p.revision),createdAt:number(p.createdAt),updatedAt:number(p.updatedAt),assetIds:p.assetIds.filter(id=>assetIds.has(id))};
+  });
+  return {version:1,userId,serverTime:input.serverTime,shelves,series,items,playlists};
 }
 
 export function offlineCollection(catalog,rows,playable){
   const downloads=new Map(rows.map(row=>[row.assetId,row]));
   const items=catalog?catalog.items:rows.filter(row=>row.state==='ready').map(row=>{const m=row.manifest;return {id:row.assetId,title:m.title,kind:m.kind,mimeType:m.files[0].mime,pageCount:m.pageCount,size:m.files.reduce((n,f)=>n+f.size,0),createdAt:row.savedAt,shelfName:'端末のダウンロード',role:'viewer'};});
-  return {shelves:catalog?.shelves??[],series:catalog?.series??[],items:items.map(item=>({...item,offlineUnavailable:!playable.has(item.id),offlineStatus:playable.has(item.id)?'オフラインで利用できます':downloads.get(item.id)?.state==='ready'?'オフライン視聴期限切れ':downloads.has(item.id)?'ダウンロード未完了':'未ダウンロード · オンラインで保存してください'}))};
+  return {shelves:catalog?.shelves??[],series:catalog?.series??[],playlists:catalog?.playlists??[],items:items.map(item=>({...item,offlineUnavailable:!playable.has(item.id),offlineStatus:playable.has(item.id)?'オフラインで利用できます':downloads.get(item.id)?.state==='ready'?'オフライン視聴期限切れ':downloads.has(item.id)?'ダウンロード未完了':'未ダウンロード · オンラインで保存してください'}))};
 }
 
 export function offlineSeriesContext(catalog,assetId){
@@ -73,18 +79,18 @@ export function createCatalogCache(vault,{now=Date.now}={}){
       if(!current())return false;
       await vault.seal(partition,coverSlot(item.id),{url:item.thumbnailUrl,mime:blob.type,base64:btoa(raw),savedAt:now()});return current();
     },
-    async syncCovers(partition,catalog,fetchCover,{current=()=>true}={}){
-      const own=generation,queue=[...catalog.items];let saved=0,failed=0;
+    async syncCovers(partition,catalog,fetchCover,{current=()=>true,force=false,onProgress=()=>{}}={}){
+      const own=generation,queue=[...catalog.items];let saved=0,failed=0,skipped=0,done=0;
       const active=()=>current()&&generation===own;
       const worker=async()=>{while(queue.length&&active()){
         const item=queue.shift();try{
           const cached=await vault.unseal(partition,coverSlot(item.id));if(!active())break;
-          if(cached?.url===item.thumbnailUrl&&cached.savedAt<=now()&&cached.savedAt>now()-COVER_AGE)continue;
-          const blob=await fetchCover(item,AbortSignal.timeout(2500));if(!active())break;
+          if(!force&&cached?.url===item.thumbnailUrl&&cached.savedAt<=now()&&cached.savedAt>now()-COVER_AGE){skipped++;continue;}
+          const blob=await fetchCover(item,AbortSignal.timeout(force?10000:2500));if(!active())break;
           if(await this.saveCover(partition,item,blob,{current:active}))saved++;else failed++;
-        }catch{failed++;}
+        }catch{failed++;}finally{done++;if(active())onProgress({done,total:catalog.items.length,saved,failed,skipped});}
       }};
-      await Promise.all(Array.from({length:3},worker));return {saved,failed,cancelled:!active()};
+      await Promise.all(Array.from({length:3},worker));return {saved,failed,skipped,cancelled:!active()};
     }
   };
 }

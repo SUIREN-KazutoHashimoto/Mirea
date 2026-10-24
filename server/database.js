@@ -79,7 +79,7 @@ export function openDatabase(filename) {
         UPDATE schema_version SET version = 2;
       `));
     } finally { db.exec('PRAGMA foreign_keys = ON'); }
-  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
+  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
   if (version < 10) {
     // v10 adds EPUB while retaining v9's nullable uploader attribution.
     // Account deletion removes attribution, not another member's shared assets.
@@ -387,6 +387,15 @@ export function openDatabase(filename) {
       UPDATE schema_version SET version=16;`);
   });
   db.exec(`CREATE TABLE IF NOT EXISTS thumbnail_overrides(asset_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,image_id TEXT NOT NULL,updated_at INTEGER NOT NULL);CREATE INDEX IF NOT EXISTS thumbnail_image ON thumbnail_overrides(image_id);UPDATE schema_version SET version=17;`);
+  transaction(db,()=>db.exec(`
+    CREATE TABLE IF NOT EXISTS playlists(id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS playlists_user ON playlists(user_id,updated_at);
+    CREATE TABLE IF NOT EXISTS playlist_items(playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+      asset_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,position INTEGER NOT NULL,
+      PRIMARY KEY(playlist_id,asset_id),UNIQUE(playlist_id,position));
+    UPDATE schema_version SET version=18;
+  `));
   if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Database foreign key validation failed');
   return db;
 }
