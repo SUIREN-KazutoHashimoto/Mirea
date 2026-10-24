@@ -58,9 +58,9 @@ test('full reconciliation removes revoked/deleted rows and their covers, never r
 test('automatic cover warming includes offscreen/non-downloaded items, retries failures, caps parallelism and cancels context changes',async()=>{
  const c=await setup();const catalog=await c.cache.save(c.partition,c.catalog,c.userId);let calls=0,active=0,max=0,fail=true;
  const fetchCover=async()=>{calls++;active++;max=Math.max(max,active);await new Promise(resolve=>setImmediate(resolve));active--;if(fail)throw Error('unreachable');return new Blob(['jpeg'],{type:'image/jpeg'});};
- assert.equal((await c.cache.syncCovers(c.partition,catalog,fetchCover)).failed,2);fail=false;assert.equal((await c.cache.syncCovers(c.partition,catalog,fetchCover)).saved,2);assert(max<=3);assert.equal(calls,4);
- await c.cache.syncCovers(c.partition,catalog,fetchCover);assert.equal(calls,4,'unchanged covers use encrypted cache');
- c.advance(86400000+1);await c.cache.syncCovers(c.partition,catalog,fetchCover);assert.equal(calls,6);
+ assert.equal((await c.cache.syncCovers(c.partition,catalog,fetchCover)).failed,2);fail=false;assert.equal((await c.cache.syncCovers(c.partition,catalog,fetchCover)).saved,2);assert(max<=2);assert.equal(calls,8);
+ await c.cache.syncCovers(c.partition,catalog,fetchCover);assert.equal(calls,8,'unchanged covers use encrypted cache');
+ c.advance(86400000+1);await c.cache.syncCovers(c.partition,catalog,fetchCover);assert.equal(calls,10);
  let current=true;const result=await c.cache.syncCovers(c.partition,{...catalog,items:catalog.items.map(i=>({...i,thumbnailUrl:i.thumbnailUrl+'?revision='+randomUUID()}))},async()=>{current=false;return new Blob(['bad'],{type:'image/jpeg'});},{current:()=>current});assert.equal(result.saved,0);assert.equal(result.cancelled,true);
 });
 test('concurrent snapshots serialize and newest snapshot wins; mid-write cancellation cannot overwrite a newer complete tree',async()=>{

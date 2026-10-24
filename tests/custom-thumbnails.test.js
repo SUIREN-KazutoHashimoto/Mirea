@@ -31,14 +31,14 @@ test('custom thumbnails enforce ACL, validate decoded static images, update bulk
  }
  const set=await c.req('POST','/thumbnails/custom',c.owner,body);assert.equal(set.statusCode,200,set.body);assert.equal(set.json().updated,2);
  const rows=c.db.prepare('SELECT * FROM thumbnail_overrides ORDER BY asset_id').all();assert.equal(rows.length,2);assert.equal(rows[0].image_id,rows[1].image_id);
- const cover=await c.req('GET','/items/'+c.one+'/thumbnail',c.viewer);assert.equal(cover.statusCode,200);assert.equal((await sharp(cover.rawPayload).metadata()).format,'jpeg');assert.notDeepEqual(cover.rawPayload,c.original);
+ const cover=await c.req('GET','/items/'+c.one+'/thumbnail',c.viewer);assert.equal(cover.statusCode,200);assert.equal((await sharp(cover.rawPayload).metadata()).format,'webp');assert.notDeepEqual(cover.rawPayload,c.original);
  assert.deepEqual(await readFile(join(c.dataDir,'thumbnails',c.one+'.jpg')),c.original);
  // Regenerated base cover does not remove the selected override.
- await writeFile(join(c.dataDir,'thumbnails',c.one+'.jpg'),Buffer.from('regenerated'));
+ const regenerated=await sharp({create:{width:80,height:120,channels:3,background:'#33aa77'}}).jpeg().toBuffer();await writeFile(join(c.dataDir,'thumbnails',c.one+'.jpg'),regenerated);
  assert.deepEqual((await c.req('GET','/items/'+c.one+'/thumbnail')).rawPayload,cover.rawPayload);
- await c.req('DELETE','/thumbnails/custom',c.owner,{assetIds:[c.one]});assert.equal((await c.req('GET','/items/'+c.one+'/thumbnail')).body,'regenerated');
- assert.equal((await readdir(join(c.dataDir,'thumbnails','custom'))).length,1,'shared image survives while another asset references it');
- await c.req('DELETE','/thumbnails/custom',c.owner,{assetIds:[c.two]});assert.equal((await readdir(join(c.dataDir,'thumbnails','custom'))).length,0);
+ await c.req('DELETE','/thumbnails/custom',c.owner,{assetIds:[c.one]});const base=(await c.req('GET','/items/'+c.one+'/thumbnail')).rawPayload;assert.equal((await sharp(base).metadata()).format,'webp');assert.notDeepEqual(base,cover.rawPayload);assert.deepEqual(await readFile(join(c.dataDir,'thumbnails',c.one+'.jpg')),regenerated);
+ let files=await readdir(join(c.dataDir,'thumbnails','custom'));assert.equal(files.filter(name=>name.endsWith('.jpg')).length,1,'shared image survives while another asset references it');const input=files.find(name=>name.endsWith('.input'));assert(input,'custom source is retained');assert.deepEqual(await readFile(join(c.dataDir,'thumbnails','custom',input)),Buffer.from(c.image.base64,'base64'));
+ await c.req('DELETE','/thumbnails/custom',c.owner,{assetIds:[c.two]});files=await readdir(join(c.dataDir,'thumbnails','custom'));assert.deepEqual(files,[input],'resetting selection removes only derivatives, not the uploaded source');
 });
 test('series thumbnail change includes nested series, but not unrelated or foreign assets',async t=>{
  const c=await setup(t);

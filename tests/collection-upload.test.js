@@ -30,18 +30,18 @@ test('batch validation bounds per-asset sizes/pages/titles, rejects unsupported/
  for(const files of [[file('a.svg')],[file('empty.pdf',0)],[file('huge.pdf',1001)],[file('a.png',101)],[file('x.epub',101)],[file('1.png'),file('2.png'),file('3.png'),file('4.png')],[file('a.pdf'),file('a.pdf')]])assert(validateUploadPlan(planUploads(files),config),files.map(f=>f.name).join(','));
  const jobs=planUploads([file('a.pdf')]);jobs[0].title=' ';assert.match(validateUploadPlan(jobs,config),/タイトル/);assert(validateUploadPlan([],config));assert(validateUploadPlan(Array.from({length:101},(_,i)=>({...jobs[0],title:String(i)})),config));
 });
-test('parallel batch holds at most three slots through processing, advances queue on completion and isolates failures',async()=>{
+test('legacy task fallback obeys configured three slots, advances on completion and isolates failures',async()=>{
  const jobs=planUploads(Array.from({length:6},(_,i)=>file(i+'.pdf'))),started=[],pending=[],changes=[];let current=0,max=0;
- const batch=createUploadBatch(jobs,{concurrency:99,changed:rows=>changes.push(rows),start:(job,onProgress)=>{const d=deferred();pending.push(d);started.push(job.key);max=Math.max(max,++current);onProgress(100,{stage:'thumbnail'});return {promise:d.promise.finally(()=>current--)};}});
+ const batch=createUploadBatch(jobs,{concurrency:3,changed:rows=>changes.push(rows),start:(job,onProgress)=>{const d=deferred();pending.push(d);started.push(job.key);max=Math.max(max,++current);onProgress(100,{stage:'thumbnail'});return {promise:d.promise.finally(()=>current--)};}});
  await tick();assert.equal(started.length,3);assert.equal(max,3);assert(changes.at(-1).slice(0,3).every(r=>r.state==='processing'));
  pending[0].resolve({item:{}});await tick();assert.equal(started.length,4);pending[1].reject(Error('fixture failure'));await tick();assert.equal(started.length,5);pending[2].resolve();await tick();assert.equal(started.length,6);pending.slice(3).forEach(d=>d.resolve());const result=await batch.promise;assert.equal(max,3);assert.equal(result.rows.filter(r=>r.state==='complete').length,5);assert.equal(result.rows[1].state,'failed');assert.match(result.rows[1].error,/fixture/);
  const retries=[];await createUploadBatch(result.rows.filter(r=>r.state!=='complete').map(r=>r.job),{start:job=>{retries.push(job.key);return {promise:Promise.resolve()};}}).promise;assert.deepEqual(retries,[jobs[1].key]);
 });
-test('explicit cancellation stops queued/transferring work but detaches processing without deleting its server job; identity changes and 429 stop new starts',async()=>{
+test('explicit cancellation aborts processing too, identity changes stop starts, and a failed batch admission does not discard later queued assets',async()=>{
  const jobs=planUploads(Array.from({length:5},(_,i)=>file(i+'.pdf'))),pending=[],actions=[];
  const batch=createUploadBatch(jobs,{start:job=>{const d=deferred();pending.push(d);const processing=pending.length===1;return {processing,promise:d.promise,detach(){actions.push('detach');d.reject(Error('detached'));},abort(){actions.push('abort');d.reject(Error('aborted'));}};}});
- await tick();batch.cancel();const result=await batch.promise;assert.deepEqual(actions,['detach','abort','abort']);assert.equal(pending.length,3);assert.equal(result.cancelled,true);assert.equal(result.rows[0].state,'detached');assert.equal(result.rows[3].state,'queued');
- let started=0;const full=await createUploadBatch(jobs,{concurrency:1,start:()=>{started++;return {promise:Promise.reject(Object.assign(Error('busy'),{status:429}))};}}).promise;assert.equal(started,1);assert.equal(full.halted,true);
+ await tick();batch.cancel();const result=await batch.promise;assert.deepEqual(actions,['abort','abort','abort']);assert.equal(pending.length,3);assert.equal(result.cancelled,true);assert.equal(result.rows[0].state,'cancelled');assert.equal(result.rows[3].state,'queued');
+ let started=0;const full=await createUploadBatch(jobs,{concurrency:1,start:()=>{started++;return {promise:Promise.reject(Object.assign(Error('busy'),{status:429}))};}}).promise;assert.equal(started,5);assert.equal(full.halted,false);assert(full.rows.every(row=>row.state==='failed'));
  let valid=true;const late=await createUploadBatch(jobs,{isCurrent:()=>valid,changed:rows=>{if(rows[0].state==='uploading')valid=false;},start:()=>assert.fail('changed account must never start')}).promise;assert.equal(late.cancelled,true);
 });
 test('UI groups only display entries while retaining real assets for downloads, and freezes successful uploads on retry',async()=>{
