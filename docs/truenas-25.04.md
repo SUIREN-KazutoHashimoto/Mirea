@@ -86,6 +86,24 @@ CIはLinuxコンテナの変換・再作成・データ／鍵保持を検査し�
 
 ## 6. バックアップ・更新・復帰
 
+### TrueNASの「更新」ボタンを使う場合（任意のbeta追従）
+
+既定の版番号タグとdigest固定は、意図せず別の版へ変わらない構成です。TrueNASが新しい版番号のタグを自動で選ぶことはありません。標準の更新検出を使う場合に限り、imageを ghcr.io/suiren-kazutohashimoto/mirea:beta へ変更できます。これは公開済み・正式CI成功済みの最新ベータ版を指す可変タグで、版番号タグやdigestは引き続き固定のまま配布します。ドラフト、未成功のビルド、古い版への再公開ではbetaを動かしません。
+
+TrueNAS側のイメージ更新検査後に「更新あり」が表示され、利用者が更新ボタンを押すと再取得・再作成します。MireaからNASのDockerやAPIを操作する機能、勝手に再起動する更新エージェントは追加しません。検出にはTrueNAS側の検査間隔があります。
+
+Custom Appの更新ではHost Pathの自動スナップショットを期待しないでください。毎回、下記の停止中バックアップを先に取得します。独自の起動スクリプトで版・digestを固定している既存構成は、imageだけ変えても起動できません。初回の移行時はそのチェックもレビューし、TLS・実行ID・マウント・所有権・既存データ保護を残したうえで、追従タグへの明示的な移行を行います。安全チェックを削除して起動させないでください。
+
+### Application Infoの表示上の制限（25.04.2.6）
+
+Custom Appでは、App Versionがcustom、バージョンが1.0.0、SourceがN/A、アイコンが汎用表示になる場合があります。これらはNAS側のCustom App定義に由来し、Mirea本体の版を示しません。本体の版はMireaの設定画面や /api/health、実行中コンテナのイメージタグ・digestで確認します。
+
+25.04の標準Custom App更新APIには、この表示用メタデータを編集する項目がありません。Docker/OCIラベルだけでApplication Info全体が更新されるとは保証しません。NASの .ix-apps 内のmetadata.yamlや集約ファイルを直接書き換える処理、管理ファイルを触る常駐スクリプトは提供しません。UI破損・更新時の上書きを避け、TrueNAS標準機能を優先します。
+
+根拠: [25.04.2.6更新APIの入力定義](https://github.com/truenas/middleware/blob/TS-25.04.2.6/src/middlewared/middlewared/api/v25_04_0/app.py)、[Custom App更新処理](https://github.com/truenas/middleware/blob/TS-25.04.2.6/src/middlewared/middlewared/plugins/apps/upgrade.py)。
+
+### 各更新時の手順
+
 1. 実行中のアップロード／ジョブが終わったことを確認してMireaアプリを停止。
 2. **DATA_DIR・MEDIA_DIRの両方の全体＋Custom App YAML・環境変数＋プロキシ設定／証明書を保護された場所へバックアップ**。停止状態のZFSスナップショットと別媒体への複製を推奨します。管理画面のメタデータのみのバックアップはメディアを含みません。
 3. 新版のリリースノート・SHA-256・digestを確認し、同じHost Pathのままimageの版/digestだけを変更して起動。
