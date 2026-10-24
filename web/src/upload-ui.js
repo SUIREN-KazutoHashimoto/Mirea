@@ -1,14 +1,20 @@
 import {seriesPathLabel} from './series-tree.js';
 import {planUploads,validateUploadPlan,createUploadBatch} from './upload-batch.js';
+import {folderUploadJobs,prepareFolderSeries} from './folder-upload.js';
 
 import {nativeTransfersAvailable,NativeTransfer,requestTransferNotifications} from './native-transfers.js';
 import {trackTransfer} from './transfer-manager.js';
 export function openUploadDialog({dialog,api,upload,shelves,activeShelf,initialSeriesId,config,esc,bytes,icon,processingLabel,isCurrent,onChanged,toast}) {
   const node=dialog('コンテンツを追加',`<form class="modal-body upload-batch-form"><label>追加する本棚<select name="shelf">${shelves.map(s=>`<option value="${esc(s.id)}" ${s.id===activeShelf?'selected':''}>${esc(s.name)}</option>`).join('')}</select></label><div class="upload-series-target"><label>シリーズへの追加<select name="seriesId"><option value="">追加しない</option><option value="new">新しいシリーズを作成して追加</option></select></label><div class="upload-new-series" hidden><label>新しいシリーズ名<input name="seriesTitle" maxlength="200"></label><label>親シリーズ<select name="seriesParent"><option value="">なし（最上位）</option></select></label></div><small class="upload-series-note" role="status">追加先を読み込んでいます…</small></div><label class="dropzone" id="dropzone"><input name="file" type="file" aria-label="アップロードするファイル" accept="application/pdf,application/epub+zip,video/*,audio/*,image/jpeg,image/png,image/webp,.pdf,.epub,.mp4,.m4v,.mov,.mkv,.avi,.wmv,.asf,.mpeg,.mpg,.ts,.mts,.m2ts,.flv,.webm,.mp3,.m4a,.m4b,.aac,.wav,.flac,.ogg,.oga,.opus,.aif,.aiff,.wma,.weba,.jpg,.jpeg,.png,.webp" multiple required>${icon('upload')}<strong class="file-label">複数ファイルを選択、またはドロップ</strong><span>PDF・EPUB・動画・音声はファイルごとに追加。画像はまとめて1冊。</span><small>混在選択OK · 1アセット ${bytes(config.maxUploadBytes)}まで</small></label><p class="upload-batch-note">最大3件を並行して分割送信・後処理し、残りは順番待ちします。既存の処理がある場合は並行数を調整します。メニューを閉じても送信・後処理を継続します。Androidでは通知に進捗を表示します（通知の許可が必要）。ブラウザー終了・OSの強制停止時は再開が必要です。</p><div class="upload-selection" hidden></div><label class="retain-original"><input name="retainOriginal" type="checkbox" checked>動画・音声の原本を保持する</label><p class="retention-note">初期設定では原本を保持します。チェックを外した場合のみ、全画質・サムネイルの生成と検証が成功した後に動画・音声の原本を削除します。失敗時と本の原本は残します。</p><div class="upload-progress" hidden><div><span class="upload-status" role="status"></span><span class="upload-percent">0%</span></div><progress max="100" value="0" aria-label="全体のアップロードの進行状況"></progress></div><p class="form-error" role="alert" hidden></p><div class="modal-actions upload-batch-actions"><button class="button secondary upload-reset" type="button" hidden>ファイルを選び直す</button><button class="button secondary upload-stop" type="button" hidden>未完了の送信を中止</button><button class="button primary" type="submit">${icon('upload')}アップロードする</button></div></form>`,'upload-batch-modal');
   const form=node.querySelector('form'),input=form.elements.file,zone=node.querySelector('#dropzone'),selection=node.querySelector('.upload-selection'),errorBox=node.querySelector('.form-error'),submit=form.querySelector('[type="submit"]'),reset=node.querySelector('.upload-reset'),stop=node.querySelector('.upload-stop'),progressBox=node.querySelector('.upload-progress'),status=node.querySelector('.upload-status');
-  let jobs=[],results=new Map(),activeBatch,running=false,frozen=false,disposed=false,targetShelf,targetSeries,seriesRows=[],seriesGeneration=0,seriesLoading=true,seriesError='',creation;
+  let jobs=[],results=new Map(),activeBatch,running=false,frozen=false,disposed=false,targetShelf,targetSeries,seriesRows=[],seriesGeneration=0,seriesLoading=true,seriesError='',creation,folderMode=false,folderRecords=new Map(),folderTargets;
+  input.required=false;
+  const folderControls=document.createElement('div');folderControls.className='folder-upload-controls';folderControls.innerHTML='<button class="button secondary choose-upload-folder" type="button">フォルダを丸ごと選択</button><input type="file" name="folder" aria-label="アップロードするフォルダ" webkitdirectory multiple hidden><small class="upload-folder-note">フォルダはシリーズ、入れ子は子シリーズ、各ファイルは1アセットとして追加します。空フォルダは含みません。最大100ファイル・16階層。シリーズの選択は親の指定になります。</small>';zone.before(folderControls);
+  const folderInput=form.elements.folder,folderButton=folderControls.querySelector('button');
   const urls=new Map(),alive=()=>!disposed&&node.isConnected&&isCurrent();
   if(nativeTransfersAvailable()){input.required=false;zone.addEventListener('click',async e=>{e.preventDefault();if(running||frozen)return;try{const result=await NativeTransfer.chooseFiles();if(alive()&&result.files?.length)select(result.files);}catch(error){if(alive()){errorBox.textContent=error.message;errorBox.hidden=false;}}});}
+  folderButton.onclick=async()=>{if(running||frozen)return;if(!nativeTransfersAvailable()){folderInput.click();return;}try{const result=await NativeTransfer.chooseFolder();if(alive()&&result.files?.length)select(result.files,true);}catch(error){if(alive()){errorBox.textContent='フォルダを選択できません。対応する最新版のアプリが必要です。 '+error.message;errorBox.hidden=false;}}};
+  folderInput.onchange=()=>select(folderInput.files,true);
   async function loadSeries(){
     const generation=++seriesGeneration;seriesLoading=true;seriesError='';submit.disabled=true;
     try{const response=await api(`/shelves/${form.elements.shelf.value}/series`);if(!alive()||generation!==seriesGeneration)return;
@@ -19,11 +25,11 @@ export function openUploadDialog({dialog,api,upload,shelves,activeShelf,initialS
     }catch(error){if(alive()&&generation===seriesGeneration){seriesError=error.message;node.querySelector('.upload-series-note').textContent='シリーズを取得できません。追加先の本棚を選び直してください。';}}
     finally{if(generation===seriesGeneration){seriesLoading=false;if(alive())controls();}}
   }
-  form.elements.shelf.onchange=()=>{if(!frozen&&!running){targetShelf=undefined;targetSeries=undefined;creation=undefined;loadSeries();}};
+  form.elements.shelf.onchange=()=>{if(!frozen&&!running){targetShelf=undefined;targetSeries=undefined;creation=undefined;folderRecords=new Map();folderTargets=undefined;loadSeries();}};
   form.elements.seriesId.onchange=()=>{const show=form.elements.seriesId.value==='new';node.querySelector('.upload-new-series').hidden=!show;form.elements.seriesTitle.required=show;};
   const releaseImages=()=>{for(const url of urls.values())URL.revokeObjectURL(url);urls.clear();};
   const cover=file=>{if(!urls.has(file))urls.set(file,URL.createObjectURL(file));return urls.get(file);};
-  function controls(){form.querySelectorAll('input,select,.selection-action').forEach(el=>{el.disabled=running||frozen||el.dataset.unavailable==='true';});submit.disabled=running||seriesLoading;reset.disabled=running;stop.hidden=!running;reset.hidden=!frozen;}
+  function controls(){form.querySelectorAll('input,select,.selection-action,.choose-upload-folder').forEach(el=>{el.disabled=running||frozen||el.dataset.unavailable==='true';});submit.disabled=running||seriesLoading;reset.disabled=running;stop.hidden=!running;reset.hidden=!frozen;}
   function progress(){
     if(!alive())return;
     const rows=jobs.map(job=>results.get(job.key)??{job,state:'queued',percent:0});
@@ -51,11 +57,11 @@ export function openUploadDialog({dialog,api,upload,shelves,activeShelf,initialS
     });
     controls();progress();
   }
-  function select(files){if(running||frozen)return;releaseImages();jobs=planUploads(files);results.clear();errorBox.hidden=true;render();}
+  function select(files,folders=false){if(running||frozen)return;try{const next=folders?folderUploadJobs(files,planUploads):planUploads(files);releaseImages();folderMode=folders;jobs=next;folderRecords=new Map();folderTargets=undefined;results.clear();errorBox.hidden=true;render();if(folders)selection.querySelectorAll('.upload-entry-heading strong').forEach((el,index)=>el.textContent=jobs[index].relativePath);}catch(error){errorBox.textContent=error.message;errorBox.hidden=false;}}
   input.onchange=()=>select(input.files);
   zone.ondragover=e=>{e.preventDefault();if(!running&&!frozen)zone.classList.add('dragover');};zone.ondragleave=()=>zone.classList.remove('dragover');
   zone.ondrop=e=>{e.preventDefault();zone.classList.remove('dragover');if(!running&&!frozen&&e.dataTransfer.files.length){input.files=e.dataTransfer.files;select(e.dataTransfer.files);}};
-  reset.onclick=()=>{if(running)return;frozen=false;targetShelf=undefined;targetSeries=undefined;creation=undefined;jobs=[];results.clear();releaseImages();input.value='';progressBox.hidden=true;errorBox.hidden=true;submit.textContent='アップロードする';render();};
+  reset.onclick=()=>{if(running)return;frozen=false;targetShelf=undefined;targetSeries=undefined;creation=undefined;folderMode=false;folderRecords=new Map();folderTargets=undefined;jobs=[];results.clear();releaseImages();input.value='';folderInput.value='';progressBox.hidden=true;errorBox.hidden=true;submit.textContent='アップロードする';render();};
   stop.onclick=()=>activeBatch?.cancel();
   node.addEventListener('close',()=>{disposed=true;releaseImages();if(isCurrent())onChanged().catch(()=>{});},{once:true});
   form.onsubmit=async event=>{
@@ -69,6 +75,7 @@ export function openUploadDialog({dialog,api,upload,shelves,activeShelf,initialS
       const existing=await api('/uploads');if(!isCurrent())return;
       if(seriesError)throw Error(seriesError);
       targetShelf??=requested.shelf;
+      frozen=true;
       if(targetSeries===undefined){
         const choice=requested.choice;
         if(choice==='new'){
@@ -79,13 +86,14 @@ export function openUploadDialog({dialog,api,upload,shelves,activeShelf,initialS
           if(!isCurrent())return;targetSeries=created.series.id;
         }else targetSeries=choice||null;
       }
-      frozen=true;if(alive()){controls();progressBox.hidden=false;}
+      if(alive()){controls();progressBox.hidden=false;}
+      if(folderMode)folderTargets=await prepareFolderSeries(jobs,{api,shelfId:targetShelf,parentId:targetSeries,records:folderRecords,isCurrent});
       // Keep at least one slot for resuming our own interrupted sessions, which
       // already count toward the server limit. A definitive 429 stops the queue.
       const concurrency=Math.max(1,3-(existing.uploads?.length??0));
       const transfer=trackTransfer({direction:'upload',title:pending.length+'件のコンテンツ',notifications:!nativeTransfersAvailable(),cancel:()=>activeBatch?.cancel(),work:update=>{
         activeBatch=createUploadBatch(pending.map(job=>({...job,title:job.title.trim(),files:[...job.files]})),{concurrency:nativeTransfersAvailable()?pending.length:concurrency,eager:nativeTransfersAvailable(),isCurrent,
-          start:(job,onProgress)=>upload(targetShelf,job.files,job.title,onProgress,{retainOriginal:requested.retainOriginal,seriesId:targetSeries}),
+          start:(job,onProgress)=>upload(targetShelf,job.files,job.title,onProgress,{retainOriginal:requested.retainOriginal,seriesId:folderMode?folderTargets.get(job.key):targetSeries}),
           changed:rows=>{for(const row of rows)results.set(row.job.key,row);const percent=rows.reduce((n,r)=>n+r.percent,0)/Math.max(1,rows.length);update({percent,message:rows.filter(r=>r.state==='complete').length+' / '+rows.length+'件完了'});progress();}});
         return activeBatch.promise.then(result=>{if(result.cancelled)throw new DOMException('転送を一時停止しました。','AbortError');if(result.rows.some(r=>r.state==='failed'))throw Error(result.rows.filter(r=>r.state==='failed').length+'件のアップロードに失敗しました。アップロード処理から確認できます。');return result;});
       }});

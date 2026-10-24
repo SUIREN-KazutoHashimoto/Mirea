@@ -33,7 +33,7 @@ export function validateUploadPlan(jobs,{maxUploadBytes,maxBookPages,maxImageByt
     if(job.files.some(f=>isUploadImage(f)&&f.size>maxImageBytes))return `${prefix}：画像1枚のサイズ上限を超えています。`;
     if(job.files.some(f=>f.type==='application/epub+zip'&&f.size>maxEpubBytes))return `${prefix}：EPUBのサイズ上限を超えています。`;
     if(job.files.reduce((sum,f)=>sum+f.size,0)>maxUploadBytes)return `${prefix}：1アセットのサイズ上限を超えています。`;
-    if(!job.imageBook){const f=job.files[0],key=JSON.stringify([f.name,f.type,f.size,f.lastModified]);if(identities.has(key))return `${prefix}：同じ名前・サイズ・更新日時のファイルが重複しています。別々に追加してください。`;identities.add(key);}
+    if(!job.imageBook){const f=job.files[0],key=JSON.stringify([job.relativePath??f.name,f.type,f.size,f.lastModified]);if(identities.has(key))return `${prefix}：同じ名前・サイズ・更新日時のファイルが重複しています。別々に追加してください。`;identities.add(key);}
   }
   return '';
 }

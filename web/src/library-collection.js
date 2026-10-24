@@ -1,6 +1,7 @@
 import {seriesPath,isInSeries} from './series-tree.js';
+import {compareCollection} from './collection-sort.js';
 // Group only API-authorized rows; folders contain direct assets and child folders.
-export function collectionEntries(selected,series,{group=true,parentId=null,allItems=selected,filter='all',search='',sort='recent'}={}){
+export function collectionEntries(selected,series,{group=true,parentId=null,allItems=selected,filter='all',search='',sort=parentId?'series':'recent'}={}){
   if(!group)return selected.map(item=>({type:'asset',item}));
   series=[...series];const known=new Set(series.map(s=>s.id));for(const item of allItems)if(item.series&&!known.has(item.series.id)){known.add(item.series.id);series.push({...item.series,parentId:null});}
   const metadata=new Map(series.map(row=>[row.id,row])),entries=[];
@@ -16,8 +17,8 @@ export function collectionEntries(selected,series,{group=true,parentId=null,allI
     if(!matching.length&&members.length&&!(filter==='all'&&row.title.toLocaleLowerCase().includes(query)))continue;
     const cover=members.find(i=>i.id===row.coverId)??members[0];
     entries.push({type:'series',id:row.id,title:row.title,members:matching,assetCount:members.length,matchedCount:matching.length,cover,childCount:row.childCount??series.filter(s=>s.parentId===row.id).length,
-      role:row.role??cover?.role??'viewer',shelfName:row.shelfName??cover?.shelfName??'',completed:members.filter(i=>i.progress?.completed).length,createdAt:Math.max(row.createdAt??0,...members.map(i=>i.createdAt??0))});
+      role:row.role??cover?.role??'viewer',shelfName:row.shelfName??cover?.shelfName??'',completed:members.filter(i=>i.progress?.completed).length,size:members.reduce((n,i)=>n+(i.size??0),0),progress:members.slice().sort((a,b)=>(b.progress?.updatedAt??0)-(a.progress?.updatedAt??0))[0]?.progress,createdAt:Math.max(row.createdAt??0,...members.map(i=>i.createdAt??0))});
   }
   const value=entry=>entry.type==='series'?entry:entry.item;
-  return entries.sort((a,b)=>parentId?(a.type!==b.type?(a.type==='series'?-1:1):a.type==='asset'?a.item.series.position-b.item.series.position:a.title.localeCompare(b.title,'ja')):sort==='name'?value(a).title.localeCompare(value(b).title,'ja'):(value(b).createdAt??0)-(value(a).createdAt??0));
+  return entries.sort((a,b)=>parentId&&sort==='series'?(a.type!==b.type?(a.type==='series'?-1:1):a.type==='asset'?a.item.series.position-b.item.series.position:a.title.localeCompare(b.title,'ja')):compareCollection(value(a),value(b),sort));
 }
