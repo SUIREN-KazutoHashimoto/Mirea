@@ -6,6 +6,7 @@ RUN pnpm install --frozen-lockfile
 COPY web ./web
 COPY server/video-types.js ./server/video-types.js
 COPY server/audio-types.js ./server/audio-types.js
+COPY server/name-rules.js ./server/name-rules.js
 COPY vite.config.js ./
 COPY scripts/pwa-icons.mjs ./scripts/pwa-icons.mjs
 RUN pnpm build
