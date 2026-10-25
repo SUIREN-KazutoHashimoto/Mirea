@@ -1,3 +1,4 @@
+import {canonicalName} from '../../server/name-rules.js';
 import {VIDEO_EXTENSIONS,VIDEO_TYPES} from '../../server/video-types.js';
 import {AUDIO_EXTENSIONS,AUDIO_TYPES} from '../../server/audio-types.js';
 const images=new Set(['image/jpeg','image/png','image/webp']);
@@ -21,8 +22,9 @@ export function planUploads(incoming) {
 export function validateUploadPlan(jobs,{maxUploadBytes,maxBookPages,maxImageBytes,maxEpubBytes=64*1024*1024,maxUploadAssets=1000}) {
   if(!jobs.length)return 'ファイルを選択してください。';
   if(jobs.length>maxUploadAssets)return `一度に選択できるアセットは${maxUploadAssets}件までです。`;
-  const identities=new Set();
+  const identities=new Set(),names=new Set();
   for(const job of jobs) {
+    const name=JSON.stringify([job.folderPath??'',canonicalName(job.title)]);if(names.has(name))return '同じ階層に同じタイトルのアセットが選択されています。タイトルまたは追加先を変更してください。';names.add(name);
     const prefix=job.title||job.files[0]?.name||'アセット';
     if(!job.title.trim()||job.title.trim().length>200)return `${prefix}：タイトルを1〜200文字で入力してください。`;
     if(!job.files.length||job.files.some(f=>!supported.has(f.type)))return `${prefix}：対応していないファイル形式です。`;

@@ -1,3 +1,4 @@
+import {assertUploadName} from './name-integrity.js';
 import { copyFile, rename, unlink, stat, rm, readdir, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { transaction } from './database.js';
@@ -49,6 +50,7 @@ export async function publishVideo(context,upload,authorize) {
     authorize();
     metadata.originalFilename=first.filename;
     transaction(db,()=>{
+      assertUploadName(db,upload);
       db.prepare(`INSERT INTO items(id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at,page_count,thumbnail_ready)
         VALUES(?,?,?,?, 'video/mp4',?,?,?,1,1)`).run(id,shelfId,title,first.filename.replace(/\.[^.]+$/,'')+'.mp4',metadata.renditions[0].size,userId,Date.now());
       db.prepare('INSERT INTO video_assets VALUES(?,?,?)').run(id,JSON.stringify(metadata),upload.retain_original?1:0);

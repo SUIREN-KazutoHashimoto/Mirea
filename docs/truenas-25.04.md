@@ -4,8 +4,8 @@
 
 ## 配布物と推奨構成
 
-- イメージ: `ghcr.io/suiren-kazutohashimoto/mirea:0.16.0beta`（版番号固定の例、linux/amd64）。更新追従には `:beta`、初回正式版の公開後は `:stable` も使用できます。[チャネルの公開条件と運用](container-channels.md)を確認してください。`latest`は使いません。Landlock ABI 3以上が有効なホストが必須です。
-- [リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.16.0beta)の`mirea-0.16.0beta-container.json`でコミット・レジストリdigestを確認します。固定運用なら`image`をそこに記載した`ghcr.io/…@sha256:…`へ固定できます。
+- イメージ: `ghcr.io/suiren-kazutohashimoto/mirea:0.17.0beta`（版番号固定の例、linux/amd64）。更新追従には `:beta`、初回正式版の公開後は `:stable` も使用できます。[チャネルの公開条件と運用](container-channels.md)を確認してください。`latest`は使いません。Landlock ABI 3以上が有効なホストが必須です。
+- [リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.17.0beta)の`mirea-0.17.0beta-container.json`でコミット・レジストリdigestを確認します。固定運用なら`image`をそこに記載した`ghcr.io/…@sha256:…`へ固定できます。
 - DockerがGHCRへ接続できない環境用に、同じ検証済みイメージの`container-linux-amd64.tar.gz`とSHA-256も配布します。導入操作はTrueNASのサポート範囲に従ってください。
 - 推奨は [Compose YAML](../deploy/truenas/compose.yaml) を使うCustom App。NASのローカルSSDデータセットを`/data`、大容量側を`/media`へそれぞれマウントし、HTTPSは別のリバースプロキシで終端します。
 
@@ -55,7 +55,7 @@
 
 | 25.04 GUI項目 | 設定 |
 | --- | --- |
-| Image Repository / Tag | `ghcr.io/suiren-kazutohashimoto/mirea` / 固定運用は`0.16.0beta`、追従運用は`beta`または正式版公開後の`stable` |
+| Image Repository / Tag | `ghcr.io/suiren-kazutohashimoto/mirea` / 固定運用は`0.17.0beta`、追従運用は`beta`または正式版公開後の`stable` |
 | Entrypoint / Command | 上書きしない |
 | Custom User | 有効、User ID 1000 / Group ID 1000 |
 | Privileged / Host Network | 無効 / 無効 |
@@ -117,7 +117,7 @@ Custom Appでは、App Versionがcustom、バージョンが1.0.0、SourceがN/A
 4. 上記の導入後確認を実施。Mireaの管理画面からDocker更新は実行しません。Dockerソケット・NAS管理資格情報・特権をWebへ与えないでください。
 5. 不調時は停止して、**旧イメージ＋更新前データ／設定の対応した組**を復元。新DBに旧サーバーを当てるダウングレードや、旧新サーバーから同じデータを同時に開く運用はしません。
 
-0.15.1betaはDB v17、0.16.0betaはDB v19です。移行に備えて上記を毎回行います。App削除時もデータセットを削除しないでください。`docker compose down -v`は禁止です。
+0.15.1betaはDB v17、0.17.0betaはDB v19です。移行に備えて上記を毎回行います。App削除時もデータセットを削除しないでください。`docker compose down -v`は禁止です。
 
 WinVAI01から移行する場合も最初に旧サービスを停止して全データをコピーします。同じHTTPSオリジンを維持できない場合、ブラウザー／アプリの端末内保存はサーバー別管理のため再接続・再取得が必要になる場合があります。移行検証が済むまで旧データを保持します。
 

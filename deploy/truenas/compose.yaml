@@ -3,7 +3,7 @@
 # until the previous server is stopped and a full backup exists.
 services:
   mirea:
-    image: ghcr.io/suiren-kazutohashimoto/mirea:0.16.0beta
+    image: ghcr.io/suiren-kazutohashimoto/mirea:0.17.0beta
     user: "1000:1000"
     environment:
       HOST: 0.0.0.0
