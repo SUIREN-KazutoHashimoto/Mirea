@@ -1,0 +1,4 @@
+export function openAssetRename({item,dialog,api,esc,current,onChanged,toast}){
+  const node=dialog('アセットのタイトルを変更',`<form class="modal-body"><label>タイトル<input name="title" required maxlength="200" value="${esc(item.title)}"></label><p>同じ階層に同じタイトルは付けられません。ファイル本体・閲覧記録・続き位置・暗号鍵は変更しません。</p><p class="form-error" role="alert" hidden></p><button class="button primary" type="submit">タイトルを保存</button></form>`);
+  node.querySelector('form').onsubmit=async event=>{event.preventDefault();if(!current())return;const form=event.currentTarget,button=form.querySelector('button');button.disabled=true;try{await api('/items/'+item.id,{method:'PATCH',body:{title:form.elements.title.value,expectedTitle:item.title}});if(current()){node.close();await onChanged();toast('タイトルを変更しました。');}}catch(error){if(node.isConnected&&current()){const box=node.querySelector('.form-error');box.hidden=false;box.textContent=error.message;button.disabled=false;}}};return node;
+}

@@ -1,3 +1,5 @@
+import {transaction} from './database.js';
+import {assertUploadName} from './name-integrity.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdir, rename, unlink, open, writeFile } from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
@@ -161,7 +163,7 @@ export async function registerResumableUploads(app, context) {
     } }
   }, async (req, reply) => {
     membership(req.params.id, req.user.id, ['owner', 'editor']);
-    const title = req.body.title.trim(), files = req.body.files;
+    const title = req.body.title.trim().normalize('NFC'), files = req.body.files;
     if (files.some(file=>file.mime===EPUB_MIME && file.size>MAX_EPUB_BYTES)) throw httpError(413,'EPUBは64 MiB以下にしてください。');
     if (!title) throw httpError(400, 'タイトルを入力してください。');
     if (files.length > 1 && !files.every(file => IMAGE_TYPES.includes(file.mime))) throw httpError(400, '画像の本は画像だけを選択してください。PDF・EPUB・動画・音声は1ファイルずつ登録します。');
@@ -174,10 +176,11 @@ export async function registerResumableUploads(app, context) {
     try {
       // Count and reserve synchronously before filesystem I/O: concurrent
       // requests cannot all pass the per-user active-upload limit.
+      transaction(db,()=>{assertUploadName(db,{id,shelf_id:req.params.id,title,target_series_id:req.body.seriesId??null,series_requested:Boolean(req.body.seriesId)});
       db.prepare(`INSERT INTO upload_sessions(id,shelf_id,user_id,session_id,title,files_json,chunk_size,state,created_at,expires_at,retain_original)
         VALUES(?,?,?,?,?,?,?,'uploading',?,?,?)`).run(id, req.params.id, req.user.id, req.session.id, title,
         JSON.stringify(files.map(file => ({ ...file, filename: file.filename.replaceAll('\\', '/').split('/').pop() || 'file' }))), chunkSize, now, now + UPLOAD_TTL_MS, req.body.retainOriginal && isTimedMime(files[0].mime)?1:0);
-      db.prepare('UPDATE upload_sessions SET target_series_id=?,series_requested=? WHERE id=?').run(req.body.seriesId??null,req.body.seriesId?1:0,id);
+      db.prepare('UPDATE upload_sessions SET target_series_id=?,series_requested=? WHERE id=?').run(req.body.seriesId??null,req.body.seriesId?1:0,id);});
       await mkdir(join(transferDir, id), { mode: 0o700 });
       authenticate(req);
       membership(req.params.id, req.user.id, ['owner', 'editor']);
@@ -296,6 +299,7 @@ export async function registerResumableUploads(app, context) {
     async publishMultipartMedia({id,shelfId,userId,sessionId,title,file,retainOriginal=true}) {
       requireSlot(userId);
       const now=Date.now();
+      assertUploadName(db,{id,shelf_id:shelfId,title});
       db.prepare(`INSERT INTO upload_sessions(id,shelf_id,user_id,session_id,title,files_json,chunk_size,state,created_at,expires_at,retain_original)
         VALUES(?,?,?,?,?,?,?,'uploading',?,?,?)`).run(id,shelfId,userId,sessionId,title,JSON.stringify([file]),chunkSize,now,now+UPLOAD_TTL_MS,retainOriginal?1:0);
       try {

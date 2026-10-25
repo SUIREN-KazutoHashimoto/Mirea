@@ -1,3 +1,5 @@
+import {canonicalName} from './name-rules.js';
+import {assertAssetChanges,assertSeriesChanges} from './name-integrity.js';
 import {registerSeriesActions} from './series-actions.js';
 import { randomUUID } from 'node:crypto';
 import { transaction } from './database.js';
@@ -61,7 +63,7 @@ export function registerSeries(app,{db,authenticate,membership,findItem,publicIt
         if(saved){const existing=find(saved.series_id,req.user.id,['owner','editor']);if(existing.shelf_id!==req.params.id)throw httpError(409,'別の作成要求としてやり直してください。');return detail(existing,req.user.id);}
       }
       const parent=req.body.parentId??null;
-      const collisions=db.prepare('SELECT * FROM series WHERE shelf_id=? AND parent_id IS ? AND title=? ORDER BY created_at,id LIMIT 2').all(req.params.id,parent,title);
+      const collisions=db.prepare('SELECT * FROM series WHERE shelf_id=? AND parent_id IS ? ORDER BY created_at,id').all(req.params.id,parent).filter(row=>canonicalName(row.title)===title).slice(0,2);
       if(collisions.length>1)throw httpError(409,'既存の同名シリーズが複数あります。所有者が整理してから取り込んでください。');
       const collision=collisions[0];
       if(collision){if(!req.body.reuseExisting)throw httpError(409,'同じ階層に同じ名前のシリーズがあります。');return {...detail(find(collision.id,req.user.id),req.user.id),created:false};}
@@ -95,6 +97,8 @@ export function registerSeries(app,{db,authenticate,membership,findItem,publicIt
         const previous=db.prepare('SELECT series_id FROM series_items WHERE asset_id=?').get(entry.assetId);
         if(previous && previous.series_id!==series.id&&!input.moveAssets)throw httpError(409,'別のシリーズに所属しています。先にそのシリーズから外してください。');
       }
+      const originalMembers=db.prepare('SELECT asset_id FROM series_items WHERE series_id=?').all(series.id);
+      assertAssetChanges(db,series.shelf_id,[...originalMembers.filter(row=>!seen.has(row.asset_id)).map(row=>({id:row.asset_id,parentId:null})),...input.items.map(row=>({id:row.assetId,parentId:series.id}))]);
       const rows=db.prepare('SELECT id,parent_id,title FROM series WHERE shelf_id=?').all(series.shelf_id),original=new Map(rows.map(s=>[s.id,s.parent_id]));
       const previousRows=rows.map(row=>({...row}));
       if(input.parentId!==undefined)rows.find(s=>s.id===series.id).parent_id=input.parentId;
@@ -105,7 +109,7 @@ export function registerSeries(app,{db,authenticate,membership,findItem,publicIt
         for(const row of rows)if(original.get(row.id)===series.id&&!input.children.includes(row.id))row.parent_id=null;
         for(const id of input.children)rows.find(s=>s.id===id).parent_id=series.id;
       }
-      rows.find(s=>s.id===series.id).title=title;validateNames(rows,previousRows);validateTree(rows);
+      rows.find(s=>s.id===series.id).title=title;assertSeriesChanges(db,series.shelf_id,rows.map(row=>({id:row.id,parentId:row.parent_id,title:row.title})));validateTree(rows);
       const changed=rows.filter(row=>row.parent_id!==original.get(row.id)),parents=new Set(changed.flatMap(row=>[row.parent_id,original.get(row.id)]).filter(Boolean));
       for(const row of changed)db.prepare('UPDATE series SET title=? WHERE id=?').run('mirea-move-'+row.id,row.id);
       for(const row of changed)db.prepare('UPDATE series SET parent_id=NULL WHERE id=?').run(row.id);

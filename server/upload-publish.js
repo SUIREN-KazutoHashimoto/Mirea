@@ -1,3 +1,4 @@
+import {assertUploadName} from './name-integrity.js';
 import {moveStorage} from './storage-move.js';
 import { open, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -62,6 +63,7 @@ export async function publishStagedUpload(context, upload, authorize) {
     }
     authorize();
     transaction(db, () => {
+      assertUploadName(db,upload);
       db.prepare(`INSERT INTO items (id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at,page_count,thumbnail_ready)
         VALUES(?,?,?,?,?,?,?,?,?,1)`).run(id, shelfId, title, first.filename, isBook ? IMAGE_BOOK_MIME : first.mime,
         files.reduce((sum, file) => sum + file.size, 0), userId, Date.now(), isBook ? pages.length : thumbnail.pageCount);

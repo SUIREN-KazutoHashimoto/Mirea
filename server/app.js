@@ -51,6 +51,7 @@ import {thumbnailWebp} from './thumbnail-webp.js';
 import {createJobPool} from './job-pool.js';
 import {createProcessingSettings,registerProcessingSettings} from './processing-settings.js';
 import {registerHistoryRemoval} from './history.js';
+import {assertAssetChanges,registerNameIntegrity} from './name-integrity.js';
 import {initializeDefaultAdmin,defaultCredentialWarning} from './bootstrap-admin.js';
 
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -171,7 +172,7 @@ export async function createApp(options = {}) {
   registerAppUpdates(app, { directory: updatesPath ? resolve(PROJECT_ROOT, updatesPath) : undefined,releaseVersion:options.remoteUpdates?packageInfo.version:undefined });
   let analytics;
   app.get('/api/v1/config', async () => ({ allowRegistration, ...processingSettings.value, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadSessionHours: 24, analytics,
-    version: packageInfo.version, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.16.0beta/mirea-0.16.0beta-android.apk' }));
+    version: packageInfo.version, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.17.0beta/mirea-0.17.0beta-android.apk' }));
   app.post('/api/v1/auth/register', { ...authLimits, schema: { body: object({ email, password, name: text(80),remember:{type:'boolean',default:true} },['email','password','name']) } }, async (req, reply) => {
     if (!allowRegistration) throw httpError(403, '新規登録は現在停止しています。');
     const normalizedEmail = req.body.email.trim().toLowerCase();
@@ -277,6 +278,7 @@ export async function createApp(options = {}) {
   analytics = await registerAnalytics(app, { db, authenticate, membership, findItem, options,adminAccess });
   registerProgress(app,{db,authenticate,findItem,options});
   registerSeries(app,{db,authenticate,membership,findItem,publicItem,removeAssetFiles,uploads});
+  registerNameIntegrity(app,{db,authenticate,membership,findItem,publicItem});
   registerPlaylists(app,{db,authenticate,findItem});
   try{await registerDownloads(app,{db,dataDir,uploadDir,booksDir,videoDir,authenticate,findItem,options});}catch(error){await app.close();throw error;}
   app.post('/api/v1/shelves/:id/items', auth, async (req, reply) => {
@@ -339,7 +341,7 @@ export async function createApp(options = {}) {
       }
       if (!files.length) throw httpError(400, 'ファイルを選択してください。');
       const uploaded = files[0];
-      title = (title || uploaded.filename.replace(/\.[^.]+$/, '')).trim();
+      title = (title || uploaded.filename.replace(/\.[^.]+$/, '')).trim().normalize('NFC');
       if (!title || title.length > 200) throw httpError(400, 'タイトルは1〜200文字で入力してください。');
       if(isTimedMime(uploaded.mime)){
         authenticate(req);membership(req.params.id,req.user.id,['owner','editor']);
@@ -361,6 +363,7 @@ export async function createApp(options = {}) {
       authenticate(req);
       membership(req.params.id, req.user.id, ['owner', 'editor']);
       transaction(db, () => {
+        assertAssetChanges(db,req.params.id,[{id,title,parentId:null}]);
         db.prepare(`INSERT INTO items (id, shelf_id, title, filename, mime_type, size, uploaded_by, created_at, page_count, thumbnail_ready)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`).run(id, req.params.id, title, uploaded.filename, isImageBook ? IMAGE_BOOK_MIME : uploaded.mime, size, req.user.id, Date.now(), isImageBook ? pages.length : thumbnail.pageCount);
         const insertPage = db.prepare('INSERT INTO image_pages VALUES (?, ?, ?, ?, ?, ?, ?)');

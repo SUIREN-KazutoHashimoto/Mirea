@@ -1,0 +1,3 @@
+.name-integrity {margin-bottom:1.25rem;padding:1rem 1.25rem;border:1px solid #d59a38;border-radius:14px;background:color-mix(in srgb,#d59a38 12%,var(--surface,#172131));color:var(--text,#e5eafa)}
+.name-integrity[hidden]{display:none}
+.name-integrity h2{font-size:1rem;margin:0 0 .5rem}.name-integrity p{font-size:.85rem;line-height:1.7;margin:.4rem 0}.name-integrity summary{cursor:pointer;font-weight:600;margin-top:.75rem}.name-integrity li{margin:.8rem 0;overflow-wrap:anywhere}.name-integrity li>div{display:flex;flex-wrap:wrap;gap:.5rem}.name-integrity button{font-size:.8rem;padding:.45rem .7rem}

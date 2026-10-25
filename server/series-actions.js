@@ -1,3 +1,4 @@
+import {assertAssetChanges,assertSeriesChanges} from './name-integrity.js';
 import {createHash} from 'node:crypto';
 import {transaction} from './database.js';
 import {httpError} from './security.js';
@@ -26,6 +27,9 @@ export function registerSeriesActions(app,{db,authenticate,membership,removeAsse
       p=plan(roots,req.user.id);
       if(deep&&(!hash||hash!==p.hash))throw httpError(409,'削除対象が変わりました。件数を確認し直してください。');
       if(!deep){
+        const selectedIds=new Set(p.selected.map(row=>row.id)),allSeries=db.prepare('SELECT id,parent_id FROM series WHERE shelf_id=?').all(p.selected[0].shelf_id);assertSeriesChanges(db,p.selected[0].shelf_id,allSeries.filter(row=>selectedIds.has(row.id)||selectedIds.has(row.parent_id)).map(row=>selectedIds.has(row.id)?{id:row.id,remove:true}:{id:row.id,parentId:null}));
+        const selected=JSON.stringify(p.selected.map(row=>row.id));const detached=db.prepare('SELECT i.id,i.shelf_id shelfId FROM items i JOIN series_items si ON si.asset_id=i.id WHERE si.series_id IN (SELECT value FROM json_each(?))').all(selected);
+        assertAssetChanges(db,p.selected[0].shelf_id,detached.map(row=>({id:row.id,parentId:null})));
         for(const row of p.selected){
           const collision=db.prepare('SELECT 1 FROM series child JOIN series root ON root.shelf_id=child.shelf_id AND root.parent_id IS NULL AND root.title=child.title AND root.id!=child.id WHERE child.parent_id=?').get(row.id);
           if(collision)throw httpError(409,'子シリーズを最上位へ移すと名前が重複します。名前または移動先を変更してください。');
@@ -57,7 +61,8 @@ export function registerSeriesActions(app,{db,authenticate,membership,removeAsse
       const roots=p.selected.filter(row=>{let parent=tree.get(row.parent_id);while(parent){if(selectedIds.has(parent.id))return false;parent=tree.get(parent.parent_id);}return true;});
       const all=db.prepare('SELECT id,parent_id,title FROM series WHERE shelf_id=?').all(p.selected[0].shelf_id);
       for(const row of all)if(roots.some(r=>r.id===row.id))row.parent_id=parent;
-      const names=new Set(),byId=new Map(all.map(s=>[s.id,s]));for(const row of all){const key=JSON.stringify([row.parent_id,row.title]);if(names.has(key))throw httpError(409,'移動先に同名シリーズがあります。');names.add(key);let s=row,depth=0;while(s){if(++depth>16)throw httpError(422,'入れ子は16階層までです。');s=byId.get(s.parent_id);}}
+      assertSeriesChanges(db,p.selected[0].shelf_id,all.map(row=>({id:row.id,parentId:row.parent_id,title:row.title})));
+      const byId=new Map(all.map(s=>[s.id,s]));for(const row of all){let s=row,depth=0;while(s){if(++depth>16)throw httpError(422,'入れ子は16階層までです。');s=byId.get(s.parent_id);}}
       for(const row of roots)db.prepare('UPDATE series SET parent_id=? WHERE id=?').run(parent,row.id);
       for(const id of new Set([parent,...roots.map(r=>r.parent_id)].filter(Boolean)))db.prepare('UPDATE series SET revision=revision+1,updated_at=? WHERE id=?').run(Date.now(),id);
       return {moved:roots.length};

@@ -1,3 +1,4 @@
+import {assertUploadName} from './name-integrity.js';
 import {moveStorage} from './storage-move.js';
 import { copyFile, open, rename, stat, unlink, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -31,6 +32,7 @@ export async function publishAudio(context,upload,authorize) {
     }
     authorize();metadata.originalFilename=first.filename;
     transaction(db,()=>{
+      assertUploadName(db,upload);
       db.prepare(`INSERT INTO items(id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at,page_count,thumbnail_ready)
         VALUES(?,?,?,?,'audio/mp4',?,?,?,1,1)`).run(id,shelfId,title,first.filename.replace(/\.[^.]+$/,'')+'.m4a',metadata.size,userId,Date.now());
       db.prepare('INSERT INTO audio_assets VALUES(?,?,?)').run(id,JSON.stringify(metadata),upload.retain_original?1:0);
