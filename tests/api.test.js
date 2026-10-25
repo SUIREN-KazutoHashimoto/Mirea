@@ -110,7 +110,7 @@ test('PDF upload, authorized byte serving, scoped tickets and immediate membersh
   assert.equal(invalidRange.headers['content-range'], `bytes */${pdf.length}`);
   const ticket = (await app.inject({ method: 'POST', url: `${path}/playback-ticket`, headers: bearer(viewer) })).json();
   assert.equal((await app.inject(ticket.url)).statusCode, 200);
-  const another = (await uploadFile(owner, shelf)).json().item;
+  const another = (await uploadFile(owner, shelf, pdf, 'application/pdf', 'second.pdf', 'Second document')).json().item;
   assert.equal((await app.inject(ticket.url.replace(item.id, another.id))).statusCode, 401);
   assert.equal((await app.inject({ method: 'DELETE', url: `/api/v1/shelves/${shelf}/members/${viewer.user.id}`, headers: bearer(owner) })).statusCode, 204);
   assert.equal((await app.inject(ticket.url)).statusCode, 404);

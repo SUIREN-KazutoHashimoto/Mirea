@@ -71,8 +71,9 @@ async function setup(t){
   const owner=await register('epubowner'),viewer=await register('epubviewer'),outsider=await register('epuboutsider');
   const shelf=(await request('POST','/shelves',owner,{name:'EPUB library'})).json().id;await request('POST',`/shelves/${shelf}/members`,owner,{email:viewer.user.email,role:'viewer'});
   const bytes=makeEpub();
+  let multipartSequence=0;
   const multipart=async(buffer=bytes,mime=EPUB_MIME)=>{
-    const boundary='mirea-epub-test',payload=Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\nEPUB fixture\r\n--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="book.epub"\r\nContent-Type: ${mime}\r\n\r\n`),buffer,Buffer.from(`\r\n--${boundary}--\r\n`)]);
+    const boundary='mirea-epub-test',payload=Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\nEPUB fixture ${++multipartSequence}\r\n--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="book.epub"\r\nContent-Type: ${mime}\r\n\r\n`),buffer,Buffer.from(`\r\n--${boundary}--\r\n`)]);
     return request('POST',`/shelves/${shelf}/items`,owner,payload,{'content-type':`multipart/form-data; boundary=${boundary}`});
   };
   return {dir,get app(){return app;},request,owner,viewer,outsider,shelf,bytes,multipart,async restart(){await app.close();app=await createApp(options);}};
@@ -101,7 +102,7 @@ test('EPUB resumable chunks publish, enforce per-format limits and leave no fail
   const tooBig=await c.request('POST',`/shelves/${c.shelf}/uploads`,c.owner,{title:'Too big',files:[{filename:'a.epub',mime:EPUB_MIME,size:MAX_EPUB_BYTES+1}]});assert.equal(tooBig.statusCode,413);
   for(const invalid of [false,true]){
     const bytes=invalid?makeZip([{name:'mimetype',data:'not EPUB'}]):c.bytes;
-    const begin=await c.request('POST',`/shelves/${c.shelf}/uploads`,c.owner,{title:'Chunk EPUB',files:[{filename:'a.epub',mime:EPUB_MIME,size:bytes.length}]});assert.equal(begin.statusCode,201,begin.body);const upload=begin.json();
+    const begin=await c.request('POST',`/shelves/${c.shelf}/uploads`,c.owner,{title:'Chunk EPUB '+invalid,files:[{filename:'a.epub',mime:EPUB_MIME,size:bytes.length}]});assert.equal(begin.statusCode,201,begin.body);const upload=begin.json();
     for(let offset=0,part=0;offset<bytes.length;offset+=upload.chunkSize,part++){const chunk=bytes.subarray(offset,offset+upload.chunkSize),result=await c.request('PUT',`/uploads/${upload.id}/files/0/parts/${part}`,c.owner,chunk,{'content-type':'application/octet-stream','x-chunk-sha256':createHash('sha256').update(chunk).digest('hex')});assert.equal(result.statusCode,204,result.body);}
     await c.request('POST',`/uploads/${upload.id}/complete`,c.owner);let result;
     const deadline=Date.now()+30000;do{await new Promise(resolve=>setTimeout(resolve,20));result=(await c.request('GET',`/uploads/${upload.id}`,c.owner)).json();}while(result.state==='processing'&&Date.now()<deadline);

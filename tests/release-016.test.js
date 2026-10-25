@@ -73,7 +73,7 @@ test('processing settings require an administrator and password; upload slots ex
   const first=(await c.req('POST','/shelves/'+c.shelf+'/uploads',c.owner,body)).json();assert.ok(first.id);
   assert.equal((await c.req('POST','/shelves/'+c.shelf+'/uploads',c.owner,body)).statusCode,429);
   c.db.prepare("UPDATE upload_sessions SET state='processing' WHERE id=?").run(first.id);
-  assert.equal((await c.req('POST','/shelves/'+c.shelf+'/uploads',c.owner,body)).statusCode,201);
+  assert.equal((await c.req('POST','/shelves/'+c.shelf+'/uploads',c.owner,{...body,title:'Next synthetic'})).statusCode,201);
   assert.equal((await c.req('PATCH','/shelves/'+c.shelf,c.owner,{name:'Synthetic shelf',private:true})).statusCode,200);
   assert.equal((await c.req('GET','/library/catalog',c.owner)).json().shelves[0].private,1);
 });

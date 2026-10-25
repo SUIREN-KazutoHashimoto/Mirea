@@ -28,8 +28,9 @@ async function setup(t, overrides = {}) {
   ctx.owner = await ctx.register('owner');
   const shelf = await ctx.request('POST', '/shelves', ctx.owner, { name: 'Chunks' });
   ctx.shelfId = shelf.json().id;
+  let uploadSequence = 0;
   ctx.start = async (files = [{ filename: 'book.pdf', mime: 'application/pdf', size: pdf.length }], user = ctx.owner) => {
-    const response = await ctx.request('POST', `/shelves/${ctx.shelfId}/uploads`, user, { title: 'Chunked media', files });
+    const response = await ctx.request('POST', `/shelves/${ctx.shelfId}/uploads`, user, { title: 'Chunked media '+(++uploadSequence), files });
     assert.equal(response.statusCode, 201, response.body);
     return response.json();
   };
@@ -145,7 +146,7 @@ test('retained failed sources never occupy slots; all retry entry points respect
   const db=new DatabaseSync(join(ctx.dataDir,'mirea.sqlite'));
   try{
   const failed=[];for(let n=0;n<4;n++){
-    const r=await ctx.request('POST',`/shelves/${ctx.shelfId}/uploads`,ctx.owner,{title:'Failed fixture',files:[{filename:'fixture.mp4',mime:'video/mp4',size:16}]});assert.equal(r.statusCode,201,r.body);failed.push(r.json().id);
+    const r=await ctx.request('POST',`/shelves/${ctx.shelfId}/uploads`,ctx.owner,{title:'Failed fixture '+n,files:[{filename:'fixture.mp4',mime:'video/mp4',size:16}]});assert.equal(r.statusCode,201,r.body);failed.push(r.json().id);
     db.prepare("UPDATE upload_sessions SET state='failed',expires_at=1,error='fixture' WHERE id=?").run(r.json().id);
   }
   let list=(await ctx.request('GET','/uploads',ctx.owner)).json();assert.equal(list.activeCount,0);assert.equal(list.uploads.length,4);assert(list.uploads.every(u=>u.sourceRetained));
