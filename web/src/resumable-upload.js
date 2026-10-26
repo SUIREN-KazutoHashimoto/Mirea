@@ -1,4 +1,4 @@
-import {requestError} from './error-diagnostics.js';
+import {requestError,recordClientError} from './error-diagnostics.js';
 const hex = bytes => Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, '0')).join('');
 const digest = async bytes => hex(await crypto.subtle.digest('SHA-256', bytes));
 const abortError = () => new Error('アップロードをキャンセルしました。');
@@ -39,7 +39,7 @@ export function createResumableUpload({ endpoint, token, userId, unauthorized, i
     const result = response.status === 204 ? null : await response.json().catch(() => ({}));
     if (!response.ok) {
       if (response.status === 401) unauthorized();
-      throw requestError(result,response.status,{record:isCurrent()});
+      throw requestError(result,response.status,{record:false,defer:isCurrent()});
     }
     return result;
   }
@@ -57,7 +57,7 @@ export function createResumableUpload({ endpoint, token, userId, unauthorized, i
         let result = {};
         try { result = JSON.parse(xhr.responseText); } catch { /* proxy HTML error */ }
         if (xhr.status === 401) unauthorized();
-        reject(requestError({...result,error:result.error||'分割データを送信できませんでした。再試行してください。'},xhr.status,{record:isCurrent()}));
+        reject(requestError({...result,error:result.error||'分割データを送信できませんでした。再試行してください。'},xhr.status,{record:false,defer:isCurrent()}));
       };
       xhr.onerror = xhr.ontimeout = () => {xhrs.delete(xhr);reject(Object.assign(new Error('通信が途切れました。同じファイルを選んで再試行できます。'), { status: 0 }));};
       xhr.onabort = () => {xhrs.delete(xhr);reject(abortError());};
@@ -128,8 +128,10 @@ export function createResumableUpload({ endpoint, token, userId, unauthorized, i
     save(null);
     return { item: state.item,seriesWarning:state.seriesWarning??'' };
   })().catch(error => {
+    const interrupted=signal.aborted;
     transferredReject(error);controller.abort();for(const xhr of xhrs)xhr.abort();
     if (cancelled) throw abortError();
+    if(!interrupted&&isCurrent())recordClientError(error);
     throw error;
   });
   return { promise,transferred, get uploadId(){return uploadId;}, get processing(){return processing;}, detach(){controller.abort();for(const xhr of xhrs)xhr.abort();}, abort() {

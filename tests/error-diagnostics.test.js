@@ -42,6 +42,7 @@ test('browser reports are bounded, explicitly copied, revalidated, ephemeral and
   clearDiagnostics();assert.equal(recentDiagnostics().length,0);
   requestError({error:secret,diagnostic:{schemaVersion:1,errorId:secret}},502);assert.equal(recentDiagnostics().length,1);assert(!diagnosticText(recentDiagnostics()[0]).includes(secret));clearDiagnostics();
   requestError({error:secret,diagnostic},500,{record:false});assert.equal(recentDiagnostics().length,0,'late responses and expected remember-cookie failures stay quiet');
+  const deferred=requestError({error:secret,diagnostic},429,{record:false,defer:true});assert.equal(recentDiagnostics().length,0,'recoverable transfer retries are quiet');recordClientError(deferred);assert.equal(recentDiagnostics().length,1,'only an exhausted transfer failure is surfaced');assert(!diagnosticText(recentDiagnostics()[0]).includes(secret));clearDiagnostics();
 });
 test('ordinary authenticated users receive only their own sanitized error; anonymous errors have no stack and failures are not exposed through a log API',async t=>{
   const dataDir=await mkdtemp(join(tmpdir(),'mirea-diagnostics-')),app=await createApp({dataDir,rateLimit:false}),db=new DatabaseSync(join(dataDir,'mirea.sqlite'));

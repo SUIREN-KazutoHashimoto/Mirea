@@ -2,7 +2,7 @@ import {normalizeDiagnostic,DIAGNOSTIC_CATEGORIES,DIAGNOSTIC_OPERATIONS} from '.
 import packageInfo from '../../package.json' with {type:'json'};
 let recent=[];
 const listeners=new Set();let attached=new WeakMap();
-const notify=()=>{for(const listener of listeners)listener();};
+const notify=()=>{for(const listener of listeners)try{listener();}catch{/* Diagnostics must not replace the original operation's failure. */}};
 export const recentDiagnostics=()=>structuredClone(recent);
 export function clearDiagnostics(){recent=[];attached=new WeakMap();notify();}
 export function recordDiagnostic(value,error){
@@ -14,11 +14,12 @@ export function diagnosticFor(error){return error&&typeof error==='object'?attac
 export function localDiagnostic({status=0,operation='client',network=false}={}){
   return {schemaVersion:1,errorId:crypto.randomUUID(),occurredAt:new Date().toISOString(),status,operation,category:network?'network':'client',code:network?'NETWORK_ERROR':'CLIENT_ERROR',type:'Error',trace:[],redacted:true};
 }
-export function requestError(data,status,{network=false,record=true}={}){
+export function requestError(data,status,{network=false,record=true,defer=false}={}){
   const error=Object.assign(new Error(typeof data?.error==='string'?data.error:'リクエストに失敗しました。'),{status});
-  if(record)recordDiagnostic(normalizeDiagnostic(data?.diagnostic)??localDiagnostic({status,operation:network?'network':'request',network}),error);return error;
+  const incoming=normalizeDiagnostic(data?.diagnostic),safe=incoming?.status===status?incoming:localDiagnostic({status,operation:network?'network':'request',network});
+  if(record)recordDiagnostic(safe,error);else if(defer)attached.set(error,safe);return error;
 }
-export function recordClientError(error){if(error?.name==='AbortError')return;if(!diagnosticFor(error))recordDiagnostic(localDiagnostic(),error);}
+export function recordClientError(error){if(error?.name==='AbortError')return;recordDiagnostic(diagnosticFor(error)??localDiagnostic({status:error?.status,network:error?.status===0}),error);}
 export function diagnosticText(value){const safe=normalizeDiagnostic(value);return safe?JSON.stringify(safe,null,2):'';}
 const el=(tag,text,className)=>{const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(className)node.className=className;return node;};
 const button=(label,action)=>{const node=el('button',label,'button secondary');node.type='button';node.onclick=action;return node;};

@@ -124,6 +124,7 @@ export async function authenticatedBlob(path, signal) {
   const response = await fetch(absoluteUrl(path), { headers: authHeaders(), signal, cache: 'no-store' });
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
+    signal?.throwIfAborted();
     if (response.status === 401 && session?.token === token) {
       setSession(null);
       window.dispatchEvent(new Event('mirea:unauthorized'));
