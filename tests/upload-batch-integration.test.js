@@ -76,6 +76,7 @@ test('protocol v2 drains transfers while converters are blocked, reserves series
  // Losing browser resume metadata does not allocate a duplicate session.
  const candidate=await api('/shelves/'+shelf+'/uploads','POST',{resume:true,title:jobs[0].title,seriesId:series.id,files:[{filename:files[0].name,mime:'application/pdf',size:files[0].size}]});assert.equal(candidate.id,sent.rows[0].uploadId);assert.equal(candidate.state,'processing');
  const statuses=await api('/uploads/status','POST',{ids:sent.rows.map(r=>r.uploadId)});assert.equal(statuses.uploads.length,8);assert(statuses.uploads.every(r=>r.files===undefined));
+ const many=await api('/shelves/'+shelf+'/uploads','POST',{title:'1000 image metadata',files:Array.from({length:1000},(_,n)=>({filename:'画'.repeat(245)+n+'.png',mime:'image/png',size:1}))});assert.equal(many.files.length,1000,'valid UTF-8 metadata must fit the request body limit');await api('/uploads/'+many.id,'DELETE');
  release();for(let n=0;n<1000;n++){const rows=(await api('/uploads/status','POST',{ids:sent.rows.map(r=>r.uploadId)})).uploads;if(rows.every(r=>r.state==='complete'))break;assert(!rows.some(r=>r.state==='failed'),JSON.stringify(rows.map(r=>r.error)));await delay(25);}
  const catalog=await api('/library/catalog');assert.equal(catalog.items.length,8);assert(catalog.items.every(i=>i.series.id===series.id));assert.equal(entered,8);
 });

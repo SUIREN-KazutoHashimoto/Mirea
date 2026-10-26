@@ -156,7 +156,7 @@ export async function registerResumableUploads(app, context) {
   app.addHook('onClose', async () => { closing = true; clearInterval(timer); await Promise.allSettled([...jobs.values()]); await cleanup; });
 
   app.post('/api/v1/shelves/:id/uploads', {
-    ...auth, bodyLimit: 768 * 1024,
+    ...auth, bodyLimit: 2 * 1024 * 1024,
     schema: { body: {
       type: 'object', additionalProperties: false, required: ['title', 'files'],
       properties: {

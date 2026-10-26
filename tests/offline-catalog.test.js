@@ -97,3 +97,9 @@ test('authenticated server catalog includes all member shelves even with no down
  assert.deepEqual(new Set(catalog.shelves.map(s=>s.id)),new Set([one,two]));assert(!JSON.stringify(catalog).includes(foreign));assert.equal(catalog.series.find(s=>s.id===child.id).parentId,root.id);assert.equal(catalog.items[0].series.position,1);assert.equal(catalog.items[0].progress,null);assert(catalog.items[0].thumbnailUrl.endsWith(customThumbnailRevision({image_id:image,updated_at:1})));assert.equal(catalog.items[0].role,'viewer');
  await req('/shelves/'+one+'/members/'+viewer.user.id,owner,'DELETE');const after=normalizeCatalog((await req('/library/catalog',viewer)).json(),viewer.user.id);assert.equal(after.items.length,0);assert.equal(after.series.length,0);assert.deepEqual(after.shelves.map(s=>s.id),[two]);
 });
+
+test('repeated clock checks never rewrite the large encrypted catalog',async()=>{
+ const c=await setup();await c.cache.save(c.partition,c.catalog,c.userId);const name='sealed|'+c.partition+'|catalog',before=Buffer.from(c.rows.get(name).bytes);let fullWrites=0;const put=c.store.vaultPut;c.store.vaultPut=async(key,value)=>{if(key===name)fullWrites++;return put(key,value);};
+ for(let n=0;n<20;n++){c.advance(100);assert.equal((await c.cache.load(c.partition)).items.length,2);}
+ assert.equal(fullWrites,0);assert.deepEqual(Buffer.from(c.rows.get(name).bytes),before);
+});

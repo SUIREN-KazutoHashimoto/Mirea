@@ -1,6 +1,6 @@
 // Session-only prefetch: media persisted here is encrypted; the non-exportable
 // key lives only in this reader. Never award view/progress events for prefetch.
-const DATABASE='mirea-image-prefetch-v1',STORE='pages';
+const DATABASE='mirea-image-prefetch-v1',STORE='pages',encoder=new TextEncoder();
 function request(req){return new Promise((resolve,reject)=>{req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});}
 async function openStore(){
   if(!globalThis.indexedDB||!globalThis.crypto?.subtle)return null;
@@ -16,8 +16,8 @@ export function createImagePageCache({count,load,onProgress=()=>{},concurrency=4
     await transaction(db,'readwrite',store=>{const req=store.index('createdAt').openCursor(IDBKeyRange.upperBound(Date.now()-86400000));req.onsuccess=()=>{const cursor=req.result;if(cursor){cursor.delete();cursor.continue();}};});return {db,key};
   }).catch(()=>{diskFailed=true;return null;});
   function remember(n,blob){if(memory.has(n)){used-=memory.get(n).size;memory.delete(n);}if(blob.size>memoryBytes)return;while(used+blob.size>memoryBytes&&memory.size){const [old,value]=memory.entries().next().value;memory.delete(old);used-=value.size;}memory.set(n,blob);used+=blob.size;}
-  async function read(n){const cached=memory.get(n);if(cached){memory.delete(n);memory.set(n,cached);return cached;}const target=await disk;if(!target)return null;const row=await request(target.db.transaction(STORE).objectStore(STORE).get(session+':'+n));if(!row)return null;const bytes=await cryptoApi.subtle.decrypt({name:'AES-GCM',iv:row.iv},target.key,row.bytes);return new Blob([bytes],{type:row.type});}
-  async function save(n,blob){const target=await disk;if(!target||diskFailed||disposed)return;try{const iv=cryptoApi.getRandomValues(new Uint8Array(12)),bytes=await cryptoApi.subtle.encrypt({name:'AES-GCM',iv},target.key,await blob.arrayBuffer());if(!disposed)await transaction(target.db,'readwrite',store=>store.put({id:session+':'+n,createdAt:Date.now(),iv,bytes,type:blob.type}));}catch{diskFailed=true;}}
+  async function read(n){const cached=memory.get(n);if(cached){memory.delete(n);memory.set(n,cached);return cached;}const target=await disk;if(!target)return null;const row=await request(target.db.transaction(STORE).objectStore(STORE).get(session+':'+n));if(!row)return null;const bytes=await cryptoApi.subtle.decrypt({name:'AES-GCM',iv:row.iv,additionalData:encoder.encode(session+':'+n)},target.key,row.bytes);return new Blob([bytes],{type:row.type});}
+  async function save(n,blob){const target=await disk;if(!target||diskFailed||disposed)return;try{const iv=cryptoApi.getRandomValues(new Uint8Array(12)),bytes=await cryptoApi.subtle.encrypt({name:'AES-GCM',iv,additionalData:encoder.encode(session+':'+n)},target.key,await blob.arrayBuffer());if(!disposed)await transaction(target.db,'readwrite',store=>store.put({id:session+':'+n,createdAt:Date.now(),iv,bytes,type:blob.type}));}catch{diskFailed=true;}}
   function pump(){while(!disposed&&running<concurrency&&queue.length){const task=queue.shift();running++;const controller=new AbortController();controllers.add(controller);
       (async()=>{let blob=await read(task.n);if(disposed)throw new DOMException('Closed','AbortError');if(!blob){blob=await load(task.n,controller.signal);if(disposed)throw new DOMException('Closed','AbortError');await save(task.n,blob);}if(disposed)throw new DOMException('Closed','AbortError');remember(task.n,blob);ready.add(task.n);onProgress({ready:ready.size,total:count,limited:diskFailed});task.resolve(blob);})().catch(task.reject).finally(()=>{running--;controllers.delete(controller);tasks.delete(task.n);pump();});
     }}
