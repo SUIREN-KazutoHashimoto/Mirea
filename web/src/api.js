@@ -1,3 +1,4 @@
+import {requestError,clearDiagnostics} from './error-diagnostics.js';
 import { NativePlayer,nativePlayerAvailable,invalidateNativePlayback } from './native-player-bridge.js';
 import { Capacitor,registerPlugin } from '@capacitor/core';
 import {offlineVault,offlineIdentity,forgetOfflineIdentity} from './offline-vault.js';
@@ -32,9 +33,9 @@ export async function reconnectSession({signal}={}){
 }
 async function offlineLoggedOut(origin){try{return await(await offlineVault()).loggedOut(origin);}catch{return false;}}
 async function sessionRequest(path,options={}){
-  let response;try{response=await fetch(`/api/v1${path}`,{...options,signal:options.signal??AbortSignal.timeout(10000),credentials:'same-origin',cache:'no-store',headers:{...(options.body?{'Content-Type':'application/json'}:{}),...options.headers},body:options.body?JSON.stringify(options.body):undefined});}catch{throw new Error('サーバーに接続できません。ログイン保持は解除していません。');}
+  const context=authRevision;let response;try{response=await fetch(`/api/v1${path}`,{...options,signal:options.signal??AbortSignal.timeout(10000),credentials:'same-origin',cache:'no-store',headers:{...(options.body?{'Content-Type':'application/json'}:{}),...options.headers},body:options.body?JSON.stringify(options.body):undefined});}catch{throw new Error('サーバーに接続できません。ログイン保持は解除していません。');}
   options.signal?.throwIfAborted();
-  if(!response.ok)throw Object.assign(new Error('保持されたログインを確認できません。'),{status:response.status});const value=response.status===204?null:await response.json();options.signal?.throwIfAborted();return value;
+  if(!response.ok){const data=await response.json().catch(()=>({}));throw requestError({...data,error:'保持されたログインを確認できません。'},response.status,{record:response.status>=500&&context===authRevision});}const value=response.status===204?null:await response.json();options.signal?.throwIfAborted();return value;
 }
 const loginStore=createLoginStore({native,temporary:()=>{try{return sessionStorage;}catch{return null;}},secure:registerPlugin('MireaSession'),request:sessionRequest});
 export async function initializeSession({signal}={}){
@@ -68,13 +69,13 @@ export function setEndpoint(value) {
     throw new Error('HTTPSのサーバーURLを入力してください（例：https://mirea.example.com）。');
   }
   invalidateNativePlayback();invalidateTransferContext();
-  if(endpoint!==url.origin){session=null;authRevision++;try{sessionStorage.removeItem('mirea.session');}catch{}}
+  if(endpoint!==url.origin){clearDiagnostics();session=null;authRevision++;try{sessionStorage.removeItem('mirea.session');}catch{}}
   endpoint = url.origin;
   try{localStorage.setItem('mirea.server', endpoint);}catch{}
 }
 export function setSession(value,{remember=rememberChoice,broadcast=true}={}) {
   invalidateNativePlayback();invalidateTransferContext();
-  const oldToken=session?.token,oldUser=session?.user.id;authRevision++;
+  const oldToken=session?.token,oldUser=session?.user.id;if(!value||value.user?.id!==oldUser)clearDiagnostics();authRevision++;
   session = value;
   rememberChoice=remember;
   if(broadcast)try{localStorage.setItem('mirea.auth-change',JSON.stringify({origin:endpoint||location.origin,logout:!value,nonce:crypto.randomUUID()}));}catch{}
@@ -91,7 +92,7 @@ export const authHeaders = () => ({ Authorization: `Bearer ${session?.token ?? '
 
 export async function api(path, options = {}) {
   if (native && !endpoint) throw new Error('接続先のサーバーURLを設定してください。');
-  const token = session?.token;
+  const token = session?.token,context=authRevision;
   if(session?.offline&&!token&&!path.startsWith('/auth/login')&&!path.startsWith('/auth/register')&&path!=='/config')throw new Error('オフラインです。接続後に自動同期します。');
   options.signal?.throwIfAborted();
   let response;
@@ -102,12 +103,12 @@ export async function api(path, options = {}) {
       body: options.body ? JSON.stringify(options.body) : undefined,
       cache: 'no-store'
     });
-  } catch { throw new Error('サーバーに接続できません。接続先とネットワークを確認してください。'); }
+  } catch { options.signal?.throwIfAborted();throw requestError({error:'サーバーに接続できません。接続先とネットワークを確認してください。'},0,{network:true,record:context===authRevision}); }
   options.signal?.throwIfAborted();
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     options.signal?.throwIfAborted();
-    const error = Object.assign(new Error(data.error || 'リクエストに失敗しました。'), { status: response.status });
+    const error = requestError(data,response.status,{record:context===authRevision});
     if (response.status === 401 && session && session.token === token && !path.startsWith('/auth/login')) {
       setSession(null);
       window.dispatchEvent(new Event('mirea:unauthorized'));
@@ -118,7 +119,7 @@ export async function api(path, options = {}) {
 }
 
 export async function authenticatedBlob(path, signal) {
-  const token = session?.token;
+  const token = session?.token,context=authRevision;
   if(session?.offline&&!token)throw new Error('オフラインです。');
   const response = await fetch(absoluteUrl(path), { headers: authHeaders(), signal, cache: 'no-store' });
   if (!response.ok) {
@@ -127,7 +128,7 @@ export async function authenticatedBlob(path, signal) {
       setSession(null);
       window.dispatchEvent(new Event('mirea:unauthorized'));
     }
-    throw new Error(data.error || '画像を読み込めません。');
+    throw requestError(data,response.status,{record:context===authRevision});
   }
   return response.blob();
 }
@@ -136,7 +137,7 @@ export function upload(shelfId, files, title, onProgress, options) {
   const token = session?.token;
   const release = beginUpdateActivity();
   let task;
-  try { task = nativeTransfersAvailable()&&files.every(file=>file.nativeId)?nativeUpload({origin:endpoint,token,userId:session.user.id},shelfId,files,title,onProgress,options):createResumableUpload({ endpoint, token, userId: session?.user?.id, unauthorized: () => {
+  try { task = nativeTransfersAvailable()&&files.every(file=>file.nativeId)?nativeUpload({origin:endpoint,token,userId:session.user.id},shelfId,files,title,onProgress,options):createResumableUpload({ endpoint, token, userId: session?.user?.id, isCurrent:()=>session?.token===token, unauthorized: () => {
     if (session?.token !== token) return;
     setSession(null);
     window.dispatchEvent(new Event('mirea:unauthorized'));
