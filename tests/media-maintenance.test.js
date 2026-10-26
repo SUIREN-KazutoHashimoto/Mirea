@@ -1,4 +1,5 @@
 import test from 'node:test';
+import sharp from 'sharp';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {mkdtemp,rm,mkdir,writeFile,readFile,access,symlink} from 'node:fs/promises';
@@ -88,8 +89,8 @@ test('failed automatic previews expose a valid asset retry identity, support bul
 });
 
 test('whole-asset regeneration includes assets with no history, drains more than twenty durable jobs and separates history from current work',async t=>{
-  const media=createMediaProcessor();let active=0,maximum=0;
-  media.thumbnail=async(source,mime,destination)=>{active++;maximum=Math.max(maximum,active);await new Promise(r=>setTimeout(r,5));await writeFile(destination,'synthetic thumbnail');active--;};media.validateImage=async()=>({width:1,height:1});
+  const media=createMediaProcessor(),jpeg=await sharp({create:{width:1,height:1,channels:3,background:'#778899'}}).jpeg().toBuffer();let active=0,maximum=0;
+  media.thumbnail=async(source,mime,destination)=>{active++;maximum=Math.max(maximum,active);await new Promise(r=>setTimeout(r,5));await writeFile(destination,jpeg);active--;};media.validateImage=async()=>({width:1,height:1});
   const c=await setup(t,{mediaProcessor:media});for(let n=0;n<25;n++)await c.asset();
   const deleted=randomUUID();c.db.prepare("INSERT INTO admin_jobs(id,kind,state,created_at,updated_at) VALUES(?,'thumbnail','complete',0,0)").run(deleted);
   const r=await c.req('POST','/admin/assets/regenerate-all',c.admin,{kind:'thumbnail',acknowledgeCost:true});assert.equal(r.statusCode,202,r.body);assert.equal(r.json().accepted,25);
@@ -112,7 +113,7 @@ test('processing uploads appear as ACL-scoped non-playable placeholders and disa
 test('restart drains a persisted whole-asset queue beyond the twenty-job execution window',async t=>{
   const c=await setup(t);for(let n=0;n<25;n++){const asset=await c.asset();c.db.prepare("INSERT INTO admin_jobs(id,kind,asset_id,state,requested_by,created_at,updated_at) VALUES(?,'thumbnail',?,'queued',?,0,0)").run(randomUUID(),asset,c.admin.user.id);}
   await c.app.close();
-  const media=createMediaProcessor();media.thumbnail=async(source,mime,destination)=>writeFile(destination,'synthetic thumbnail');media.validateImage=async()=>({width:1,height:1});
+  const media=createMediaProcessor(),jpeg=await sharp({create:{width:1,height:1,channels:3,background:'#778899'}}).jpeg().toBuffer();media.thumbnail=async(source,mime,destination)=>writeFile(destination,jpeg);media.validateImage=async()=>({width:1,height:1});
   const restarted=await createApp({dataDir:c.dataDir,rateLimit:false,serverAdminUserIds:[c.admin.user.id],mediaProcessor:media});
   try{for(const row of c.db.prepare('SELECT id FROM admin_jobs').all())assert.equal((await c.wait(row.id)).state,'complete');assert.equal(c.db.prepare("SELECT COUNT(*) n FROM admin_jobs WHERE state='complete'").get().n,25);}finally{await restarted.close();}
 });

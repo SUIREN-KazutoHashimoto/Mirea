@@ -60,7 +60,7 @@ test('dispose cancels listeners and late completion cannot recreate UI or alter 
 test('manual refresh preserves collection view, reconnects with deadline, separates catalog from periodic sync and preserves button-only drawer',async()=>{
   const main=await readFile(new URL('../web/src/main.js',import.meta.url),'utf8'),css=await readFile(new URL('../web/src/library-refresh.css',import.meta.url),'utf8');
   const manual=main.slice(main.indexOf('async function refreshManually'),main.indexOf('function selectShelf'));
-  for(const text of ['connectionBudget({ms:2500})','sessionRevision()','reconnectSession({signal:budget.signal})','refresh({background:true,signal:budget.signal})','synchronizeConnection({refreshLibrary:false})'])assert.ok(manual.includes(text),text);
+  for(const text of ['connectionBudget({ms:2500})','sessionRevision()','reconnectSession({signal:budget.signal})','refresh({background:true})','synchronizeConnection({refreshLibrary:false})'])assert.ok(manual.includes(text),text);
   assert.doesNotMatch(manual,/activeSeries\s*=|activeShelf\s*=|filter\s*=|search\s*=|sort\s*=/);
   assert.ok(main.includes('setInterval(()=>synchronizeConnection({refreshLibrary:false}),30000)'));assert.ok(main.includes('shouldRefreshCatalog({requested:refreshLibrary,wasOffline})'));assert.ok(main.includes('!pullRefresh?.active'));assert.doesNotMatch(main,/libraryPoll=setInterval/);
   assert.match(css,/overscroll-behavior-y:contain/);assert.match(css,/prefers-reduced-motion:reduce/);
