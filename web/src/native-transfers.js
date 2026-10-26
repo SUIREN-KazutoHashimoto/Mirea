@@ -4,7 +4,12 @@ export const nativeTransfersAvailable=()=>Capacitor.getPlatform()==='android'&&C
 const waiting=new Map();let listener,contextProvider;
 export function configureNativeTransfers(provider){contextProvider=provider;}
 export const nativeTransferContext=()=>{const value=contextProvider?.();if(!value)throw Error('ログインしてください。');return value;};
-export async function refreshNativeTransfers(){
+let refreshing,pendingRefresh=false;
+export function refreshNativeTransfers(){
+  if(refreshing){pendingRefresh=true;return refreshing;}
+  refreshing=(async()=>{await new Promise(resolve=>setTimeout(resolve,100));await readNativeTransfers();})().finally(()=>{refreshing=null;if(pendingRefresh&&waiting.size){pendingRefresh=false;refreshNativeTransfers().catch(()=>{});}});return refreshing;
+}
+async function readNativeTransfers(){
   if(!nativeTransfersAvailable()||!waiting.size)return;
   const context=nativeTransferContext(),result=await NativeTransfer.status(context);
   for(const row of result.jobs??[]){
@@ -20,8 +25,8 @@ export async function requestTransferNotifications(){
   if(globalThis.Notification&&Notification.permission==='default')return {granted:await Notification.requestPermission()==='granted'};
   return {granted:globalThis.Notification?.permission==='granted'};
 }
-export function nativeUpload(context,shelfId,files,title,onProgress,{retainOriginal=true,seriesId=null}={}){
-  return nativeTransferTask(context,'upload',{shelfId,files,title,retainOriginal,...(seriesId?{seriesId}:{})},row=>onProgress(row.state==='processing'||row.state==='complete'?100:Math.min(99,row.percent),row.state==='processing'?{stage:'processing'}:undefined));
+export function nativeUpload(context,shelfId,files,title,onProgress,{retainOriginal=true,seriesId=null,protocolVersion=1,monitorProcessing=true}={}){
+  return nativeTransferTask(context,'upload',{shelfId,files,title,retainOriginal,protocolVersion,monitorProcessing,...(seriesId?{seriesId}:{})},row=>onProgress(row.state==='processing'||row.state==='complete'?100:Math.min(99,row.percent),row.state==='processing'?{stage:'processing'}:undefined));
 }
 export function nativeTransferTask(context,direction,job,update=()=>{}){
   let id,stopped=false,processing=false,transferredResolve,transferredReject;

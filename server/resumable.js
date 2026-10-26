@@ -22,7 +22,9 @@ export async function registerResumableUploads(app, context) {
   const { db, uploadDir, stagingDir, authenticate, membership, maxUploadBytes, chunkSize, publicItem } = context;
   const transferDir = join(uploadDir, 'transfers');
   await mkdir(transferDir, { recursive: true, mode: 0o700 });
-  const locked = new Set(), jobs = new Map();
+  const locked = new Set(), jobs = new Map(), partTransfers=new Map();
+  const hasParts=id=>[...partTransfers.keys()].some(key=>key.startsWith(id+':'));
+  async function stopParts(id){const rows=[...partTransfers].filter(([key])=>key.startsWith(id+':')).map(([,row])=>row);for(const row of rows)row.controller.abort();await Promise.allSettled(rows.map(row=>row.done));}
   let closing = false, sweeping=false;
   const auth = { onRequest: async req => authenticate(req) };
   const get = id => db.prepare('SELECT * FROM upload_sessions WHERE id=?').get(id);
@@ -50,11 +52,11 @@ export async function registerResumableUploads(app, context) {
     const parts = detail?db.prepare('SELECT file_index,part_index,size,sha256 FROM upload_parts WHERE upload_id=? ORDER BY file_index,part_index').all(upload.id):[];
     const item = upload.state === 'complete' && db.prepare('SELECT * FROM items WHERE id=?').get(upload.id);
     return {
-      id: upload.id, state: upload.state, chunkSize: upload.chunk_size, expiresAt: upload.expires_at,
+      id: upload.id, shelfId:upload.shelf_id, maxParallelParts:4, protocolVersion:2, state: upload.state, chunkSize: upload.chunk_size, expiresAt: upload.expires_at,
       seriesId:upload.target_series_id,seriesWarning:upload.series_warning,
       title: upload.title, retainOriginal: Boolean(upload.retain_original), processing: JSON.parse(upload.processing_json),
       sourceRetained: upload.state === 'failed' && isTimedMime(JSON.parse(upload.files_json)[0].mime),
-      receivedBytes: parts.reduce((sum, part) => sum + part.size, 0),
+      receivedBytes: detail?parts.reduce((sum,part)=>sum+part.size,0):db.prepare('SELECT COALESCE(SUM(size),0) n FROM upload_parts WHERE upload_id=?').get(upload.id).n,
       files: detail?JSON.parse(upload.files_json).map((file, index) => {
         const received = parts.filter(part => part.file_index === index);
         return { ...file, receivedParts: received.map(part => part.part_index), receivedHashes: Object.fromEntries(received.map(part => [part.part_index, part.sha256])) };
@@ -62,10 +64,16 @@ export async function registerResumableUploads(app, context) {
       ...(upload.error ? { error: upload.error } : {}), ...(item ? { item: publicItem(item) } : {})
     };
   }
-  async function exclusive(id, work) {
-    if (locked.has(id)) throw httpError(409, '同じアップロードを処理中です。再試行してください。');
+  async function exclusive(id, work, {allowParts=false}={}) {
+    if (locked.has(id)||!allowParts&&hasParts(id)) throw httpError(409, '同じアップロードを処理中です。再試行してください。');
     locked.add(id);
     try { return await work(); } finally { locked.delete(id); }
+  }
+  async function transferPart(id,key,work){
+    key=id+':'+key;if(partTransfers.size>=128||[...partTransfers.keys()].filter(k=>k.startsWith(id+':')).length>=4)throw httpError(429,'分割転送の同時数上限です。自動的に再試行します。');if(locked.has(id)||partTransfers.has(key))throw httpError(409,'同じ分割データを処理中です。再試行してください。');
+    let finish;const row={controller:new AbortController(),done:new Promise(resolve=>{finish=resolve;})};partTransfers.set(key,row);
+    const timeout=setTimeout(()=>row.controller.abort(),90000);timeout.unref?.();
+    try{return await work(row.controller.signal);}finally{clearTimeout(timeout);partTransfers.delete(key);finish();}
   }
   async function discard(id) {
     await Promise.all([removeItemDirectory(transferDir, id), removeItemDirectory(stagingDir, id)]);
@@ -129,7 +137,7 @@ export async function registerResumableUploads(app, context) {
     try{
     for (const row of db.prepare("SELECT id,state,files_json FROM upload_sessions WHERE expires_at<=? AND state != 'processing'").all(Date.now())) {
       if(row.state==='failed'&&isTimedMime(JSON.parse(row.files_json)[0].mime))continue;
-      if (jobs.has(row.id) || locked.has(row.id)) continue;
+      if (jobs.has(row.id) || locked.has(row.id)||hasParts(row.id)) continue;
       await exclusive(row.id, async () => {
         await discard(row.id);
         db.prepare('DELETE FROM upload_sessions WHERE id=?').run(row.id);
@@ -148,12 +156,13 @@ export async function registerResumableUploads(app, context) {
   app.addHook('onClose', async () => { closing = true; clearInterval(timer); await Promise.allSettled([...jobs.values()]); await cleanup; });
 
   app.post('/api/v1/shelves/:id/uploads', {
-    ...auth, bodyLimit: 256 * 1024,
+    ...auth, bodyLimit: 768 * 1024,
     schema: { body: {
       type: 'object', additionalProperties: false, required: ['title', 'files'],
       properties: {
         title: { type: 'string', minLength: 1, maxLength: 200 },
         retainOriginal: { type: 'boolean', default: true },
+        resume:{type:'boolean',default:false},
         seriesId:{anyOf:[{type:'string',format:'uuid'},{type:'null'}]},
         files: { type: 'array', minItems: 1, maxItems: MAX_BOOK_PAGES, items: {
           type: 'object', additionalProperties: false, required: ['filename', 'mime', 'size'],
@@ -171,6 +180,13 @@ export async function registerResumableUploads(app, context) {
       throw httpError(413, 'アップロードの合計、または画像1枚のサイズ上限を超えています。');
     }
     if(req.body.seriesId&&!db.prepare('SELECT 1 FROM series WHERE id=? AND shelf_id=?').get(req.body.seriesId,req.params.id))throw httpError(422,'この本棚のシリーズを選んでください。');
+    if(req.body.resume){
+      const canonicalFiles=files.map(file=>({...file,filename:file.filename.replaceAll('\\','/').split('/').pop()||'file'}));
+      const candidates=db.prepare("SELECT * FROM upload_sessions WHERE shelf_id=? AND user_id=? AND title=? AND COALESCE(target_series_id,'')=? AND (state='processing' OR state='uploading' AND expires_at>?)").all(req.params.id,req.user.id,title,req.body.seriesId??'',Date.now()).filter(row=>JSON.stringify(JSON.parse(row.files_json).map(({filename,mime,size})=>({filename,mime,size})))===JSON.stringify(canonicalFiles.map(({filename,mime,size})=>({filename,mime,size})))&&Boolean(row.retain_original)===Boolean(req.body.retainOriginal&&isTimedMime(files[0].mime)));
+      if(candidates.length>1)throw httpError(409,'同じ送信候補が複数あります。転送状況で整理してから再試行してください。');
+      if(candidates.length===1)return reply.code(200).send(status(candidates[0]));
+    }
+    context.jobPool.prioritizeTransfers?.();
     requireSlot(req.user.id);
     const id = randomUUID(), now = Date.now();
     try {
@@ -188,7 +204,13 @@ export async function registerResumableUploads(app, context) {
     return reply.code(201).send(status(get(id)));
   });
   app.get('/api/v1/uploads/:id', auth, async req => status(owned(req)));
+  app.get('/api/v1/uploads/:id/status',auth,async req=>status(owned(req),false));
   app.get('/api/v1/uploads', auth, async req => ({uploads:db.prepare("SELECT u.* FROM upload_sessions u JOIN memberships m ON m.shelf_id=u.shelf_id AND m.user_id=u.user_id WHERE u.user_id=? AND m.role IN ('owner','editor') AND (u.state IN ('processing','failed') OR u.state='uploading' AND u.expires_at>?) ORDER BY u.created_at DESC LIMIT 100").all(req.user.id,Date.now()).map(row=>status(row,false)),activeCount:activeCount(req.user.id)}));
+
+  app.post('/api/v1/uploads/status',{...auth,bodyLimit:64*1024,schema:{body:{type:'object',additionalProperties:false,required:['ids'],properties:{ids:{type:'array',minItems:1,maxItems:1000,uniqueItems:true,items:{type:'string',format:'uuid'}}}}}},async req=>{
+    const rows=db.prepare("SELECT u.* FROM upload_sessions u JOIN memberships m ON m.shelf_id=u.shelf_id AND m.user_id=u.user_id WHERE u.user_id=? AND m.role IN ('owner','editor') AND u.id IN (SELECT value FROM json_each(?))").all(req.user.id,JSON.stringify(req.body.ids));
+    return {uploads:rows.map(row=>status(row,false))};
+  });
   app.post('/api/v1/uploads/:id/retry', auth, async(req,reply)=>{
     await exclusive(req.params.id,async()=>{
       const upload=owned(req);
@@ -208,7 +230,8 @@ export async function registerResumableUploads(app, context) {
       ...auth, bodyLimit: chunkSize,
       schema: { params: { type: 'object', required: ['id','fileIndex','partIndex'], properties: { id: { type: 'string' }, fileIndex: integer, partIndex: integer } } }
     }, async (req, reply) => {
-      await exclusive(req.params.id, async () => {
+      await transferPart(req.params.id,req.params.fileIndex+':'+req.params.partIndex, async signal => {
+        context.jobPool.prioritizeTransfers?.();
         const upload = owned(req);
         if (upload.state !== 'uploading') throw httpError(409, 'このアップロードは受信中ではありません。');
         const files = JSON.parse(upload.files_json), { fileIndex, partIndex } = req.params;
@@ -225,13 +248,13 @@ export async function registerResumableUploads(app, context) {
           const inspect = new Transform({ transform(bytes, _encoding, done) {
             size += bytes.length;
             if (size > expectedSize) return done(httpError(413, '分割データのサイズ上限を超えています。'));
-            hash.update(bytes);
+            hash.update(bytes);context.jobPool.prioritizeTransfers?.();
             done(null, bytes);
           } });
-          await pipeline(req.body, inspect, createWriteStream(temporary, { flags: 'wx', mode: 0o600 }));
+          await pipeline(req.body, inspect, createWriteStream(temporary, { flags: 'wx', mode: 0o600 }),{signal});
           if (size !== expectedSize || hash.digest('hex') !== expectedHash) throw httpError(422, '分割データの長さ、またはSHA-256が一致しません。');
           authenticate(req);
-          owned(req);
+          if(owned(req).state!=='uploading')throw httpError(409,'アップロードをキャンセルしました。');
           const previous = db.prepare('SELECT size,sha256 FROM upload_parts WHERE upload_id=? AND file_index=? AND part_index=?').get(upload.id, fileIndex, partIndex);
           if (previous) {
             if (previous.size !== size || previous.sha256 !== expectedHash) throw httpError(409, '受信済みの分割データと一致しません。');
@@ -241,7 +264,7 @@ export async function registerResumableUploads(app, context) {
             await unlink(destination).catch(error => { if (error.code !== 'ENOENT') throw error; });
             await rename(temporary, destination);
             authenticate(req);
-            owned(req);
+            if(owned(req).state!=='uploading')throw httpError(409,'アップロードをキャンセルしました。');
             db.prepare('INSERT INTO upload_parts VALUES(?,?,?,?,?)').run(upload.id, fileIndex, partIndex, size, expectedHash);
           }
         } finally { await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
@@ -261,7 +284,7 @@ export async function registerResumableUploads(app, context) {
       }
       const current = get(upload.id);
       if (current.state === 'failed' || current.state === 'cancelled') throw httpError(409, current.error || 'このアップロードは取り消されています。');
-      return status(current);
+      return status(current,false);
     });
     return reply.code(result.state === 'complete' ? 200 : 202).send(result);
   });
@@ -270,14 +293,14 @@ export async function registerResumableUploads(app, context) {
       const upload = owned(req);
       if (upload.state === 'complete') throw httpError(409, '保存済みです。削除を確認してコンテンツ一覧から削除してください。');
       db.prepare("UPDATE upload_sessions SET state='cancelled' WHERE id=?").run(upload.id);
-      context.jobPool.cancel(upload.id);
+      context.jobPool.cancel(upload.id);await stopParts(upload.id);
       if(!jobs.has(upload.id))await discard(upload.id);
-    });
+    },{allowParts:true});
     return reply.code(204).send();
   });
   return {
     async cancelForDeletion(ids){
-      for(const id of ids){db.prepare("UPDATE upload_sessions SET state='cancelled' WHERE id=? AND state!='complete'").run(id);context.jobPool.cancel(id);}
+      for(const id of ids){db.prepare("UPDATE upload_sessions SET state='cancelled' WHERE id=? AND state!='complete'").run(id);context.jobPool.cancel(id);await stopParts(id);}
       await Promise.allSettled(ids.map(id=>jobs.get(id)).filter(Boolean));
       for(const id of ids){await discard(id);db.prepare('DELETE FROM upload_sessions WHERE id=?').run(id);}
     },
@@ -293,7 +316,7 @@ export async function registerResumableUploads(app, context) {
         db.prepare("UPDATE upload_sessions SET state='processing',error=NULL,processing_json='{}' WHERE id=?").run(id);schedule(id);
       });
     },
-    get busy(){return jobs.size>0||locked.size>0||sweeping;},
+    get busy(){return jobs.size>0||locked.size>0||partTransfers.size>0||sweeping;},
     // Compatibility API: multipart clients enter the same durable, serialized
     // processing path as resumable uploads; they cannot bypass normalization.
     async publishMultipartMedia({id,shelfId,userId,sessionId,title,file,retainOriginal=true}) {

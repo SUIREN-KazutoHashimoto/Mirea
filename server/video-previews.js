@@ -1,3 +1,4 @@
+import {videoThumbnailState,recordVideoPreview,ensureVideoThumbnailAnchor,PREVIEW_SPEC_VERSION} from './video-thumbnail.js';
 import { mkdir, stat, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createReadStream } from 'node:fs';
@@ -24,7 +25,7 @@ export async function registerVideoPreviews(app, { db, media, dataDir, uploadDir
   async function state(id) {
     try {
       const { size } = await stat(pathFor(id));
-      if (size > 0 && size <= MAX_PREVIEW_BYTES) return { state: 'ready', url: `/api/v1/items/${id}/preview/content`, size, maxDuration: PREVIEW_SECONDS };
+      if (size > 0 && size <= MAX_PREVIEW_BYTES && videoThumbnailState(db,id)?.preview_version===PREVIEW_SPEC_VERSION && videoThumbnailState(db,id).preview_position_seconds===videoThumbnailState(db,id).position_seconds) return { state: 'ready', url: `/api/v1/items/${id}/preview/content`, size, maxDuration: PREVIEW_SECONDS };
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (pending.has(id)) return { state: 'processing', retryAfterMs: 1200 };
     if ((failed.get(id) ?? 0) > Date.now()) return { state: 'unavailable' };
@@ -38,9 +39,11 @@ export async function registerVideoPreviews(app, { db, media, dataDir, uploadDir
       try {
         if (!exists(id)) return;
         // Lazy previews obey the same global processing limit as uploads and regeneration.
-        await media.preview(join(uploadDir, id), temporaryFor(id), item.mime_type);
+        const startSeconds=await ensureVideoThumbnailAnchor({db,item,media,uploadDir,thumbnailDir:join(dataDir,'thumbnails'),authorize:()=>{if(!exists(id))throw Error('Asset deleted');}});
+        await media.preview(join(uploadDir, id), temporaryFor(id), item.mime_type,{startSeconds});
+        if(videoThumbnailState(db,id)?.position_seconds!==startSeconds)return;
         if (!exists(id)) return;
-        await rename(temporaryFor(id), pathFor(id));
+        await rename(temporaryFor(id), pathFor(id));recordVideoPreview(db,id,startSeconds);
         // An item can be deleted while the asynchronous rename is pending.
         if (!exists(id)) await removeFile(pathFor(id));
       } catch (error) {
@@ -73,6 +76,7 @@ export async function registerVideoPreviews(app, { db, media, dataDir, uploadDir
   });
   app.route({ method: ['GET', 'HEAD'], url: '/api/v1/items/:id/preview/content', ...auth, handler: async (req, reply) => {
     const item = video(req);
+    if((await state(item.id)).state!=='ready')throw httpError(404,'現在のサムネイルに対応するプレビューを準備しています。');
     const metadata = await stat(pathFor(item.id)).catch(error => {
       if (error.code === 'ENOENT') throw httpError(404, 'プレビューはまだ用意されていません。');
       throw error;

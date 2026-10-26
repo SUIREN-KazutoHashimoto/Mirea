@@ -1,3 +1,6 @@
+import {thumbnailWebp} from './thumbnail-webp.js';
+import {ensureVideoThumbnailAnchor,recordVideoThumbnail,recordVideoPreview} from './video-thumbnail.js';
+import {customThumbnail,ensureCustomThumbnail} from './custom-thumbnails.js';
 import {moveStorage} from './storage-move.js';
 import {randomUUID} from 'node:crypto';
 import {mkdir,rename,stat,unlink,open} from 'node:fs/promises';
@@ -76,16 +79,20 @@ export async function registerAdminJobs(app,context) {
             db.prepare('INSERT INTO video_assets VALUES(?,?,?) ON CONFLICT(item_id) DO UPDATE SET metadata_json=excluded.metadata_json').run(item.id,JSON.stringify(metadata),sourceKind==='original'?1:0);
             db.prepare('INSERT INTO video_generations VALUES(?,?,?,?)').run(item.id,id,JSON.stringify(metadata),Date.now());
           });published=true;
+        }else if(row.kind==='thumbnail'&&customThumbnail(db,thumbnailDir,item.id)){
+          await ensureCustomThumbnail(db,thumbnailDir,media,item.id,{force:true,authorize});
         }else{
           const first=item.mime_type===IMAGE_BOOK_MIME?db.prepare('SELECT mime_type FROM image_pages WHERE item_id=? AND page_number=1').get(item.id):null;
           const source=first?join(booksDir,item.id,'1.'+imageExtension(first.mime_type)):join(uploadDir,item.id);
           const temporary=join(work,row.kind==='preview'?'preview.mp4':'thumbnail.jpg');
-          if(row.kind==='preview')await media.preview(source,temporary,item.mime_type);
-          else await media.thumbnail(source,item.mime_type,temporary,item.mime_type===EPUB_MIME?join(work,'book.json'):undefined);
+          let chosen,startSeconds;
+          if(row.kind==='preview'){startSeconds=await ensureVideoThumbnailAnchor({db,item,media,uploadDir,thumbnailDir,authorize});await media.preview(source,temporary,item.mime_type,{startSeconds});}
+          else chosen=await media.thumbnail(source,item.mime_type,temporary,item.mime_type===EPUB_MIME?join(work,'book.json'):undefined);
           if(!(await stat(temporary)).size)throw new Error('Empty generated media');
           if(row.kind==='thumbnail')await media.validateImage(temporary);
           authorize();await rename(temporary,join(row.kind==='preview'?previewDir:thumbnailDir,item.id+(row.kind==='preview'?'.mp4':'.jpg')));
-          if(row.kind==='thumbnail')db.prepare('UPDATE items SET thumbnail_ready=1 WHERE id=?').run(item.id);
+          if(row.kind==='thumbnail'){await thumbnailWebp(join(thumbnailDir,item.id+'.jpg'),{force:true});db.prepare('UPDATE items SET thumbnail_ready=1 WHERE id=?').run(item.id);if(item.mime_type.startsWith('video/')){recordVideoThumbnail(db,item.id,chosen?.seekSeconds);context.videoPreviews.clearFailure(item.id);}}
+          if(row.kind==='preview')recordVideoPreview(db,item.id,startSeconds);
           if(row.kind==='preview')context.videoPreviews.clearFailure(item.id);
         }
         db.prepare("UPDATE admin_jobs SET state='complete',progress_json=?,error=NULL,updated_at=? WHERE id=?").run(JSON.stringify({stage:'complete',percent:100,...(selectedSource?{source:selectedSource.kind,sourceQuality:selectedSource.quality}:{})}),Date.now(),id);

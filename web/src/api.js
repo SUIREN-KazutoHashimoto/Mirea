@@ -142,6 +142,7 @@ export function upload(shelfId, files, title, onProgress, options) {
     window.dispatchEvent(new Event('mirea:unauthorized'));
   } }, shelfId, files, title, onProgress, options); }
   catch (error) { release(); throw error; }
+  (task.transferred??task.promise).then(release,release);
   task.promise = task.promise.finally(release);
   return task;
 }

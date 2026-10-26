@@ -34,6 +34,7 @@ export function syncNativeDownloads(){
       await store.complete(key,manifest.id);
       if(current(ctx)){await NativeTransfer.remove({...args,id:manifest.id});if(!isOfflineSession())saveThumbnail(ctx,manifest.assetId);}
     }
+    if(current(ctx)&&(completed.manifests?.length??0)>0)window.dispatchEvent(new Event('mirea:downloads-imported'));
   })().finally(()=>{nativeImport=null;});return nativeImport;
 }
 const grants=new Map(),tasks=new Set();let workerReady;
@@ -79,7 +80,8 @@ export function ensureDownloadWorker(){
     return registration;
   })().catch(error=>{workerReady=null;throw error;});
 }
-export async function listDownloads(){await syncNativeDownloads().catch(()=>{});const ctx=context(),store=await openDownloadDb();const rows=await store.list(ctx.partition);return current(ctx)?rows:[];}
+// A list read must never wait for a multi-gigabyte native ciphertext import.
+export async function listDownloads(){const ctx=context(),store=await openDownloadDb();const rows=await store.list(ctx.partition);syncNativeDownloads().catch(()=>{});return current(ctx)?rows:[];}
 export async function downloadedThumbnail(assetId){
   const ctx=context(),store=await openDownloadDb(),row=await store.getPackage(packageKey(ctx,assetId));
   if(row?.state!=='ready')return null;

@@ -1,7 +1,7 @@
 export const DOWNLOAD_PATH='/__mirea_download__/';
 export const chunkKey=(id,file,part)=>`${id}|${file}|${part}`;
 export function validateManifest(manifest){
-  if(manifest?.version!==1 || manifest.algorithm!=='AES-256-GCM' || manifest.chunkSize!==1048576 || !/^[0-9a-f-]{36}$/.test(manifest.id) || !/^[0-9a-f-]{36}$/.test(manifest.assetId) || !['video','audio','pdf','image-book','epub'].includes(manifest.kind) || !Array.isArray(manifest.files) || !manifest.files.length || manifest.files.length>500)throw new Error('ダウンロード情報が不正です。');
+  if(manifest?.version!==1 || manifest.algorithm!=='AES-256-GCM' || manifest.chunkSize!==1048576 || !/^[0-9a-f-]{36}$/.test(manifest.id) || !/^[0-9a-f-]{36}$/.test(manifest.assetId) || !['video','audio','pdf','image-book','epub'].includes(manifest.kind) || !Array.isArray(manifest.files) || !manifest.files.length || manifest.files.length>1000)throw new Error('ダウンロード情報が不正です。');
   if(!Number.isSafeInteger(manifest.pageCount) || manifest.pageCount<1 || manifest.pageCount>1000000 || manifest.kind==='image-book' && manifest.files.length!==manifest.pageCount || manifest.kind!=='image-book' && manifest.files.length!==1)throw new Error('ページ情報が不正です。');
   let total=0;
   for(const [index,file] of manifest.files.entries()){

@@ -11,6 +11,8 @@ import {makePdf,makeMp4} from './fixtures.js';
 import {planUploads,createUploadBatch} from '../web/src/upload-batch.js';
 import {createResumableUpload} from '../web/src/resumable-upload.js';
 import {folderUploadJobs,prepareFolderSeries} from '../web/src/folder-upload.js';
+import {createMediaProcessor} from '../server/media.js';
+import {setTimeout as delay} from 'node:timers/promises';
 
 test('folder import publishes real PDFs and individual images into the correct nested series through concurrent chunked transfers',async t=>{
  const dataDir=await mkdtemp(join(tmpdir(),'mirea-folder-integration-')),app=await createApp({dataDir,rateLimit:false,chunkSize:512}),endpoint=await app.listen({host:'127.0.0.1',port:0});
@@ -56,4 +58,24 @@ test('six mixed assets publish through real concurrent resumable transfers witho
  assert(result.rows.every(row=>row.state==='complete'),JSON.stringify(result.rows.map(r=>[r.job.title,r.state,r.error])));assert.ok(peak>=3&&peak<=8);assert.equal(saved.size,0);
  const library=(await app.inject({url:`/api/v1/shelves/${shelf}/items`,headers})).json();assert.equal(library.items.length,6);assert.deepEqual(library.items.map(i=>i.kind).sort(),['audio','image-book','pdf','pdf','pdf','video']);assert.equal(library.items.find(i=>i.kind==='image-book').pageCount,2);
  const sessions=(await app.inject({url:'/api/v1/uploads',headers})).json();assert.equal(sessions.activeCount,0);assert.equal(sessions.uploads.length,0);
+});
+test('protocol v2 drains transfers while converters are blocked, reserves series placement and resumes a lost creation response',async t=>{
+ const dataDir=await mkdtemp(join(tmpdir(),'mirea-accepted-018-')),media=createMediaProcessor();let release,entered=0;const gate=new Promise(resolve=>{release=resolve;});
+ const app=await createApp({dataDir,rateLimit:false,chunkSize:256,mediaProcessor:{...media,thumbnail:async(...args)=>{entered++;await gate;return media.thumbnail(...args);}}}),endpoint=await app.listen({host:'127.0.0.1',port:0});
+ const before=Object.fromEntries(['localStorage','XMLHttpRequest'].map(k=>[k,Object.getOwnPropertyDescriptor(globalThis,k)])),saved=new Map();
+ t.after(async()=>{release();for(const[k,d]of Object.entries(before)){if(d)Object.defineProperty(globalThis,k,d);else delete globalThis[k];}await app.close();assert(resolve(dataDir).startsWith(resolve(tmpdir())+sep+'mirea-accepted-018-'));await rm(dataDir,{recursive:true,force:true});});
+ const user=(await app.inject({method:'POST',url:'/api/v1/auth/register',payload:{name:'Synthetic transfer',email:'accepted@example.invalid',password:'isolated-transfer-test-password'}})).json(),headers={authorization:'Bearer '+user.token};
+ const api=async(path,method='GET',payload)=>{const r=await app.inject({method,url:'/api/v1'+path,headers,payload});assert(r.statusCode<300,r.body);return r.statusCode===204?null:r.json();};
+ const shelf=(await api('/shelves','POST',{name:'Transfer test'})).id,series=(await api('/shelves/'+shelf+'/series','POST',{title:'Pending destination'})).series;
+ Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:k=>saved.get(k)??null,setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)}});
+ let parallel=0,peak=0;Object.defineProperty(globalThis,'XMLHttpRequest',{configurable:true,value:class{upload={};headers={};controller=new AbortController();open(method,url){this.method=method;this.url=url;}setRequestHeader(k,v){this.headers[k]=v;}abort(){this.controller.abort();this.onabort?.();}async send(body){peak=Math.max(peak,++parallel);try{const r=await fetch(this.url,{method:this.method,headers:this.headers,body,signal:this.controller.signal});this.status=r.status;this.responseText=await r.text();this.onload();}catch{this.onerror();}finally{parallel--;}}}});
+ const files=Array.from({length:8},(_,n)=>new File([makePdf(),Buffer.alloc(2048,32)],'book-'+n+'.pdf',{type:'application/pdf'})),jobs=planUploads(files),identity={endpoint,token:user.token,userId:user.user.id,unauthorized:()=>assert.fail('Unexpected auth failure')};
+ const batch=createUploadBatch(jobs,{concurrency:3,start:(j,p)=>createResumableUpload(identity,shelf,j.files,j.title,p,{seriesId:series.id,protocolVersion:2,monitorProcessing:false})});const sent=await batch.transferred;await batch.promise;
+ assert(sent.rows.every(r=>r.state==='processing'),JSON.stringify(sent.rows.map(r=>[r.state,r.error])));assert(peak>3&&peak<=12,'bounded parallel chunks, not serial request round trips');
+ const pending=(await api('/shelves/'+shelf+'/items')).pendingUploads;assert.equal(pending.length,8);assert(pending.every(r=>r.series.id===series.id));assert.equal((await api('/uploads')).activeCount,8,'processing is durable but no longer consumes transfer admission');
+ // Losing browser resume metadata does not allocate a duplicate session.
+ const candidate=await api('/shelves/'+shelf+'/uploads','POST',{resume:true,title:jobs[0].title,seriesId:series.id,files:[{filename:files[0].name,mime:'application/pdf',size:files[0].size}]});assert.equal(candidate.id,sent.rows[0].uploadId);assert.equal(candidate.state,'processing');
+ const statuses=await api('/uploads/status','POST',{ids:sent.rows.map(r=>r.uploadId)});assert.equal(statuses.uploads.length,8);assert(statuses.uploads.every(r=>r.files===undefined));
+ release();for(let n=0;n<1000;n++){const rows=(await api('/uploads/status','POST',{ids:sent.rows.map(r=>r.uploadId)})).uploads;if(rows.every(r=>r.state==='complete'))break;assert(!rows.some(r=>r.state==='failed'),JSON.stringify(rows.map(r=>r.error)));await delay(25);}
+ const catalog=await api('/library/catalog');assert.equal(catalog.items.length,8);assert(catalog.items.every(i=>i.series.id===series.id));assert.equal(entered,8);
 });

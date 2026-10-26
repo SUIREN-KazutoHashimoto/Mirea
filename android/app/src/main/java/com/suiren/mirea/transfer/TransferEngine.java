@@ -7,19 +7,21 @@ import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.*;
 
 /** Network work is independent of the WebView and dialog lifetime. */
 public final class TransferEngine {
     public static final class Job {
         public final String id=UUID.randomUUID().toString(),direction,title;
         public final PlaybackApi api;public final JSONObject data;public volatile String state="queued",error="";public volatile long received,total;public volatile int status;
+        public final Set<HttpURLConnection> connections=ConcurrentHashMap.newKeySet();
         public volatile boolean cancelled;public volatile HttpURLConnection connection;public volatile JSONObject result;
         public Job(String direction,PlaybackApi api,JSONObject data)throws Exception{this.direction=direction;this.api=api;this.data=data;title=data.optString("title","Mirea");if(title.length()>200)throw new IllegalArgumentException();}
         public boolean active(){return state.equals("queued")||state.equals("running")||state.equals("processing");}
         public void cancel(){cancel(false);}
         public synchronized void cancel(boolean cleanupSource){if(cancelled)return;cancelled=true;
             String upload=data.optString("uploadId");if(cleanupSource&&direction.equals("upload")&&PlaybackApi.uuid(upload)&&!state.equals("complete"))try{PlaybackApi cleanup=api.fork();new Thread(()->{try{cleanup.json("/uploads/"+upload,"DELETE",null);}catch(Exception ignored){}finally{cleanup.close();}},"Mirea-cancel").start();}catch(Exception ignored){}
-            api.close();HttpURLConnection c=connection;if(c!=null)c.disconnect();if(active())state="cancelled";}
+            api.close();HttpURLConnection c=connection;if(c!=null)c.disconnect();for(HttpURLConnection active:connections)active.disconnect();if(active())state="cancelled";}
         public void check()throws IOException{if(cancelled||api.closed||Thread.currentThread().isInterrupted())throw new InterruptedIOException("Transfer stopped");}
         public JSONObject snapshot()throws Exception{return new JSONObject().put("id",id).put("direction",direction).put("title",title).put("state",state).put("received",received).put("total",total).put("percent",total>0?Math.min(100,received*100/total):0).put("status",status).put("error",error).put("uploadId",data.optString("uploadId")).put("result",result==null?JSONObject.NULL:result);}
     }
@@ -29,13 +31,13 @@ public final class TransferEngine {
     public TransferEngine(Context c,Runnable changed){this(c,changed,(api,path,method)->api.connection(path,method),new TransferLease(c));}
     TransferEngine(Context c,Runnable changed,ConnectionFactory transport,TransferLease leases){context=c;cache=new TransferCache(c);this.changed=changed;this.transport=transport;this.leases=leases;}
     private JSONObject json(Job j,String path,String method,JSONObject body)throws Exception{
-        j.check();HttpURLConnection c=transport.open(j.api,"/api/v1"+path,method);j.connection=c;
+        j.check();HttpURLConnection c=transport.open(j.api,"/api/v1"+path,method);j.connection=c;j.connections.add(c);
         try{
             if(body==null&&method.equals("POST"))body=new JSONObject();
             if(body!=null){byte[] bytes=body.toString().getBytes(StandardCharsets.UTF_8);c.setDoOutput(true);c.setRequestProperty("Content-Type","application/json");c.setFixedLengthStreamingMode(bytes.length);try(OutputStream out=c.getOutputStream()){out.write(bytes);}}
             int code=c.getResponseCode();if(code<200||code>=300)throw new HttpFailure(code);
             return code==204?new JSONObject():new JSONObject(new String(PlaybackApi.read(c.getInputStream(),4*1024*1024),StandardCharsets.UTF_8));
-        }finally{c.disconnect();j.connection=null;}
+        }finally{c.disconnect();j.connections.remove(c);j.connection=null;}
     }
     static final class HttpFailure extends IOException{final int status;HttpFailure(int s){super("Transfer HTTP "+s);status=s;}}
     interface Work<T>{T run()throws Exception;}
@@ -84,10 +86,13 @@ public final class TransferEngine {
         for(int f=0;f<files.length();f++){
             JSONObject file=files.getJSONObject(f);long size=file.getLong("size");if(size<=0)throw new IllegalArgumentException();j.total+=size;
             publicFiles.put(new JSONObject().put("filename",file.getString("name")).put("mime",file.getString("type")).put("size",size));
-            // Fingerprint the complete stream incrementally. No large allocation
-            // or cleartext staging file, and a reselected middle cannot be mixed.
+            // Protocol v2 avoids reading a large SAF file twice before sending it.
+            // Every reused part is still checked against its complete SHA-256.
             java.security.MessageDigest hash=java.security.MessageDigest.getInstance("SHA-256");long count=0;
-            try(InputStream in=input(file)){byte[] bytes=new byte[65536];int n;while((n=in.read(bytes))!=-1){j.check();hash.update(bytes,0,n);count+=n;}}
+            try(InputStream in=input(file)){
+                if(j.data.optInt("protocolVersion",1)>=2){byte[] sample=readPart(in,(int)Math.min(65536,size));hash.update(sample);count=size;}
+                else{byte[] bytes=new byte[65536];int n;while((n=in.read(bytes))!=-1){j.check();hash.update(bytes,0,n);count+=n;}}
+            }
             if(count!=size)throw new IOException("Source file changed");
             identities.put(new JSONArray().put(file.getString("name")).put(file.getString("type")).put(size).put(Base64.getEncoder().encodeToString(hash.digest())));
         }
@@ -95,32 +100,50 @@ public final class TransferEngine {
         String fingerprint=TransferCache.hash((j.api.partition+"|"+shelf+"|"+j.title+"|"+j.data.optBoolean("retainOriginal",true)+"|"+j.data.optString("seriesId","")+"|"+identities).getBytes(StandardCharsets.UTF_8));
         SharedPreferences prefs=context.getSharedPreferences("mirea-upload-resume-v1",Context.MODE_PRIVATE);String saved=prefs.getString(fingerprint,null);JSONObject state=null;
         if(PlaybackApi.uuid(saved))try{state=retry(j,()->json(j,"/uploads/"+saved,"GET",null));if(Arrays.asList("cancelled","failed").contains(state.getString("state")))state=null;}catch(HttpFailure e){if(e.status!=404&&e.status!=410)throw e;}
-        if(state==null){JSONObject body=new JSONObject().put("title",j.title).put("retainOriginal",j.data.optBoolean("retainOriginal",true)).put("files",publicFiles);String series=j.data.optString("seriesId","");if(!series.isEmpty()){if(!PlaybackApi.uuid(series))throw new IllegalArgumentException();body.put("seriesId",series);}
+        if(state==null){JSONObject body=new JSONObject().put("title",j.title).put("retainOriginal",j.data.optBoolean("retainOriginal",true)).put("files",publicFiles);if(j.data.optInt("protocolVersion",1)>=2)body.put("resume",true);String series=j.data.optString("seriesId","");if(!series.isEmpty()){if(!PlaybackApi.uuid(series))throw new IllegalArgumentException();body.put("seriesId",series);}
             for(;;){try{state=json(j,"/shelves/"+shelf+"/uploads","POST",body);break;}catch(HttpFailure error){if(error.status!=429)throw error;pause(j,2000);}}prefs.edit().putString(fingerprint,state.getString("id")).commit();
         }
         String id=state.getString("id");j.data.put("uploadId",id);
         if("uploading".equals(state.getString("state"))){
             int chunk=state.getInt("chunkSize");if(chunk<1||chunk>16777216)throw new IllegalArgumentException();
-            for(int f=0;f<files.length();f++){
-                JSONObject file=files.getJSONObject(f),server=state.getJSONArray("files").getJSONObject(f),hashes=server.optJSONObject("receivedHashes");Set<Integer> received=new HashSet<>();JSONArray parts=server.getJSONArray("receivedParts");for(int n=0;n<parts.length();n++)received.add(parts.getInt(n));
-                try(InputStream in=input(file)){
-                    long size=file.getLong("size");for(int p=0;(long)p*chunk<size;p++){
-                        j.check();byte[] bytes=readPart(in,(int)Math.min(chunk,size-(long)p*chunk));String sha=TransferCache.hash(bytes);int fileIndex=f,part=p;
-                        if(received.contains(p)){if(hashes==null||!sha.equals(hashes.optString(String.valueOf(p))))throw new IOException("Source bytes changed");}
-                        else retry(j,()->{
-                            HttpURLConnection c=transport.open(j.api,"/api/v1/uploads/"+id+"/files/"+fileIndex+"/parts/"+part,"PUT");j.connection=c;c.setReadTimeout(90000);
-                            try{c.setDoOutput(true);c.setRequestProperty("Content-Type","application/octet-stream");c.setRequestProperty("X-Chunk-SHA256",sha);c.setFixedLengthStreamingMode(bytes.length);try(OutputStream out=c.getOutputStream()){for(int n=0;n<bytes.length;n+=65536){j.check();out.write(bytes,n,Math.min(65536,bytes.length-n));}}
-                                int code=c.getResponseCode();if(code!=204)throw new HttpFailure(code);return null;
-                            }finally{c.disconnect();j.connection=null;}
-                        });
-                        j.received+=bytes.length;changed.run();
+            int parallel=Math.max(1,Math.min(2,state.optInt("maxParallelParts",1)));
+            ExecutorService partsPool=Executors.newFixedThreadPool(parallel);Deque<Future<?>> inflight=new ArrayDeque<>();
+            try{
+                for(int f=0;f<files.length();f++){
+                    JSONObject file=files.getJSONObject(f),server=state.getJSONArray("files").getJSONObject(f),hashes=server.optJSONObject("receivedHashes");Set<Integer> received=new HashSet<>();JSONArray parts=server.getJSONArray("receivedParts");for(int n=0;n<parts.length();n++)received.add(parts.getInt(n));
+                    try(InputStream in=input(file)){
+                        long size=file.getLong("size");for(int p=0;(long)p*chunk<size;p++){
+                            j.check();byte[] bytes=readPart(in,(int)Math.min(chunk,size-(long)p*chunk));String sha=TransferCache.hash(bytes);int fileIndex=f,part=p;
+                            if(received.contains(p)){if(hashes==null||!sha.equals(hashes.optString(String.valueOf(p))))throw new IOException("Source bytes changed");synchronized(j){j.received+=bytes.length;}changed.run();}
+                            else{
+                                inflight.add(partsPool.submit(()->{sendUploadPart(j,id,fileIndex,part,bytes,sha);return null;}));
+                                if(inflight.size()>=parallel)awaitPart(inflight.removeFirst());
+                            }
+                        }
+                        if(in.read()!=-1)throw new IOException("Source file changed");
                     }
                 }
-            }
+                while(!inflight.isEmpty())awaitPart(inflight.removeFirst());
+            }finally{for(Future<?> future:inflight)future.cancel(true);partsPool.shutdownNow();for(HttpURLConnection connection:j.connections)connection.disconnect();}
             state=retry(j,()->json(j,"/uploads/"+id+"/complete","POST",null));
         }
-        j.data.put("resumeKey",fingerprint);j.state="processing";changed.run();
+        j.data.put("resumeKey",fingerprint);j.state="processing";
+        if(!j.data.optBoolean("monitorProcessing",true)){j.result=new JSONObject().put("accepted",true).put("uploadId",id);j.state="complete";}
+        changed.run();
     }
+
+    private static void awaitPart(Future<?> future)throws Exception{try{future.get();}catch(ExecutionException error){if(error.getCause() instanceof Exception)throw (Exception)error.getCause();throw new IOException("Upload part failed",error);}}
+    private void sendUploadPart(Job j,String id,int file,int part,byte[] bytes,String sha)throws Exception{
+        retry(j,()->{
+            HttpURLConnection c=transport.open(j.api,"/api/v1/uploads/"+id+"/files/"+file+"/parts/"+part,"PUT");j.connections.add(c);c.setReadTimeout(90000);
+            try{c.setDoOutput(true);c.setRequestProperty("Content-Type","application/octet-stream");c.setRequestProperty("X-Chunk-SHA256",sha);c.setFixedLengthStreamingMode(bytes.length);
+                try(OutputStream out=c.getOutputStream()){for(int n=0;n<bytes.length;n+=65536){j.check();out.write(bytes,n,Math.min(65536,bytes.length-n));}}
+                int code=c.getResponseCode();if(code!=204)throw new HttpFailure(code);return null;
+            }finally{c.disconnect();j.connections.remove(c);}
+        });
+        synchronized(j){j.received+=bytes.length;}changed.run();
+    }
+
     public void poll(Job j){
         if(j.cancelled||!j.state.equals("processing"))return;
         try{JSONObject state=json(j,"/uploads/"+j.data.getString("uploadId"),"GET",null);

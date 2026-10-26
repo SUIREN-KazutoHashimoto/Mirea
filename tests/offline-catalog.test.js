@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {customThumbnailRevision} from '../server/custom-thumbnails.js';
 import assert from 'node:assert/strict';
 import {randomUUID,randomBytes} from 'node:crypto';
 import {mkdtemp,rm} from 'node:fs/promises';
@@ -73,7 +74,7 @@ test('concurrent snapshots serialize and newest snapshot wins; mid-write cancell
 test('late clock checkpoint cannot overwrite a newer catalog across independent vault instances',async()=>{
  const c=await setup();await c.cache.save(c.partition,c.catalog,c.userId);const second=await createOfflineVault(c.store,c.options);
  const put=c.store.vaultPut;let release,entered,first=true;const waiting=new Promise(resolve=>{entered=resolve;});
- c.store.vaultPut=async(key,value)=>{if(first&&key==='sealed|'+c.partition+'|catalog'){first=false;entered();await new Promise(resolve=>{release=resolve;});}return put(key,value);};
+ c.store.vaultPut=async(key,value)=>{if(first&&key==='sealed|'+c.partition+'|catalog-clock'){first=false;entered();await new Promise(resolve=>{release=resolve;});}return put(key,value);};
  const reading=c.vault.catalog(c.partition);await waiting;const changed={...c.catalog,items:[c.catalog.items[1]]};const saving=second.saveCatalog(c.partition,changed,c.userId);release();await Promise.all([reading,saving]);assert.deepEqual((await second.catalog(c.partition)).items.map(i=>i.id),[c.two]);
 });
 
@@ -93,6 +94,6 @@ test('authenticated server catalog includes all member shelves even with no down
  const asset=randomUUID(),image=randomUUID();db.prepare("INSERT INTO items(id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at,page_count,thumbnail_ready) VALUES(?,?,?,'test.pdf','application/pdf',7,?,1,3,1)").run(asset,one,'Book',owner.user.id);db.prepare("INSERT INTO series_items VALUES(?,?,1,'first')").run(child.id,asset);db.prepare('INSERT INTO thumbnail_overrides VALUES(?,?,1)').run(asset,image);
  assert.equal((await req('/library/catalog')).statusCode,401);
  const response=await req('/library/catalog',viewer);assert.equal(response.statusCode,200,response.body);assert.equal(response.headers['cache-control'],'no-store');const catalog=normalizeCatalog(response.json(),viewer.user.id);
- assert.deepEqual(new Set(catalog.shelves.map(s=>s.id)),new Set([one,two]));assert(!JSON.stringify(catalog).includes(foreign));assert.equal(catalog.series.find(s=>s.id===child.id).parentId,root.id);assert.equal(catalog.items[0].series.position,1);assert.equal(catalog.items[0].progress,null);assert(catalog.items[0].thumbnailUrl.endsWith(image));assert.equal(catalog.items[0].role,'viewer');
+ assert.deepEqual(new Set(catalog.shelves.map(s=>s.id)),new Set([one,two]));assert(!JSON.stringify(catalog).includes(foreign));assert.equal(catalog.series.find(s=>s.id===child.id).parentId,root.id);assert.equal(catalog.items[0].series.position,1);assert.equal(catalog.items[0].progress,null);assert(catalog.items[0].thumbnailUrl.endsWith(customThumbnailRevision({image_id:image,updated_at:1})));assert.equal(catalog.items[0].role,'viewer');
  await req('/shelves/'+one+'/members/'+viewer.user.id,owner,'DELETE');const after=normalizeCatalog((await req('/library/catalog',viewer)).json(),viewer.user.id);assert.equal(after.items.length,0);assert.equal(after.series.length,0);assert.deepEqual(after.shelves.map(s=>s.id),[two]);
 });

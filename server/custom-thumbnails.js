@@ -1,5 +1,7 @@
-import {randomUUID} from 'node:crypto';
-import {mkdir,writeFile,rename,unlink} from 'node:fs/promises';
+import {randomUUID,createHash} from 'node:crypto';
+import {constants} from 'node:fs';
+import {thumbnailWebp} from './thumbnail-webp.js';
+import {mkdir,writeFile,rename,unlink,lstat,copyFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {transaction} from './database.js';
 import {httpError} from './security.js';
@@ -10,6 +12,38 @@ export function customThumbnail(db,thumbnailDir,id){
   const row=db.prepare('SELECT image_id FROM thumbnail_overrides WHERE asset_id=?').get(id);
   return row?join(thumbnailDir,'custom',row.image_id+'.jpg'):null;
 }
+
+const regenerating=new Map();
+export function customThumbnailRevision(row){
+  const hash=createHash('sha256').update(row.image_id+':'+row.updated_at).digest('hex');
+  return [hash.slice(0,8),hash.slice(8,12),hash.slice(12,16),hash.slice(16,20),hash.slice(20,32)].join('-');
+}
+export async function ensureCustomThumbnail(db,thumbnailDir,media,assetId,{force=false,authorize=()=>{}}={}){
+  const row=db.prepare('SELECT image_id,updated_at FROM thumbnail_overrides WHERE asset_id=?').get(assetId);if(!row)return null;
+  if(!/^[0-9a-f-]{36}$/.test(row.image_id))throw Error('Invalid custom thumbnail identity');
+  const root=join(thumbnailDir,'custom'),base=join(root,row.image_id),jpeg=base+'.jpg',webp=base+'.webp';
+  const regular=async path=>{const info=await lstat(path).catch(e=>{if(e.code==='ENOENT')return null;throw e;});if(info&&(!info.isFile()||info.isSymbolicLink()))throw Error('Unsafe thumbnail file');return info;};
+  if(!force&&await regular(jpeg)&&await regular(webp))return jpeg;
+  if(!regenerating.has(base)){
+    const work=(async()=>{
+      let source=base+'.input';if(!await regular(source)){
+        // Preserve an old derivative separately if its original was already lost.
+        source=base+'.legacy-input';if(!await regular(source)){if(!await regular(jpeg))throw httpError(409,'カスタムサムネイルの原本がありません。画像を再アップロードしてください。');await copyFile(jpeg,source,constants.COPYFILE_EXCL);}
+      }
+      const stamp=randomUUID(),tempJpeg=base+'.'+stamp+'.part.jpg',tempWebp=base+'.'+stamp+'.part.webp';
+      try{
+        authorize();await media.validateImage(source);await media.thumbnail(source,'image/webp',tempJpeg);
+        await thumbnailWebp(source,{destination:tempWebp,force:true});
+        authorize();if(!db.prepare('SELECT 1 FROM thumbnail_overrides WHERE asset_id=? AND image_id=?').get(assetId,row.image_id))throw httpError(409,'サムネイル設定が変更されたため、再生成を中止しました。');
+        await rename(tempJpeg,jpeg);await rename(tempWebp,webp);
+        db.prepare('UPDATE thumbnail_overrides SET updated_at=MAX(updated_at+1,?) WHERE image_id=?').run(Date.now(),row.image_id);
+        return jpeg;
+      }finally{await Promise.allSettled([unlink(tempJpeg),unlink(tempWebp)]);}
+    })();regenerating.set(base,work);work.finally(()=>regenerating.delete(base)).catch(()=>{});
+  }
+  return regenerating.get(base);
+}
+
 // Immutable shared images make a whole-series change atomic. Generated covers
 // remain intact; regenerating a thumbnail never overwrites a user's override.
 export async function registerCustomThumbnails(app,{db,thumbnailDir,media,authenticate,findItem,membership}){
@@ -44,9 +78,9 @@ export async function registerCustomThumbnails(app,{db,thumbnailDir,media,authen
     const bytes=Buffer.from(base64,'base64');if(!bytes.length||bytes.length>5*1024*1024)throw httpError(413,'画像は5MB以下にしてください。');
     const id=randomUUID(),source=join(directory,id+'.input'),temp=join(directory,id+'.part.jpg'),final=join(directory,id+'.jpg');let committed=false;
     try{
-      await mkdir(directory,{recursive:true,mode:0o700});await writeFile(source,bytes,{flag:'wx',mode:0o600});await media.validateImage(source);await media.thumbnail(source,req.body.image.mime,temp);await rename(temp,final);
+      await mkdir(directory,{recursive:true,mode:0o700});await writeFile(source,bytes,{flag:'wx',mode:0o600});await media.validateImage(source);await media.thumbnail(source,req.body.image.mime,temp);await rename(temp,final);await thumbnailWebp(source,{destination:join(directory,id+'.webp'),force:true});
       const result=change(req,id);committed=true;await collect(result.old);return {updated:result.ids.length};
-    }finally{await Promise.allSettled([unlink(temp),...(!committed?[unlink(source),unlink(final)]:[])]);}
+    }finally{await Promise.allSettled([unlink(temp),...(!committed?[unlink(source),unlink(final),unlink(join(directory,id+'.webp'))]:[])]);}
   });
   app.delete('/api/v1/thumbnails/custom',{...auth,schema:schema(false)},async req=>{
     const result=change(req,null);await collect(result.old);return {updated:result.ids.length};

@@ -6,7 +6,7 @@ import java.io.*;import java.net.*;import java.nio.charset.StandardCharsets;impo
 import static org.junit.Assert.*;
 @RunWith(RobolectricTestRunner.class) @Config(sdk=35)
 public class TransferTransportTest {
- private static final class Response extends HttpURLConnection {
+ private static class Response extends HttpURLConnection {
   final byte[] bytes;final int status;final ByteArrayOutputStream request=new ByteArrayOutputStream();final Map<String,String> responseHeaders=new HashMap<>();
   Response(String path,String method,int status,byte[] bytes)throws Exception{super(new URL("https://mirea.example.test"+path));this.method=method;this.status=status;this.bytes=bytes;}
   @Override public void connect(){}@Override public void disconnect(){}@Override public boolean usingProxy(){return false;}
@@ -62,5 +62,27 @@ public class TransferTransportTest {
   TransferEngine.ConnectionFactory transport=(identity,path,method)->{requests[0]++;try{return new Response(path,method,302,new byte[0]);}catch(Exception e){throw new IOException(e);}};
   TransferEngine.Job job=new TransferEngine.Job("download",api,new JSONObject().put("assetId",m.getString("assetId")).put("title","Redirect denied"));
   new TransferEngine(c,()->{},transport,new TransferLease(c)).run(job);assertEquals("failed",job.state);assertEquals(302,job.status);assertEquals(1,requests[0]);assertEquals(0,new TransferCache(c).completed(api.partition).length());
+ }
+ @Test public void v2ParallelPartsCompleteAtDurableAcceptanceWithoutConversionPolling()throws Exception{
+  Context c=RuntimeEnvironment.getApplication();PlaybackApi api=new PlaybackApi("https://mirea.example.test","d".repeat(43),UUID.randomUUID().toString());
+  File file=File.createTempFile("parallel-upload-",".pdf",c.getCacheDir());try{
+   byte[] sourceBytes=new byte[262144];new Random(7).nextBytes(sourceBytes);try(FileOutputStream out=new FileOutputStream(file)){out.write(sourceBytes);}
+   String id=UUID.randomUUID().toString(),shelf=UUID.randomUUID().toString();java.util.concurrent.CountDownLatch together=new java.util.concurrent.CountDownLatch(2);java.util.concurrent.atomic.AtomicInteger sent=new java.util.concurrent.atomic.AtomicInteger(),polls=new java.util.concurrent.atomic.AtomicInteger();List<Response> requests=Collections.synchronizedList(new ArrayList<>());
+   JSONObject state=new JSONObject().put("id",id).put("state","uploading").put("chunkSize",65536).put("maxParallelParts",4).put("files",new JSONArray().put(new JSONObject().put("receivedParts",new JSONArray()).put("receivedHashes",new JSONObject())));
+   TransferEngine.ConnectionFactory transport=(identity,path,method)->{try{
+    Response r;
+    if(method.equals("PUT"))r=new Response(path,method,204,new byte[0]){@Override public int getResponseCode(){sent.incrementAndGet();together.countDown();try{if(!together.await(3,java.util.concurrent.TimeUnit.SECONDS))throw new AssertionError("Parts must run concurrently");}catch(InterruptedException e){throw new AssertionError(e);}return 204;}};
+    else if(path.endsWith("/complete"))r=new Response(path,method,202,new JSONObject().put("state","processing").toString().getBytes(StandardCharsets.UTF_8));
+    else if(method.equals("GET")){polls.incrementAndGet();r=new Response(path,method,500,new byte[0]);}
+    else r=new Response(path,method,201,state.toString().getBytes(StandardCharsets.UTF_8));
+    requests.add(r);return r;
+   }catch(Exception e){throw new IOException(e);}};
+   JSONObject source=new JSONObject().put("uri",file.toURI().toString()).put("name","parallel.pdf").put("type","application/pdf").put("size",file.length());
+   TransferEngine.Job job=new TransferEngine.Job("upload",api,new JSONObject().put("shelfId",shelf).put("title","Parallel handoff").put("files",new JSONArray().put(source)).put("protocolVersion",2).put("monitorProcessing",false));
+   new TransferEngine(c,()->{},transport,new TransferLease(c)).run(job);
+   assertEquals("complete",job.state);assertTrue(job.result.getBoolean("accepted"));assertEquals(id,job.result.getString("uploadId"));assertTrue(api.closed);assertEquals(4,sent.get());assertEquals(0,polls.get());assertEquals(sourceBytes.length,job.received);
+   Response create=requests.stream().filter(r->r.getRequestMethod().equals("POST")&&!r.getURL().getPath().endsWith("/complete")).findFirst().get();assertTrue(new JSONObject(create.request.toString(StandardCharsets.UTF_8)).getBoolean("resume"));
+   for(Response r:requests)if(r.getRequestMethod().equals("PUT"))assertEquals(TransferCache.hash(r.request.toByteArray()),r.getRequestProperty("X-Chunk-SHA256"));
+  }finally{file.delete();}
  }
 }

@@ -61,6 +61,7 @@ export async function registerAdminCleanup(app,{db,dataDir,mediaDir=dataDir,admi
           if(++budget>20000||candidates.length>=200){limited=true;break outer;}
           const id=(name==='previews'?entry.replace(/\.mp4$/,''):name.startsWith('thumbnails')?entry.replace(/\.(?:jpg|webp|input)$/,''):entry);
           if(!UUID.test(id)||name==='previews'&&!entry.endsWith('.mp4')||name.startsWith('thumbnails')&&!(/\.(?:jpg|webp|input)$/.test(entry)))continue;
+          if(name==='thumbnails/custom'&&/\.(input|legacy-input)$/.test(entry))continue; // Custom-cover originals are not disposable caches.
           if(name==='thumbnails/custom'&&db.prepare('SELECT 1 FROM thumbnail_overrides WHERE image_id=?').get(id))continue;
           if(db.prepare('SELECT 1 FROM items WHERE id=?').get(id)||protectedUpload(id))continue;
           await add({kind:'orphan',custom:name==='thumbnails/custom',assetId:id,path:join(groupPath(name),entry),title:name+'/'+entry});
