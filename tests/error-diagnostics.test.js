@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
-import {mkdtemp,rm,readFile} from 'node:fs/promises';
+import {mkdtemp,rm,readFile,readdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -66,4 +66,11 @@ test('all UI details use textContent and escaped static markup; no local storage
   assert(source.includes('navigator.clipboard.writeText(diagnosticText(report))'));assert(source.includes("dialog[open]:not(.diagnostic-modal)"));
   const api=await readFile(new URL('../web/src/api.js',import.meta.url),'utf8');assert(api.includes('clearDiagnostics();session=null'));assert(api.includes('clearDiagnostics();authRevision++'));
   assert.match(api.split('export async function authenticatedBlob')[1],/const token = session\?\.token,context=authRevision;/);
+});
+test('every shared server module imported by the client is available in the container build stage',async()=>{
+  const base=new URL('../web/src/',import.meta.url),docker=(await readFile(new URL('../Dockerfile',import.meta.url),'utf8')).split(' AS dependencies')[0];
+  for(const file of await readdir(base))if(file.endsWith('.js')){
+    const source=await readFile(new URL(file,base),'utf8');
+    for(const match of source.matchAll(/from ['"]\.\.\/\.\.\/(server\/[^'"]+)['"]/g))assert(docker.includes('COPY '+match[1]+' ./'+match[1]),file+' needs '+match[1]);
+  }
 });
