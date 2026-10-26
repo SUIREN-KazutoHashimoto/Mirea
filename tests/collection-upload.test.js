@@ -12,8 +12,8 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 test('series collapse by ID, retain canonical cover/count/progress and do not mutate or merge equal titles across shelves',()=>{
  const all=[asset('later','s1',2,'video'),asset('first','s1',1),asset('other','s2',3),asset('standalone',null,4),{...asset('pending','s1',5),pending:true}];all[1].progress={completed:true};
  const before=JSON.stringify(all),rows=collectionEntries(all,[{id:'s1',title:'同じ名前',coverId:'first'},{id:'s2',title:'同じ名前'}],{allItems:all});
- assert.equal(rows.length,4);assert.equal(rows.filter(r=>r.type==='series').length,2);const first=rows.find(r=>r.id==='s1');assert.equal(first.assetCount,2);assert.equal(first.cover.id,'first');assert.equal(first.completed,1);assert.equal(JSON.stringify(all),before);
- const video=collectionEntries([all[0]],[],{allItems:all,filter:'video'});assert.equal(video.length,1);assert.equal(video[0].matchedCount,1);assert.equal(video[0].assetCount,2);assert.equal(video[0].cover.id,'first');
+ assert.equal(rows.length,3);assert.equal(rows.filter(r=>r.type==='series').length,2);const first=rows.find(r=>r.id==='s1');assert.equal(first.assetCount,3);assert.equal(first.cover.id,'first');assert.equal(first.completed,1);assert.equal(JSON.stringify(all),before);
+ const video=collectionEntries([all[0]],[],{allItems:all,filter:'video'});assert.equal(video.length,1);assert.equal(video[0].matchedCount,1);assert.equal(video[0].assetCount,3);assert.equal(video[0].cover.id,'first');
  assert.deepEqual(collectionEntries([all[1],all[0]],[],{group:false}).map(r=>r.item.id),['first','later']);
 });
 test('empty authorized series remain manageable, obey search/type filters and never manufacture unavailable assets',()=>{
@@ -46,5 +46,5 @@ test('explicit cancellation aborts processing too, identity changes stop starts,
 });
 test('UI groups only display entries while retaining real assets for downloads, and freezes successful uploads on retry',async()=>{
  const main=await readFile(new URL('../web/src/main.js',import.meta.url),'utf8'),ui=await readFile(new URL('../web/src/upload-ui.js',import.meta.url),'utf8');assert(main.includes('collectionEntries(selected,series'));assert(main.includes('displayedItems=selected'));assert(main.includes('data-open-series'));assert(main.includes('seriesReturnView'));
- assert(ui.includes("results.get(job.key)?.state!=='complete'"));assert(ui.includes('eager:nativeTransfersAvailable(),isCurrent'));assert(ui.includes('activeBatch?.cancel()'));assert(ui.includes('retainOriginal:requested.retainOriginal'));assert(ui.includes('maxUploadBytes'));assert(ui.includes('data-page-up'));
+ assert(ui.includes("['complete','processing'].includes(results.get(job.key)?.state)"));assert(ui.includes('eager:nativeTransfersAvailable(),progressIntervalMs:100,isCurrent'));assert(ui.includes('activeBatch?.cancel()'));assert(ui.includes('retainOriginal:requested.retainOriginal'));assert(ui.includes('maxUploadBytes'));assert(ui.includes('data-page-up'));
 });

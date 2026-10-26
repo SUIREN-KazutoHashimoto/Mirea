@@ -9,7 +9,7 @@ public final class DownloadManifest {
         if(m.getInt("version")!=1||!"AES-256-GCM".equals(m.getString("algorithm"))||m.getInt("chunkSize")!=CHUNK||!PlaybackApi.uuid(m.getString("id"))||!PlaybackApi.uuid(m.getString("assetId")))throw new IllegalArgumentException("Invalid encrypted manifest");
         String kind=m.getString("kind");if(!Arrays.asList("audio","video","pdf","epub","image-book").contains(kind))throw new IllegalArgumentException();
         JSONArray files=m.getJSONArray("files");long pages=m.getLong("pageCount"),total=0;
-        if(pages<1||pages>1000000||files.length()<1||files.length()>500||("image-book".equals(kind)?pages!=files.length():files.length()!=1))throw new IllegalArgumentException();
+        if(pages<1||pages>1000000||files.length()<1||files.length()>1000||("image-book".equals(kind)?pages!=files.length():files.length()!=1))throw new IllegalArgumentException();
         for(int n=0;n<files.length();n++){
             JSONObject f=files.getJSONObject(n);long size=f.getLong("size");String mime=f.getString("mime");
             if(f.getInt("index")!=n||size<=0||size>8589934592L||f.getInt("chunks")!=(size+CHUNK-1)/CHUNK||!Arrays.asList("audio/mp4","video/mp4","video/webm","application/pdf","image/png","image/jpeg","image/webp","application/vnd.mirea.epub+json").contains(mime))throw new IllegalArgumentException();

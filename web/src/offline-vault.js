@@ -27,14 +27,14 @@ export async function createOfflineVault(store,{cryptoApi=crypto,wall=Date.now,m
     const record=await store.vaultGet(slot(partition,id));if(!record)return null;
     let plain;try{plain=new Uint8Array(await cryptoApi.subtle.decrypt({name:'AES-GCM',iv:record.iv,additionalData:encoder.encode(slot(partition,id))},await deviceKey(partition),record.bytes));return JSON.parse(decoder.decode(plain));}finally{plain?.fill(0);}
   }
-  async function remaining(partition,id,saved){
+  async function remaining(partition,id,saved,checkpointId=id){
     const time=wall(),name=slot(partition,id),anchor=anchorMap.get(name);
     // Fail closed on clock rollback. Monotonic time also bounds a live page
     // while the wall clock is held back. This is not hardware DRM.
-    if(time<saved.lastWall-1000||time<saved.wall-1000){await store.vaultDelete(name);throw new Error('端末の時計が変更されました。オンラインで期限を確認してください。');}
+    if(time<saved.lastWall-1000||time<saved.wall-1000){await store.vaultDelete(name);if(checkpointId!==id)await store.vaultDelete(slot(partition,checkpointId));throw new Error('端末の時計が変更されました。オンラインで期限を確認してください。');}
     const elapsed=Math.max(0,time-saved.wall,anchor?anchor.elapsed+mono()-anchor.mono:0);
-    if(saved.grant.expiresAt<=saved.grant.serverTime+elapsed){await store.vaultDelete(name);return null;}
-    saved.lastWall=Math.max(time,saved.lastWall);await seal(partition,id,saved);anchorMap.set(name,{elapsed,mono:mono()});
+    if(saved.grant.expiresAt<=saved.grant.serverTime+elapsed){await store.vaultDelete(name);if(checkpointId!==id)await store.vaultDelete(slot(partition,checkpointId));return null;}
+    saved.lastWall=Math.max(time,saved.lastWall);await seal(partition,checkpointId,saved);anchorMap.set(name,{elapsed,mono:mono()});
     return time+saved.grant.expiresAt-saved.grant.serverTime-elapsed;
   }
   function lease(partition,id){return serialized(partition,id,async()=>{
@@ -43,7 +43,11 @@ export async function createOfflineVault(store,{cryptoApi=crypto,wall=Date.now,m
   });}
   function catalog(partition){return serialized(partition,'catalog',async()=>{
     const saved=await unseal(partition,'catalog');if(!saved)return null;
-    return await remaining(partition,'catalog',saved)?saved.catalog:null;
+    const checkpoint=await unseal(partition,'catalog-clock');
+    const timing=checkpoint?.stamp===saved.stamp&&checkpoint?.wall===saved.wall?checkpoint:{stamp:saved.stamp,grant:saved.grant,wall:saved.wall,lastWall:saved.lastWall};
+    // Updating a tiny clock checkpoint must not re-encrypt the entire library
+    // for every identity check. Both records remain device-key encrypted.
+    return await remaining(partition,'catalog',timing,'catalog-clock')?saved.catalog:null;
   });}
   return {
     async loggedOut(origin){return await store.vaultGet(`loggedout|${originOf(origin)}`)===true;},
@@ -57,7 +61,9 @@ export async function createOfflineVault(store,{cryptoApi=crypto,wall=Date.now,m
     revoke(partition,id){return serialized(partition,id,async()=>{anchorMap.delete(slot(partition,id));await store.vaultDelete(slot(partition,id));});},
     saveCatalog(partition,value,userId){return serialized(partition,'catalog',async()=>{
       if(value.userId!==userId||!Number.isSafeInteger(value.serverTime)||value.serverTime<=0)throw new Error('一覧情報のユーザーが一致しません。');
-      const time=wall();await seal(partition,'catalog',{catalog:value,grant:{serverTime:value.serverTime,expiresAt:value.serverTime+OFFLINE_MS},wall:time,lastWall:time});anchorMap.set(slot(partition,'catalog'),{elapsed:0,mono:mono()});
+      const time=wall(),stamp=Array.from(cryptoApi.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('');
+      const timing={stamp,grant:{serverTime:value.serverTime,expiresAt:value.serverTime+OFFLINE_MS},wall:time,lastWall:time};
+      await seal(partition,'catalog',{catalog:value,...timing});await seal(partition,'catalog-clock',timing);anchorMap.set(slot(partition,'catalog'),{elapsed:0,mono:mono()});
     });},catalog,
     async saveIdentity(origin,session,remember,config){
       const partition=offlinePartition(origin,session.user.id);

@@ -17,7 +17,7 @@ import java.util.concurrent.*;
 
 @CapacitorPlugin(name="MireaTransfer",permissions={@Permission(alias="notifications",strings={Manifest.permission.POST_NOTIFICATIONS})})
 public final class MireaTransferPlugin extends Plugin {
-    private final Map<String,Uri> selected=new ConcurrentHashMap<>();private final ExecutorService io=Executors.newSingleThreadExecutor();private boolean visible=true;
+    private final Map<String,Uri> selected=new ConcurrentHashMap<>();private final ExecutorService io=Executors.newSingleThreadExecutor();private boolean visible=true;private long lastFolderProgress;
     private final BroadcastReceiver receiver=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent i){if(visible)notifyListeners("transferChanged",new JSObject());}};
     @Override public void load(){ContextCompat.registerReceiver(getContext(),receiver,new IntentFilter(TransferService.EVENT),ContextCompat.RECEIVER_NOT_EXPORTED);}
     @PluginMethod public void notifications(PluginCall call){
@@ -34,6 +34,7 @@ public final class MireaTransferPlugin extends Plugin {
         Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         startActivityForResult(call,intent,"chosenFolder");
     }
+    private void folderProgress(int folders,int files,boolean force){long now=android.os.SystemClock.elapsedRealtime();if(!force&&now-lastFolderProgress<200)return;lastFolderProgress=now;notifyListeners("folderScan",new JSObject().put("folders",folders).put("files",files));}
     @ActivityCallback private void chosenFolder(PluginCall call,ActivityResult result){
         if(call==null)return;if(result.getResultCode()!=Activity.RESULT_OK||result.getData()==null||result.getData().getData()==null){call.resolve(new JSObject().put("files",new JSArray()));return;}
         Uri tree=result.getData().getData();
@@ -42,39 +43,40 @@ public final class MireaTransferPlugin extends Plugin {
             getContext().getContentResolver().takePersistableUriPermission(tree,Intent.FLAG_GRANT_READ_URI_PERMISSION);
             String root=DocumentsContract.getTreeDocumentId(tree),name=null;
             try(Cursor c=getContext().getContentResolver().query(DocumentsContract.buildDocumentUriUsingTree(tree,root),new String[]{DocumentsContract.Document.COLUMN_DISPLAY_NAME},null,null,null)){if(c!=null&&c.moveToFirst())name=c.getString(0);}
-            folderName(name);JSArray files=new JSArray();Map<String,Uri> pending=new HashMap<>();Set<String> seen=new HashSet<>();int[] count={0};long deadline=android.os.SystemClock.elapsedRealtime()+30000;
+            folderProgress(0,0,true);folderName(name);JSArray files=new JSArray();Map<String,Uri> pending=new HashMap<>();Set<String> seen=new HashSet<>();int[] count={0};long deadline=android.os.SystemClock.elapsedRealtime()+120000;
             readFolder(tree,root,name,1,files,pending,seen,count,deadline);
-            if(selected.size()+pending.size()>10000)throw new IllegalArgumentException();selected.putAll(pending);call.resolve(new JSObject().put("files",files));
-        }catch(Exception e){call.reject("フォルダを取得できません。端末内の10000ファイル・16階層以内のフォルダを選んでください。");}});
+            if(selected.size()+pending.size()>10000)throw new IllegalArgumentException();selected.putAll(pending);folderProgress(count[0],files.length(),true);call.resolve(new JSObject().put("files",files));
+        }catch(Exception e){call.reject("フォルダを取得できません。端末内の1000ファイル・16階層以内のフォルダを選んでください。");}});
     }
     private static void folderName(String name){if(name==null||name.trim().isEmpty()||name.length()>200||name.equals(".")||name.equals("..")||name.chars().anyMatch(c->c<32||c==127||c=='/'||c=='\\'))throw new IllegalArgumentException();}
     private void readFolder(Uri tree,String document,String path,int depth,JSArray files,Map<String,Uri> pending,Set<String> seen,int[] count,long deadline)throws Exception{
         if(depth>16||!seen.add(document)||++count[0]>300||android.os.SystemClock.elapsedRealtime()>deadline)throw new IllegalArgumentException();
+        folderProgress(count[0],files.length(),false);
         String[] columns={DocumentsContract.Document.COLUMN_DOCUMENT_ID,DocumentsContract.Document.COLUMN_DISPLAY_NAME,DocumentsContract.Document.COLUMN_MIME_TYPE,DocumentsContract.Document.COLUMN_SIZE,DocumentsContract.Document.COLUMN_LAST_MODIFIED};
         try(Cursor c=getContext().getContentResolver().query(DocumentsContract.buildChildDocumentsUriUsingTree(tree,document),columns,null,null,null)){
             if(c==null)throw new IllegalArgumentException();while(c.moveToNext()){
                 if(android.os.SystemClock.elapsedRealtime()>deadline)throw new IllegalArgumentException();String id=c.getString(0),name=c.getString(1),mime=c.getString(2);folderName(name);
                 if(DocumentsContract.Document.MIME_TYPE_DIR.equals(mime))readFolder(tree,id,path+"/"+name,depth+1,files,pending,seen,count,deadline);
-                else{long size=c.isNull(3)?-1:c.getLong(3);if(size<=0||files.length()>=10000)throw new IllegalArgumentException();String key=UUID.randomUUID().toString();Uri uri=DocumentsContract.buildDocumentUriUsingTree(tree,id);pending.put(key,uri);
-                    files.put(new JSObject().put("nativeId",key).put("name",name).put("size",size).put("type",mime==null?"application/octet-stream":mime).put("lastModified",c.isNull(4)?0:c.getLong(4)).put("relativePath",path+"/"+name));}
+                else{long size=c.isNull(3)?-1:c.getLong(3);if(size<=0||files.length()>=1000)throw new IllegalArgumentException();String key=UUID.randomUUID().toString();Uri uri=DocumentsContract.buildDocumentUriUsingTree(tree,id);pending.put(key,uri);
+                    files.put(new JSObject().put("nativeId",key).put("name",name).put("size",size).put("type",mime==null?"application/octet-stream":mime).put("lastModified",c.isNull(4)?0:c.getLong(4)).put("relativePath",path+"/"+name));folderProgress(count[0],files.length(),false);}
             }
         }
     }
     @ActivityCallback private void chosenFiles(PluginCall call,ActivityResult result){
         if(call==null)return;if(result.getResultCode()!=Activity.RESULT_OK||result.getData()==null){call.resolve(new JSObject().put("files",new JSArray()));return;}
-        try{
-            Intent data=result.getData();List<Uri> uris=new ArrayList<>();if(data.getClipData()!=null){for(int n=0;n<data.getClipData().getItemCount();n++)uris.add(data.getClipData().getItemAt(n).getUri());}else if(data.getData()!=null)uris.add(data.getData());
-            if(uris.size()>10000||selected.size()+uris.size()>10000)throw new IllegalArgumentException();JSArray files=new JSArray();
+        io.submit(()->{try{
+            folderProgress(0,0,true);Intent data=result.getData();List<Uri> uris=new ArrayList<>();if(data.getClipData()!=null){for(int n=0;n<data.getClipData().getItemCount();n++)uris.add(data.getClipData().getItemAt(n).getUri());}else if(data.getData()!=null)uris.add(data.getData());
+            if(uris.size()>1000||selected.size()+uris.size()>10000)throw new IllegalArgumentException();JSArray files=new JSArray();
             for(Uri uri:uris){
                 if(!"content".equals(uri.getScheme()))throw new IllegalArgumentException();String name=null;long size=-1;
                 try(Cursor cursor=getContext().getContentResolver().query(uri,new String[]{OpenableColumns.DISPLAY_NAME,OpenableColumns.SIZE},null,null,null)){if(cursor!=null&&cursor.moveToFirst()){name=cursor.getString(0);size=cursor.getLong(1);}}
                 if(name==null||name.length()>255||size<=0)throw new IllegalArgumentException();
                 try{getContext().getContentResolver().takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION);}catch(SecurityException ignored){/* Temporary grants still outlive the picker/activity. */}
                 String id=UUID.randomUUID().toString();selected.put(id,uri);String mime=getContext().getContentResolver().getType(uri);
-                files.put(new JSObject().put("nativeId",id).put("name",name).put("size",size).put("type",mime==null?"application/octet-stream":mime).put("lastModified",0));
+                files.put(new JSObject().put("nativeId",id).put("name",name).put("size",size).put("type",mime==null?"application/octet-stream":mime).put("lastModified",0));folderProgress(0,files.length(),false);
             }
-            call.resolve(new JSObject().put("files",files));
-        }catch(Exception e){call.reject("ファイルを取得できません。端末内に保存したファイルを選んでください。");}
+            folderProgress(0,files.length(),true);call.resolve(new JSObject().put("files",files));
+        }catch(Exception e){call.reject("ファイルを取得できません。端末内に保存した1000ファイル以内を選んでください。");}});
     }
     private PlaybackApi api(PluginCall c)throws Exception{return new PlaybackApi(c.getString("origin"),c.getString("token"),c.getString("userId"));}
     @PluginMethod public void enqueue(PluginCall call){
@@ -83,7 +85,7 @@ public final class MireaTransferPlugin extends Plugin {
             api=api(call);String direction=call.getString("direction","");if(!direction.equals("upload")&&!direction.equals("download"))throw new IllegalArgumentException();
             JSONObject data=new JSONObject(call.getObject("job").toString());
             if(direction.equals("upload")){
-                JSONArray files=data.getJSONArray("files");if(files.length()<1||files.length()>500)throw new IllegalArgumentException();
+                JSONArray files=data.getJSONArray("files");if(files.length()<1||files.length()>1000)throw new IllegalArgumentException();
                 for(int n=0;n<files.length();n++){
                     JSONObject f=files.getJSONObject(n);Uri uri=selected.get(f.getString("nativeId"));if(uri==null||f.getLong("size")<=0||f.getString("name").length()>255)throw new IllegalArgumentException();f.put("uri",uri.toString());
                 }

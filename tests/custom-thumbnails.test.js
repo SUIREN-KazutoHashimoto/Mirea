@@ -2,11 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
-import {mkdtemp,rm,writeFile,readFile,readdir} from 'node:fs/promises';
+import {mkdtemp,rm,writeFile,readFile,readdir,unlink} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import sharp from 'sharp';
 import {createApp} from '../server/app.js';
+import {ensureCustomThumbnail,customThumbnailRevision} from '../server/custom-thumbnails.js';
+import {createMediaProcessor} from '../server/media.js';
 
 async function setup(t){
  const dataDir=await mkdtemp(join(tmpdir(),'mirea-custom-cover-')),app=await createApp({dataDir,rateLimit:false}),db=new DatabaseSync(join(dataDir,'mirea.sqlite'));db.exec('PRAGMA foreign_keys=ON');
@@ -31,6 +33,15 @@ test('custom thumbnails enforce ACL, validate decoded static images, update bulk
  }
  const set=await c.req('POST','/thumbnails/custom',c.owner,body);assert.equal(set.statusCode,200,set.body);assert.equal(set.json().updated,2);
  const rows=c.db.prepare('SELECT * FROM thumbnail_overrides ORDER BY asset_id').all();assert.equal(rows.length,2);assert.equal(rows[0].image_id,rows[1].image_id);
+ const selected=c.db.prepare('SELECT * FROM thumbnail_overrides WHERE asset_id=?').get(c.one),source=join(c.dataDir,'thumbnails','custom',selected.image_id+'.input');
+ const sourceBytes=await readFile(source);assert.deepEqual(sourceBytes,Buffer.from(c.image.base64,'base64'));
+ const oldRevision=customThumbnailRevision(selected);
+ // Exercise the same generator used by the admin regeneration job, with the
+ // automatic cover deliberately unrelated and both selected derivatives lost.
+ await unlink(join(c.dataDir,'thumbnails','custom',selected.image_id+'.jpg'));await unlink(join(c.dataDir,'thumbnails','custom',selected.image_id+'.webp'));
+ await ensureCustomThumbnail(c.db,join(c.dataDir,'thumbnails'),createMediaProcessor(),c.one,{force:true});
+ assert.deepEqual(await readFile(source),sourceBytes);const revised=c.db.prepare('SELECT * FROM thumbnail_overrides WHERE asset_id=?').get(c.one);assert.equal(revised.image_id,selected.image_id);assert.notEqual(customThumbnailRevision(revised),oldRevision);
+ const selectedWebp=await sharp(join(c.dataDir,'thumbnails','custom',selected.image_id+'.webp')).metadata();assert.equal(selectedWebp.format,'webp');assert.equal(selectedWebp.width,120);assert.equal(selectedWebp.height,80);
  const cover=await c.req('GET','/items/'+c.one+'/thumbnail',c.viewer);assert.equal(cover.statusCode,200);assert.equal((await sharp(cover.rawPayload).metadata()).format,'webp');assert.notDeepEqual(cover.rawPayload,c.original);
  assert.deepEqual(await readFile(join(c.dataDir,'thumbnails',c.one+'.jpg')),c.original);
  // Regenerated base cover does not remove the selected override.

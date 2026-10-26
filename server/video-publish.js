@@ -1,9 +1,10 @@
+import {recordVideoThumbnail,recordVideoPreview} from './video-thumbnail.js';
 import {assertUploadName} from './name-integrity.js';
 import { copyFile, rename, unlink, stat, rm, readdir, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { transaction } from './database.js';
 import {attachUploadSeries} from './upload-series.js';
-import { removeItemDirectory } from './media.js';
+import { removeItemDirectory,PREVIEW_SECONDS } from './media.js';
 import { probeVideo } from './video-transcode.js';
 
 // Filesystem publication precedes the atomic database commit. Until that commit
@@ -23,12 +24,13 @@ export async function publishVideo(context,upload,authorize) {
     await rm(work,{recursive:true,force:true});
     const metadata=await videoTranscoder.convert(join(stage,'raw-1'),work,{authorize,report});
     report({stage:'thumbnail',percent:0});
-    await media.thumbnail(join(work,`${metadata.renditions[0].quality}.mp4`),'video/mp4',join(work,'thumbnail.jpg'));
-    await media.preview(join(work,`${metadata.renditions[0].quality}.mp4`),join(work,'preview.mp4'),'video/mp4');
+    const chosen=await media.thumbnail(join(work,`${metadata.renditions[0].quality}.mp4`),'video/mp4',join(work,'thumbnail.jpg'));
+    const startSeconds=chosen?.seekSeconds??0;
+    await media.preview(join(work,`${metadata.renditions[0].quality}.mp4`),join(work,'preview.mp4'),'video/mp4',{startSeconds});
     for(const name of ['thumbnail.jpg','preview.mp4'])if(!(await stat(join(work,name))).size)throw new Error('Missing video thumbnail');
     await media.validateImage(join(work,'thumbnail.jpg'));
     const previewInfo=await probeVideo(join(work,'preview.mp4'));
-    if(previewInfo.video.codec_name!=='h264'||previewInfo.audio||previewInfo.duration>6.25)throw new Error('Invalid generated video preview');
+    if(previewInfo.video.codec_name!=='h264'||previewInfo.audio||previewInfo.duration>PREVIEW_SECONDS+.25)throw new Error('Invalid generated video preview');
     authorize();report({stage:'publish',percent:100});
     await removeItemDirectory(videoDir,id);
     await rename(work,final);
@@ -54,6 +56,7 @@ export async function publishVideo(context,upload,authorize) {
       db.prepare(`INSERT INTO items(id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at,page_count,thumbnail_ready)
         VALUES(?,?,?,?, 'video/mp4',?,?,?,1,1)`).run(id,shelfId,title,first.filename.replace(/\.[^.]+$/,'')+'.mp4',metadata.renditions[0].size,userId,Date.now());
       db.prepare('INSERT INTO video_assets VALUES(?,?,?)').run(id,JSON.stringify(metadata),upload.retain_original?1:0);
+      recordVideoThumbnail(db,id,startSeconds);recordVideoPreview(db,id,startSeconds);
       attachUploadSeries(db,upload);
       db.prepare("UPDATE upload_sessions SET state='complete',error=NULL,processing_json=? WHERE id=?").run(JSON.stringify({stage:'complete',percent:100}),id);
     });

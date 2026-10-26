@@ -3,10 +3,11 @@ const digest = async bytes => hex(await crypto.subtle.digest('SHA-256', bytes));
 const abortError = () => new Error('アップロードをキャンセルしました。');
 const transient = status => !status || [408, 409, 425, 429].includes(status) || status >= 500;
 
-export function createResumableUpload({ endpoint, token, userId, unauthorized }, shelfId, files, title, onProgress, {retainOriginal=true,seriesId=null}={}) {
+export function createResumableUpload({ endpoint, token, userId, unauthorized }, shelfId, files, title, onProgress, {retainOriginal=true,seriesId=null,protocolVersion=1,monitorProcessing=true}={}) {
   const controller = new AbortController();
   const { signal } = controller;
-  let xhr, uploadId, storageKey, cancelled = false, processing = false;
+  const xhrs=new Set(),inflight=new Map();
+  let uploadId, storageKey, cancelled = false, processing = false;
   const headers = { Authorization: `Bearer ${token}` };
   const readSaved = () => { try { return JSON.parse(localStorage.getItem(storageKey)); } catch { return null; } };
   const save = value => { try { if (value) localStorage.setItem(storageKey, JSON.stringify(value)); else localStorage.removeItem(storageKey); } catch { /* private / full browser storage */ } };
@@ -41,24 +42,24 @@ export function createResumableUpload({ endpoint, token, userId, unauthorized },
     }
     return result;
   }
-  function sendPart(path, blob, sha256, completed, total) {
+  function sendPart(path, blob, sha256, completed, total, key) {
     return new Promise((resolve, reject) => {
-      xhr = new XMLHttpRequest();
+      const xhr = new XMLHttpRequest();xhrs.add(xhr);
       xhr.open('PUT', `${endpoint}/api/v1${path}`);
       xhr.timeout = 90_000;
       xhr.setRequestHeader('Authorization', headers.Authorization);
       xhr.setRequestHeader('Content-Type', 'application/octet-stream');
       xhr.setRequestHeader('X-Chunk-SHA256', sha256);
-      xhr.upload.onprogress = event => { if (event.lengthComputable) onProgress(Math.min(99, Math.floor((completed + event.loaded) / total * 100))); };
-      xhr.onload = () => {
+      xhr.upload.onprogress = event => {if(event.lengthComputable){inflight.set(key,event.loaded);onProgress(Math.min(99,Math.floor((completed()+[...inflight.values()].reduce((n,v)=>n+v,0))/total*100)));}};
+      xhr.onload = () => {xhrs.delete(xhr);
         if (xhr.status === 204) return resolve();
         let result = {};
         try { result = JSON.parse(xhr.responseText); } catch { /* proxy HTML error */ }
         if (xhr.status === 401) unauthorized();
         reject(Object.assign(new Error(result.error || '分割データを送信できませんでした。再試行してください。'), { status: xhr.status }));
       };
-      xhr.onerror = xhr.ontimeout = () => reject(Object.assign(new Error('通信が途切れました。同じファイルを選んで再試行できます。'), { status: 0 }));
-      xhr.onabort = () => reject(abortError());
+      xhr.onerror = xhr.ontimeout = () => {xhrs.delete(xhr);reject(Object.assign(new Error('通信が途切れました。同じファイルを選んで再試行できます。'), { status: 0 }));};
+      xhr.onabort = () => {xhrs.delete(xhr);reject(abortError());};
       xhr.send(blob);
     });
   }
@@ -87,7 +88,7 @@ export function createResumableUpload({ endpoint, token, userId, unauthorized },
       // Do not automatically retry creation: a lost response must not allocate
       // several server sessions. Individual parts and completion are idempotent.
       for(;;){try{state = await request(`/shelves/${shelfId}/uploads`, 'POST', {
-        title, retainOriginal, ...(seriesId?{seriesId}:{}), files: files.map(file => ({ filename: file.name, mime: file.type, size: file.size }))
+        title, retainOriginal, ...(protocolVersion>=2?{resume:true}:{}), ...(seriesId?{seriesId}:{}), files: files.map(file => ({ filename: file.name, mime: file.type, size: file.size }))
       });
       break;}catch(error){if(error.status!==429)throw error;onProgress(0,{stage:'waiting-slot'});await sleep(2000);}}
       save({ id: state.id, expiresAt: state.expiresAt });
@@ -97,49 +98,43 @@ export function createResumableUpload({ endpoint, token, userId, unauthorized },
     let completed = state.receivedBytes;
     onProgress(Math.min(99, Math.floor(completed / total * 100)));
     if (state.state === 'uploading') {
-      for (const [fileIndex, file] of files.entries()) {
-        const received = new Set(state.files[fileIndex].receivedParts);
-        for (let partIndex = 0; partIndex < Math.ceil(file.size / state.chunkSize); partIndex++) {
-          if (signal.aborted) throw abortError();
-          const blob = file.slice(partIndex * state.chunkSize, Math.min(file.size, (partIndex + 1) * state.chunkSize));
-          const sha256 = await digest(await blob.arrayBuffer());
-          if (received.has(partIndex)) {
-            // Metadata/samples are only a lookup key. Verify every skipped part
-            // too, so a modified middle of a reselected file can never be mixed
-            // with the previous upload's bytes.
-            if (state.files[fileIndex].receivedHashes?.[partIndex] !== sha256) {
-              save(null);
-              await request(`/uploads/${uploadId}`, 'DELETE').catch(() => {});
-              throw new Error('前回と異なるファイルです。再試行すると、新しいアップロードとして送信します。');
-            }
-            continue;
-          }
-          await retry(() => sendPart(`/uploads/${uploadId}/files/${fileIndex}/parts/${partIndex}`, blob, sha256, completed, total));
-          completed += blob.size;
-          onProgress(Math.min(99, Math.floor(completed / total * 100)));
+      const parallel=Math.max(1,Math.min(4,Number(state.maxParallelParts)||1));
+      const received=state.files.map(file=>new Set(file.receivedParts));let nextFile=0,nextIndex=0;
+      const nextPart=()=>{while(nextFile<files.length){const fileIndex=nextFile,partIndex=nextIndex++;if(partIndex<Math.ceil(files[fileIndex].size/state.chunkSize))return {fileIndex,partIndex};nextFile++;nextIndex=0;}return null;};
+      await Promise.all(Array.from({length:parallel},async()=>{for(;;){
+        const part=nextPart();if(!part)break;const {fileIndex,partIndex}=part,file=files[fileIndex];if(signal.aborted)throw abortError();
+        const blob=file.slice(partIndex*state.chunkSize,Math.min(file.size,(partIndex+1)*state.chunkSize)),sha256=await digest(await blob.arrayBuffer());
+        if(received[fileIndex].has(partIndex)){
+          if(state.files[fileIndex].receivedHashes?.[partIndex]!==sha256)throw new Error('選択したファイルの内容が前回と異なります。既存の転送は保持しています。転送状況で整理してから追加してください。');
+          continue;
         }
-      }
+        const key=fileIndex+':'+partIndex;
+        try{await retry(()=>sendPart(`/uploads/${uploadId}/files/${fileIndex}/parts/${partIndex}`,blob,sha256,()=>completed,total,key));completed+=blob.size;}
+        finally{inflight.delete(key);}
+        onProgress(Math.min(99,Math.floor(completed/total*100)));
+      }}));
       state = await retry(() => request(`/uploads/${uploadId}/complete`, 'POST'));
     }
     processing = state.state === 'processing';transferredResolve({id:uploadId});
     onProgress(100,state.processing);
+    if(processing&&!monitorProcessing)return {accepted:true,uploadId};
     while (state.state === 'processing') {
       await sleep(1500);
-      state = await retry(() => request(`/uploads/${uploadId}`));
+      state = await retry(() => request(`/uploads/${uploadId}${state.protocolVersion>=2?'/status':''}`));
       onProgress(100,state.processing);
     }
     if (state.state !== 'complete' || !state.item) { save(null); throw new Error(state.error || 'コンテンツを保存できませんでした。'); }
     save(null);
     return { item: state.item,seriesWarning:state.seriesWarning??'' };
   })().catch(error => {
-    transferredReject(error);
+    transferredReject(error);controller.abort();for(const xhr of xhrs)xhr.abort();
     if (cancelled) throw abortError();
     throw error;
   });
-  return { promise,transferred, get uploadId(){return uploadId;}, get processing(){return processing;}, detach(){controller.abort();xhr?.abort();}, abort() {
+  return { promise,transferred, get uploadId(){return uploadId;}, get processing(){return processing;}, detach(){controller.abort();for(const xhr of xhrs)xhr.abort();}, abort() {
     cancelled = true;
     controller.abort();
-    xhr?.abort();
+    for(const xhr of xhrs)xhr.abort();
     if (storageKey) save(null);
     if (uploadId) {
       // Independent of the aborted transfer signal. A job already committed as

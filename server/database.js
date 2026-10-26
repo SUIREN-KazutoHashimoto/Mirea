@@ -79,7 +79,7 @@ export function openDatabase(filename) {
         UPDATE schema_version SET version = 2;
       `));
     } finally { db.exec('PRAGMA foreign_keys = ON'); }
-  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
+  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
   if (version < 10) {
     // v10 adds EPUB while retaining v9's nullable uploader attribution.
     // Account deletion removes attribution, not another member's shared assets.
@@ -411,6 +411,12 @@ export function openDatabase(filename) {
       WHEN (NEW.title!=OLD.title OR NEW.parent_id IS NOT OLD.parent_id OR NEW.shelf_id!=OLD.shelf_id) AND EXISTS(SELECT 1 FROM series WHERE id!=NEW.id AND shelf_id=NEW.shelf_id AND parent_id IS NEW.parent_id AND title=NEW.title)
       BEGIN SELECT RAISE(ABORT,'Duplicate series path');END;`);
   });
+  db.exec(`CREATE TABLE IF NOT EXISTS video_thumbnail_state(
+    asset_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+    position_seconds REAL NOT NULL CHECK(position_seconds>=0),
+    preview_position_seconds REAL,preview_version INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+  );UPDATE schema_version SET version=20;`);
   if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Database foreign key validation failed');
   return db;
 }

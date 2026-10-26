@@ -66,6 +66,7 @@ import './library-refresh.css';
 import './playback-dock.css';
 import {createPwaInstall,mountPwaInstall} from './pwa-install.js';
 import './pwa.css';
+import './forms.css';
 
 function updateTransferCount(){const badge=document.querySelector('.transfer-count');if(badge)badge.textContent=transferRows().filter(r=>r.state==='running').length||'';}
 window.addEventListener('mirea:transferchange',updateTransferCount);
@@ -75,7 +76,7 @@ const finishAppLaunch=showAppLaunch({native});
 const pwa=createPwaInstall({native,ensureWorker:ensureDownloadWorker});
 if(!native&&!import.meta.env.DEV)void pwa.prepare();
 let disposeAuthPwa;
-const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.17.0beta/mirea-0.17.0beta-android.apk';
+const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.18.0beta/mirea-0.18.0beta-android.apk';
 const currentApkUrl=()=>config.androidApkUrl?.startsWith('/api/v1/app-updates/')?absoluteUrl(config.androidApkUrl):config.androidApkUrl||defaultApkUrl;
 
 const root = document.querySelector('#app');
@@ -105,7 +106,7 @@ function icon(name, className = '') { return `<svg class="icon ${className}" vie
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const bytes = n => n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KB` : n < 1024 ** 3 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${(n / 1024 ** 3).toFixed(1)} GB`;
 const date = timestamp => new Intl.DateTimeFormat('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(timestamp);
-let config = { allowRegistration: true, maxUploadBytes: 2147483648, maxBookPages: 500, maxImageBytes: 25 * 1024 * 1024 };
+let config = { allowRegistration: true, maxUploadBytes: 2147483648, maxBookPages: 1000, maxImageBytes: 25 * 1024 * 1024 };
 let shelves = [], items = [], activeShelf = null, filter = 'all', search = '', sort = loadCollectionSort(), loadGeneration = 0;
 let playlists=[],activePlaylist='',playlistDraft=null,catalogBulkBusy=false,catalogBulkController;
 let series=[],activeSeries='',seriesReturnView,historyMode=false,historyRows=[];
@@ -343,7 +344,7 @@ function editThumbnails(options={}){
 }
 
 function showNameIntegrity(catalog,offline){renderNameIntegrity(document.querySelector('#name-integrity'),catalog,{esc,offline,openAsset:openAssetDetails,openSeries:(id,shelfId)=>openSeriesManager({dialog,api,esc,shelves:catalog.shelves,initialShelfId:shelfId,initialSeriesId:id,onChanged:refresh,isCurrent:catalogContext().current})});}
-async function refresh({background=false,signal=AbortSignal.timeout(2500)}={}) {
+async function refresh({background=false,signal=AbortSignal.timeout(15000)}={}) {
   const generation = ++loadGeneration;
   const node = document.querySelector('#items');
   if (!node) return {status:'cancelled'};
@@ -374,8 +375,8 @@ async function refresh({background=false,signal=AbortSignal.timeout(2500)}={}) {
     return {status:'updated'};
   } catch (error) {
     if (generation !== loadGeneration || !getSession()) return {status:'cancelled'};
-    if(background){if(!error.status&&!offlineLibrary)await renderOfflineLibrary();return {status:offlineLibrary?'offline':'failed'};}
-    if(!error.status||error.status>=500){if(await renderOfflineLibrary())return {status:'offline'};}
+    if(background){if(!error.status&&!offlineLibrary)await renderOfflineLibrary({generation});return {status:offlineLibrary?'offline':'failed'};}
+    if(!error.status||error.status>=500){if(await renderOfflineLibrary({generation}))return {status:'offline'};}
     node.innerHTML = `<div class="empty-state"><h3>ライブラリを読み込めませんでした</h3><p>${esc(error.message)}</p><button class="button secondary" id="retry-library">もう一度読み込む</button></div>`;
     node.querySelector('button').onclick = refresh;
     return {status:'failed'};
@@ -389,7 +390,7 @@ async function refreshManually(){
   try{
     if(isOfflineSession()&&!await reconnectSession({signal:budget.signal}))return {status:'offline'};
     if(!current())return {status:'cancelled'};
-    const result=await refresh({background:true,signal:budget.signal});
+    const result=await refresh({background:true});
     if(!current())return {status:'cancelled'};
     if(result?.status==='updated')synchronizeConnection({refreshLibrary:false});
     return result;
@@ -914,16 +915,26 @@ function applyOfflineShelf(){
   playlists=offlineLibraryData.playlists??[];
   if(activeSeries&&!series.some(s=>s.id===activeSeries)){activeSeries='';seriesReturnView=null;}
 }
-async function renderOfflineLibrary(){
-  const ctx=catalogContext();if(!ctx.partition)return false;
-  const identity=await offlineIdentity(getEndpoint(),ctx.userId);if(!identity||!ctx.current())return false;
+async function renderOfflineLibrary({generation=loadGeneration,markOffline=true}={}){
+  const ctx=catalogContext(),current=()=>ctx.current()&&generation===loadGeneration;if(!ctx.partition)return false;
+  const identity=await offlineIdentity(getEndpoint(),ctx.userId);if(!identity||!current())return false;
   const vault=await offlineVault(),cache=await offlineCatalog(),catalog=await cache.load(ctx.partition).catch(()=>null);
-  const rows=await listDownloads(),playable=new Set();
-  await Promise.all(rows.filter(row=>row.state==='ready').map(async row=>{const lease=await vault.lease(ctx.partition,row.manifest.id).catch(()=>null);if(lease){playable.add(row.assetId);lease.key='';}}));
-  if(!ctx.current()||(!catalog&&!playable.size))return false;
-  offlineLibraryData=offlineCollection(catalog,rows,playable);
-  offlineLibrary=true;historyMode=false;historyRows=[];librarySnapshot='';await markSessionOffline();if(!ctx.current())return false;
-  applyOfflineShelf();renderNav();renderItems();return true;
+  const rows=await listDownloads();if(!current()||(!catalog&&!rows.some(r=>r.state==='ready')))return false;
+  const playable=new Set(),data=offlineLibraryData=offlineCollection(catalog,rows,playable);
+  offlineLibrary=true;historyMode=false;historyRows=[];librarySnapshot='';if(markOffline)await markSessionOffline();if(!current())return false;
+  applyOfflineShelf();renderNav();renderItems();
+  // Paint cached folders and covers before checking every individual media
+  // lease. A large download import is independent of list reads and never runs
+  // on this critical path. Assets stay disabled until their lease is verified.
+  const hydrate=async()=>{
+    let next=0;const ready=rows.filter(r=>r.state==='ready');
+    await Promise.all(Array.from({length:Math.min(4,ready.length)},async()=>{while(current()&&offlineLibraryData===data&&next<ready.length){
+      const row=ready[next++],lease=await vault.lease(ctx.partition,row.manifest.id).catch(()=>null);
+      if(lease){playable.add(row.assetId);lease.key='';}await new Promise(resolve=>setTimeout(resolve,0));
+    }}));
+    if(current()&&offlineLibrary&&offlineLibraryData===data&&playable.size){const refreshed=offlineCollection(catalog,rows,playable);offlineLibraryData=refreshed;applyOfflineShelf();renderNav();renderItems();}
+  };
+  setTimeout(()=>hydrate().catch(()=>{}),0);return true;
 }
 function synchronizeConnection({refreshLibrary=true}={}){
   if(synchronizing||!getSession())return synchronizing;
@@ -932,7 +943,7 @@ function synchronizeConnection({refreshLibrary=true}={}){
     const budget=connectionBudget({ms:1800});
     try{if(!await reconnectSession({signal:budget.signal}))return;
       await loadConfig({signal:budget.signal});
-      if(shouldRefreshCatalog({requested:refreshLibrary,wasOffline})&&!pullRefresh?.active&&!refreshBusy)await refresh({background:!offlineLibrary,signal:budget.signal});
+      if(shouldRefreshCatalog({requested:refreshLibrary,wasOffline})&&!pullRefresh?.active&&!refreshBusy)await refresh({background:true});
     }finally{budget.dispose();}
     if(isOfflineSession())return;
     ensureDownloadWorker().catch(()=>{});
@@ -941,6 +952,7 @@ function synchronizeConnection({refreshLibrary=true}={}){
   })().catch(error=>{if([401,403].includes(error.status)){window.dispatchEvent(new Event('mirea:unauthorized'));}}).finally(()=>{synchronizing=null;});
   return synchronizing;
 }
+window.addEventListener('mirea:downloads-imported',()=>{if(offlineLibrary)renderOfflineLibrary().catch(()=>{});else updateDownloadButtons().catch(()=>{});});
 window.addEventListener('online',()=>synchronizeConnection());
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)synchronizeConnection();});
 setInterval(()=>synchronizeConnection({refreshLibrary:false}),30000);
@@ -964,7 +976,7 @@ async function bootstrapLogin(){
   const budget=connectionBudget();
   root.innerHTML='<main class="reconnect-screen"><section><h1>Mireaを開いています</h1><p class="startup-status" role="status">ログインと端末の保存データを確認しています…</p></section></main>';
   const phase=text=>{const status=root.querySelector('.startup-status');if(status)status.textContent=text;};
-  try{await initializeSession({signal:budget.signal});phase('サーバーの設定を確認しています…');await loadConfig({signal:budget.signal});if(getSession()){phase('閲覧記録の保存領域を準備しています…');await startAnalytics();renderShell();if(isOfflineSession()){if(!await renderOfflineLibrary())throw new Error('有効なオフライン一覧情報がありません。オンラインで一度接続してください。');}else await refresh({signal:budget.signal});synchronizeConnection();}else renderAuth();}
+  try{await initializeSession({signal:budget.signal});phase('サーバーの設定を確認しています…');await loadConfig({signal:budget.signal});if(getSession()){phase('閲覧記録の保存領域を準備しています…');await startAnalytics();renderShell();if(isOfflineSession()){if(!await renderOfflineLibrary())throw new Error('有効なオフライン一覧情報がありません。オンラインで一度接続してください。');}else{await renderOfflineLibrary({markOffline:false}).catch(()=>false);await refresh({background:offlineLibrary});}synchronizeConnection();}else renderAuth();}
   catch(error){
     libraryPoll?.();libraryPoll=null;pullRefresh?.dispose();pullRefresh=null;clearThumbnails();
     root.innerHTML=`<main class="reconnect-screen"><section><h1>サーバーに再接続</h1><p>${esc(error.message)}</p><p class="muted">通信に失敗しても、保持したログインは解除しません。オンラインで認証を確認してからライブラリを開きます。</p><button class="button primary retry-connection">もう一度接続する</button><button class="button secondary show-login">ログイン画面を開く</button></section></main>`;

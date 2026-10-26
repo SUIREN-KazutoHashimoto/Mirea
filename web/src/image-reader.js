@@ -1,4 +1,5 @@
 import { api, authenticatedBlob } from './api.js';
+import {createImagePageCache} from './image-page-cache.js';
 import { bookPosition,restoreBookPosition } from './progress-core.js';
 import { advanceBook } from './series-continuation.js';
 import { createBookChrome, bookScale } from './book-viewer.js';
@@ -12,6 +13,7 @@ export function openImageBook(container, item, onError, tracker, progress, downl
   const next = container.querySelector('.next');
   const zoom = chrome.zoom;
   const loading = container.querySelector('.image-loading');
+  let pageCache;const prefetchStatus=document.createElement('span');prefetchStatus.className='book-prefetch-status';prefetchStatus.setAttribute('role','status');loading.after(prefetchStatus);
   let pages = [], current = 1, displayedPage=1, ready=false,disposed = false, request, objectUrl, generation = 0,restartRequested=false;
   const updateNext=()=>{
     const continues=ready && current===pages.length && seriesNavigation?.canContinue;
@@ -48,7 +50,7 @@ export function openImageBook(container, item, onError, tracker, progress, downl
     image.hidden = true;
     container.querySelector('.viewer-error')?.remove();
     try {
-      const blob = downloaded?await downloaded.pageBlob(pages[current-1].number,request.signal):await authenticatedBlob(pages[current - 1].url, request.signal);
+      const blob = await pageCache.get(current,request.signal);
       if (disposed || revision !== generation) return;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       objectUrl = URL.createObjectURL(blob);
@@ -78,9 +80,11 @@ export function openImageBook(container, item, onError, tracker, progress, downl
   (downloaded?Promise.resolve({pages:downloaded.pages}):api(`/items/${item.id}/pages`, { signal: manifestRequest.signal })).then(result => {
     if (disposed) return;
     pages = result.pages;
+    pageCache=createImagePageCache({count:pages.length,load:(n,signal)=>downloaded?downloaded.pageBlob(pages[n-1].number,signal):authenticatedBlob(pages[n-1].url,signal),onProgress:({ready,total,limited})=>{if(!disposed)prefetchStatus.textContent=ready===total?'全ページを先読みしました':`ページの先読み ${ready}/${total}${limited?' · 空き容量に応じて先読みを調整':''}`;}});
     input.max = pages.length;
     container.querySelector('.page-total').textContent = `/ ${pages.length}`;
     go(restartRequested?1:progress?.initial?.page??1,restartRequested?undefined:progress?.initial);
+    pageCache.prefetch(restartRequested?1:progress?.initial?.page??1);
     stage.focus();
   }).catch(error => { if (!disposed) { loading.hidden = true; onError(error); } });
   const cleanup=() => {
@@ -88,6 +92,7 @@ export function openImageBook(container, item, onError, tracker, progress, downl
     unsubscribeSeries?.();
     generation++;
     manifestRequest.abort();
+    pageCache?.dispose().catch(()=>{});prefetchStatus.remove();
     request?.abort();
     observer.disconnect();
     clearTimeout(scrollTimer); stage.removeEventListener('scroll',scroll);

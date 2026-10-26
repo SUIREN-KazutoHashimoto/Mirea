@@ -33,7 +33,7 @@ test('personal playlists span authorized shelves, retain order after restart, hi
  const cache=normalizeCatalog(catalog,a.user.id);assert.deepEqual(cache.playlists[0].assetIds,[one]);
  assert.equal((await req('PUT','/playlists/'+p.id,a,{revision:p.revision,title:p.title,assetIds:[two]})).statusCode,404);
  const count=db.prepare('SELECT COUNT(*) n FROM items').get().n;assert.equal((await req('DELETE','/playlists/'+p.id,a,{revision:p.revision})).statusCode,204);assert.equal(db.prepare('SELECT COUNT(*) n FROM items').get().n,count);
- assert.equal(db.prepare('SELECT version FROM schema_version').get().version,19);assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
+ assert.equal(db.prepare('SELECT version FROM schema_version').get().version,20);assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
 });
 test('sorting is numeric/stable in both directions, size/progress work and preferences survive unavailable storage',()=>{
  const a={id:'a',title:'Track 2',createdAt:2,size:20,progress:{updatedAt:50}},b={id:'b',title:'Track 10',createdAt:1,size:10,progress:{completed:true,updatedAt:100}};

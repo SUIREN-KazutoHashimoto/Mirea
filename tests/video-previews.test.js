@@ -55,10 +55,10 @@ async function setup(t, customize) {
   return ctx;
 }
 
-test('video preview is deduplicated, silent, six seconds, bounded and protected by shelf membership', async t => {
+test('video preview is deduplicated, silent, ten seconds, bounded and protected by shelf membership', async t => {
   let conversions = 0;
   const ctx = await setup(t, media => ({ ...media, preview: (...args) => { conversions++; return media.preview(...args); } }));
-  const original = await makeMp4(join(ctx.dataDir, 'original.mp4'), { duration: 8, width: 640, height: 360, audio: true });
+  const original = await makeMp4(join(ctx.dataDir, 'original.mp4'), { duration: 30, width: 640, height: 360, audio: true });
   const item = await ctx.upload(original);
   const path = `/items/${item.id}/preview`;
   const viewer = await ctx.register('viewer'), outsider = await ctx.register('outsider');
@@ -71,7 +71,7 @@ test('video preview is deduplicated, silent, six seconds, bounded and protected 
   assert.ok(responses.every(response => [200, 202].includes(response.statusCode)));
   const ready = await ctx.wait(item.id);
   assert.equal(conversions, 1);
-  assert.equal(ready.maxDuration, 6);
+  assert.equal(ready.maxDuration, 10);
   assert.ok(ready.size <= MAX_PREVIEW_BYTES);
   const clip = await ctx.request('GET', `${path}/content`, viewer);
   assert.equal(clip.statusCode, 200);
@@ -87,7 +87,7 @@ test('video preview is deduplicated, silent, six seconds, bounded and protected 
   const duration = decoded.stderr.match(/Duration: (\d+):(\d+):(\d+\.\d+)/);
   assert.ok(duration);
   const seconds = Number(duration[1]) * 3600 + Number(duration[2]) * 60 + Number(duration[3]);
-  assert.ok(seconds >= 5.5 && seconds <= 6.1, `Preview duration: ${seconds}`);
+  assert.ok(seconds >= 9.5 && seconds <= 10.1, `Preview duration: ${seconds}`);
   const range = await ctx.request('GET', `${path}/content`, viewer, undefined, { range: 'bytes=5-20' });
   assert.equal(range.statusCode, 206);
   assert.deepEqual(range.rawPayload, clip.rawPayload.subarray(5, 21));

@@ -38,7 +38,7 @@ test('short videos use their available frames, including one-frame and low-frame
     const { directory, source, media } = await setup(t);
     const original = await makeMp4(source, clip);
     const thumbnail = join(directory, 'thumbnail.jpg'), preview = join(directory, 'preview.mp4');
-    assert.deepEqual(await media.thumbnail(source, 'video/mp4', thumbnail), { pageCount: 1 });
+    const chosen=await media.thumbnail(source, 'video/mp4', thumbnail);assert.equal(chosen.pageCount,1);assert(chosen.seekSeconds>=0);
     const metadata = await sharp(thumbnail).metadata();
     assert.equal(metadata.format, 'jpeg');
     assert.equal(metadata.width, 64);
@@ -64,7 +64,7 @@ test('out-of-range MP4 edits retry only empty results and generate real image/vi
   await media.thumbnail(source, 'video/mp4', thumbnail);
   assert.equal((await sharp(thumbnail).metadata()).format, 'jpeg');
   await media.preview(source, preview, 'video/mp4');
-  assert.ok(await inspectPreview(preview) < 0.5, 'do not pad a short video to six seconds');
+  assert.ok(await inspectPreview(preview) < 0.5, 'do not pad a short video to ten seconds');
   assert.deepEqual(await readFile(source), original);
 });
 

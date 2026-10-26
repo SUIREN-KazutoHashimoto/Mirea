@@ -12,13 +12,14 @@ import { isAudio } from './audio-types.js';
 import { audioPlaceholder } from './audio-art.js';
 import { mediaBinary } from './media-binary.js';
 
-import {customThumbnail} from './custom-thumbnails.js';
+import {recordVideoThumbnail} from './video-thumbnail.js';
+import {customThumbnail,ensureCustomThumbnail} from './custom-thumbnails.js';
 export const IMAGE_BOOK_MIME = 'application/vnd.mirea.image-book';
 export const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 export const imageExtension = mime => ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' })[mime];
-export const MAX_BOOK_PAGES = 500;
+export const MAX_BOOK_PAGES = 1000;
 export const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
-export const PREVIEW_SECONDS = 6;
+export const PREVIEW_SECONDS = 10;
 export const MAX_PREVIEW_BYTES = 2 * 1024 * 1024;
 const runFile = promisify(execFile);
 export const ffmpegPath = () => mediaBinary('ffmpeg', bundledFfmpeg);
@@ -114,14 +115,14 @@ export function createMediaProcessor() {
     validateImage(source) {
       return enqueue('validate-image',() => workerOperation({ source, mode: 'validate-image' }));
     },
-    preview(source, destination, mime) {
+    preview(source, destination, mime, {startSeconds=0}={}) {
       return enqueue('preview',async () => {
         await convertVideo(source, destination, mime, [
           '-t', String(PREVIEW_SECONDS), '-map', '0:v:0', '-an', '-sn', '-dn', '-map_metadata', '-1', '-map_chapters', '-1',
           '-vf', 'setpts=PTS-STARTPTS,fps=12:eof_action=pass,scale=480:480:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1',
           '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '30', '-maxrate', '600k', '-bufsize', '1200k',
           '-pix_fmt', 'yuv420p', '-threads', '1', '-movflags', '+faststart', '-f', 'mp4'
-        ], 'プレビュー', MAX_PREVIEW_BYTES);
+        ], 'プレビュー', MAX_PREVIEW_BYTES,Math.max(0,startSeconds));
       });
     },
     thumbnail(source, mime, destination, bundlePath) {
@@ -136,10 +137,10 @@ export function createMediaProcessor() {
           // Short clips still use their available frame; seek long clips before decoding.
           await convertVideo(source, destination, mime, [
             '-map', '0:v:0', '-frames:v', '1', '-an', '-threads', '1',
-            '-vf', 'setpts=PTS-STARTPTS,fps=12:eof_action=pass,thumbnail=2,scale=w=\'min(1024,iw)\':h=\'min(1024,ih)\':force_original_aspect_ratio=decrease',
+            '-vf', 'setpts=PTS-STARTPTS,scale=w=\'min(1024,iw)\':h=\'min(1024,ih)\':force_original_aspect_ratio=decrease',
             '-c:v', 'mjpeg', '-f', 'image2'
           ], 'サムネイル',Infinity,seek);
-          return { pageCount: 1 };
+          return { pageCount: 1,seekSeconds:seek };
         }
         return workerOperation({ source, destination, bundlePath, mode: mime === EPUB_MIME ? 'epub-thumbnail' : mime === 'application/pdf' ? 'pdf-thumbnail' : 'image-thumbnail' });
       });
@@ -150,7 +151,7 @@ export function createMediaProcessor() {
 export function createThumbnailStore(db, media, uploadDir, thumbnailDir) {
   const pending = new Map();
   const ensureThumbnail=async function(item) {
-    const override=customThumbnail(db,thumbnailDir,item.id);if(override)return override;
+    const override=customThumbnail(db,thumbnailDir,item.id);if(override)return ensureCustomThumbnail(db,thumbnailDir,media,item.id);
     const destination = join(thumbnailDir, `${item.id}.jpg`);
     try { await access(destination); return destination; } catch { /* create missing or legacy thumbnails */ }
     if (!pending.has(item.id)) {
@@ -162,6 +163,7 @@ export function createThumbnailStore(db, media, uploadDir, thumbnailDir) {
           const result = await media.thumbnail(source, item.mime_type, temporary);
           await rename(temporary, destination);
           const updated = db.prepare('UPDATE items SET thumbnail_ready=1, page_count=? WHERE id=?').run(item.mime_type === IMAGE_BOOK_MIME ? item.page_count : result.pageCount, item.id);
+          if(updated.changes&&item.mime_type.startsWith('video/'))recordVideoThumbnail(db,item.id,result.seekSeconds);
           if (!updated.changes) { await unlink(destination).catch(() => {}); throw httpError(404, 'コンテンツが見つかりません。'); }
           return destination;
         } catch (error) { await unlink(temporary).catch(() => {}); throw error; }
