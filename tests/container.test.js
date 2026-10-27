@@ -24,6 +24,9 @@ test('release and TrueNAS configurations pin image, isolate data and avoid privi
 test('image starts through the mandatory pre-thread sandbox and code is not runtime-owned',async()=>{
  const docker=await read('Dockerfile');assert(docker.includes('ENTRYPOINT ["/usr/local/bin/mirea-launch"]'));assert(docker.includes('/app/server/container-entry.mjs'));assert(!docker.includes('--chown=node:node'));assert(docker.includes('-Werror'));
  const launcher=await read('container/launcher.c');for(const v of ['PR_SET_NO_NEW_PRIVS','SYS_landlock_restrict_self','LANDLOCK_ACCESS_FS_TRUNCATE','LANDLOCK_ACCESS_FS_REFER','SYS_close_range','abi < 3','PR_GET_SECCOMP','execv(argv[1]'])assert(launcher.includes(v));
+ assert(launcher.includes('setenv("SQLITE_TMPDIR", "/tmp", 1)'));
+ assert(launcher.indexOf('setenv("SQLITE_TMPDIR"')<launcher.indexOf('SYS_landlock_restrict_self, fd'));
+ assert(docker.includes('SQLITE_TMPDIR=/tmp'));
  const entry=await read('server/container-entry.mjs');assert(entry.indexOf('await preflightTrueNas()')<entry.indexOf("await import('./index.js')"));
 });
 test('health probe is local-only, version checked, bounded and does not bypass TLS or follow redirects',async t=>{

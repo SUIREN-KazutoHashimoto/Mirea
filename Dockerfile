@@ -25,7 +25,7 @@ RUN gcc -std=c11 -O2 -Wall -Wextra -Werror -D_FORTIFY_SOURCE=2 -fstack-protector
 
 FROM node:24.19.0-bookworm-slim AS runtime
 ARG VCS_REF=unknown
-ARG VERSION=0.18.1-beta
+ARG VERSION=0.18.2-beta
 LABEL org.opencontainers.image.title="Mirea" \
       org.opencontainers.image.description="Shared video, audio and book library" \
       org.opencontainers.image.source="https://github.com/SUIREN-KazutoHashimoto/Mirea" \
@@ -33,7 +33,7 @@ LABEL org.opencontainers.image.title="Mirea" \
       org.opencontainers.image.revision=$VCS_REF \
       org.opencontainers.image.version=$VERSION
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates fontconfig fonts-noto-cjk ffmpeg && apt-get clean && rm -rf /var/lib/apt/lists/*
-ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/data XDG_CACHE_HOME=/tmp/mirea-cache
+ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/data XDG_CACHE_HOME=/tmp/mirea-cache SQLITE_TMPDIR=/tmp
 WORKDIR /app
 COPY --from=sandbox-build /build/mirea-launch /usr/local/bin/mirea-launch
 # Runtime users must not own executable code, including the default UID 1000.
