@@ -34,19 +34,18 @@ await new Promise((resolve,reject)=>{const worker=new Worker(code,{eval:true,exe
 // These are throwaway DBs under the isolated /data fixture, never real assets.
 const sqliteCascade=String.raw`
 import assert from 'node:assert/strict';
-import {DatabaseSync} from 'node:sqlite';
+import {openDatabase} from '/app/server/database.js';
 import {randomUUID} from 'node:crypto';
 import {rmSync} from 'node:fs';
 const legacy=process.argv[1]==='legacy',file='/data/sqlite-cascade-'+randomUUID()+'.sqlite';
 let db,phase='seed',reproduced=false;
 try{
- db=new DatabaseSync(file);db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; CREATE TABLE items(id TEXT PRIMARY KEY); CREATE TABLE image_pages(item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,page_number INTEGER NOT NULL,payload BLOB,PRIMARY KEY(item_id,page_number));');
- db.prepare('INSERT INTO items VALUES(?)').run('synthetic');
- db.exec('BEGIN IMMEDIATE');const insert=db.prepare('INSERT INTO image_pages VALUES(?,?,?)');for(let n=1;n<=1000;n++)insert.run('synthetic',n,Buffer.alloc(1024,7));db.exec('COMMIT');
+ db=openDatabase(file);db.exec("INSERT INTO users VALUES('u','cascade@example.invalid','Synthetic','not-a-login-hash',1);INSERT INTO shelves(id,name,created_at) VALUES('s','Synthetic',1);INSERT INTO series(id,shelf_id,title,created_at,updated_at) VALUES('r','s','Synthetic',1,1);INSERT INTO items(id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at,page_count) VALUES('synthetic','s','Synthetic','fixture.png','application/vnd.mirea.image-book',1,'u',1,1000);INSERT INTO series_items VALUES('r','synthetic',1,'');");
+ db.exec('BEGIN IMMEDIATE');const insert=db.prepare('INSERT INTO image_pages(item_id,page_number,filename,size,width,height) VALUES(?,?,?,?,?,?)');for(let n=1;n<=1000;n++)insert.run('synthetic',n,('page-'+n+'-').padEnd(240,'x'),1,1,1);db.exec('COMMIT');
  db.exec('PRAGMA cache_size=8');
  db.exec('BEGIN IMMEDIATE');phase='delete';
  try{db.prepare('DELETE FROM items WHERE id=?').run('synthetic');}
- catch(error){assert(legacy);assert.equal(phase,'delete');assert.equal(error.sqliteCode,14);db.exec('ROLLBACK');assert.equal(db.prepare('SELECT COUNT(*) n FROM items').get().n,1);assert.equal(db.prepare('SELECT COUNT(*) n FROM image_pages').get().n,1000);assert.equal(db.prepare('SELECT SUM(length(payload)) n FROM image_pages').get().n,1000*1024);reproduced=true;}
+ catch(error){assert(legacy);assert.equal(phase,'delete');assert.equal(error.errcode,14);db.exec('ROLLBACK');assert.equal(db.prepare('SELECT COUNT(*) n FROM items').get().n,1);assert.equal(db.prepare('SELECT COUNT(*) n FROM image_pages').get().n,1000);assert.equal(db.prepare("SELECT revision FROM series WHERE id='r'").get().revision,1);reproduced=true;}
  if(!reproduced){assert(!legacy,'Old temporary directory must reproduce SQLITE_CANTOPEN');db.exec('COMMIT');assert.equal(db.prepare('SELECT COUNT(*) n FROM items').get().n,0);assert.equal(db.prepare('SELECT COUNT(*) n FROM image_pages').get().n,0);}
  assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
  console.log(JSON.stringify({legacy,reproduced,deleted:!legacy,rollbackPreserved:reproduced}));
