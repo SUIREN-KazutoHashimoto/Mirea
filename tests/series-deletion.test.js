@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {createApp} from '../server/app.js';
 
-test('recursive deletion of 35 series and 101 published assets with retained upload records',async t=>{
+for(const withStoryboard of [false,true])test('recursive deletion of 35 series and 101 published assets with retained upload records'+(withStoryboard?' and large storyboard cascade':''),async t=>{
   const dataDir=await mkdtemp(join(tmpdir(),'mirea-delete-regression-'));
   const app=await createApp({dataDir,rateLimit:false}),db=new DatabaseSync(join(dataDir,'mirea.sqlite'));
   db.exec('PRAGMA foreign_keys=ON');
@@ -26,6 +26,7 @@ test('recursive deletion of 35 series and 101 published assets with retained upl
     const id=randomUUID(),parent=series[n%35].id,now=Date.now();
     db.prepare("INSERT INTO items(id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at) VALUES(?,?,?,'fixture.pdf','application/pdf',1,?,?)").run(id,shelf,'Asset '+n,owner.user.id,now);
     db.prepare('INSERT INTO series_items VALUES(?,?,?,?)').run(parent,id,Math.floor(n/35)+1,'');
+    if(withStoryboard&&n===0)db.prepare("INSERT INTO video_navigation(item_id,state,storyboard,updated_at) VALUES(?,'ready',?,?)").run(id,Buffer.alloc(8*1024*1024,7),now);
     db.prepare("INSERT INTO upload_sessions(id,shelf_id,user_id,session_id,title,files_json,chunk_size,state,created_at,expires_at,target_series_id,series_requested) VALUES(?,?,?,'synthetic',?,'[]',8388608,'complete',?,?,?,1)").run(id,shelf,owner.user.id,'Asset '+n,now,now+86400000,parent);
   }
   const root=(await req('GET','/series/'+series[0].id)).json().series,previewResponse=await req('GET','/series/'+root.id+'/delete-preview');
@@ -35,6 +36,7 @@ test('recursive deletion of 35 series and 101 published assets with retained upl
   assert.equal(response.statusCode,204,response.body+'\n'+errors.join('\n'));
   assert.equal(db.prepare('SELECT COUNT(*) n FROM series').get().n,0);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM items').get().n,0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM video_navigation').get().n,0);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM upload_sessions').get().n,0);
   assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
 });

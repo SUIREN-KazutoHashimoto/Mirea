@@ -20,7 +20,9 @@ try {
   await symlink('/var/tmp/mirea-sandbox-owned',join(fixture,'data/outside-link'));
   // Test setup is root only inside this throwaway container and exact temp mount.
   docker(['run','--rm','--user','0:0','--entrypoint','/usr/local/bin/node','-v',fixture+':/fixtures',image,'-e',`const fs=require('node:fs');for(const p of ['/fixtures/data','/fixtures/media'])fs.chownSync(p,9033,3036);`]);
-  const base=['run','--rm','--user','9033:3036','-e','DATA_DIR=/data','-e','MEDIA_DIR=/media','-v',fixture+'/data:/data','-v',fixture+'/media:/media'];
+  // Even a conflicting GUI variable must not redirect SQLite outside its
+  // existing writable scratch root; the launcher pins it before Node starts.
+  const base=['run','--rm','--user','9033:3036','-e','DATA_DIR=/data','-e','MEDIA_DIR=/media','-e','SQLITE_TMPDIR=/var/tmp','-v',fixture+'/data:/data','-v',fixture+'/media:/media'];
   // Deliberately use GUI defaults: writable container root, default bounding caps,
   // no Docker no-new-privileges flag. The unprivileged entrypoint must enforce it.
   const audit=await readFile(new URL('./check-sandbox-runtime.mjs',import.meta.url),'utf8');

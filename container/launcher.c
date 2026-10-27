@@ -70,6 +70,12 @@ int main(int argc, char **argv) {
     if (strcmp(getenv("DATA_DIR") ? getenv("DATA_DIR") : "", "/data") ||
         (getenv("MEDIA_DIR") && strcmp(getenv("MEDIA_DIR"), "/media")))
         fail("container storage must use /data and optional /media");
+    /* SQLite's Unix VFS otherwise tries /var/tmp before /tmp. Its access()
+     * probe can succeed even though Landlock denies the later open(), causing
+     * SQLITE_CANTOPEN only when a sort or cascade statement journal spills.
+     * Pin the existing allowed scratch root before SQLite/Node initialize;
+     * do not widen the sandbox or move journals into persistent media. */
+    if (setenv("SQLITE_TMPDIR", "/tmp", 1)) fail("cannot configure SQLite temporary storage");
     /* No inherited directory/file descriptors may bypass path enforcement.
      * close_range exists on every kernel capable of required Landlock ABI 3. */
     if (syscall(SYS_close_range, 3U, ~0U, 0)) fail("cannot close inherited descriptors");
