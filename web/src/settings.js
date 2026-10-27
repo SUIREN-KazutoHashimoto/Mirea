@@ -1,12 +1,14 @@
 import {mountPersonalExport} from './admin-downloads.js';
+import {sectionNavigation,bindSections} from './management-ui.js';
 
-export function openSettings({ dialog, api, esc, theme, apkUrl, version, onUpdated, onDeleted, manageShelf, manageDownloads,manageCatalog,manageDiagnostics, mountUpdates,mountPwa,flush=async()=>{} }) {
-  const node = dialog('設定', '<div class="modal-body settings-body"><p role="status">アカウントを確認しています…</p></div>', 'settings-modal');
+export function openSettings({ dialog, api, esc, theme, apkUrl, version, onUpdated, onDeleted, manageShelf, manageDownloads,manageCatalog,manageDiagnostics, mountUpdates,mountPwa,flush=async()=>{},isCurrent=()=>true }) {
+  const items=[['display','表示','テーマ・この端末'],['account','アカウント','名前・メール・パスワード'],['storage','保存とオフライン','作品・一覧・表紙'],['updates','アプリと更新','Android・PWA'],['records','記録と診断','書き出し・エラーの詳細'],['delete','アカウントの削除','退会について']];
+  const node = dialog('設定', `<div class="manager-layout settings-layout">${sectionNavigation(items,{esc,prefix:'settings',label:'設定の項目'})}<div class="modal-body manager-panel settings-body"><p role="status">アカウントを確認しています…</p></div></div>`, 'settings-modal');
   const body = node.querySelector('.modal-body');
   let disposed = false, disposeUpdates,disposeExport,disposePwa;
   node.addEventListener('close', () => { disposed = true; disposeUpdates?.();disposeExport?.();disposePwa?.(); }, { once: true });
   api('/account').then(account => {
-    if (disposed) return;
+    if (disposed||!isCurrent()) return;
     const user = account.user;
     const blocked = account.ownedShelves.filter(s => s.assetCount > 0 || s.memberCount > 1);
     body.innerHTML = `<section class="settings-section"><span class="eyebrow">YOUR PREFERENCES</span><h3>あなたに合う表示に。</h3><label>テーマ<select class="theme-select"><option value="system">端末に合わせる</option><option value="light">ライト</option><option value="dark">ダーク</option></select></label><p class="muted">テーマはこの端末に保存されます。本のページや動画の色は変更しません。</p></section>
@@ -20,6 +22,13 @@ export function openSettings({ dialog, api, esc, theme, apkUrl, version, onUpdat
       ${blocked.length ? `<div class="account-blockers"><strong>先に本棚の管理を引き継いでください</strong>${blocked.map(s => `<button class="text-button" type="button" data-manage-shelf="${esc(s.id)}">${esc(s.name)} · ${s.assetCount}作品／${s.memberCount}人 →</button>`).join('')}<small>自分だけの本棚なら、作品を削除して空にすることでも退会できます。</small></div>` : ''}
       ${account.lastServerAdmin ? '<p class="permission-note">最後のサーバー管理者です。先にサーバー管理メニューで別の管理者を指定する必要があります。</p>' : ''}
       <form class="account-delete"><label>確認のためメールアドレスを入力<input name="confirmEmail" type="email" autocomplete="off" required></label><label>現在のパスワード<input name="currentPassword" type="password" autocomplete="current-password" required maxlength="128"></label><label class="confirm-row"><input name="confirm" type="checkbox" required>削除内容を確認しました</label><p class="form-error" role="alert" hidden></p><button class="button danger" type="submit" ${blocked.length || account.lastServerAdmin ? 'disabled' : ''}>アカウントを完全に削除</button></form></section>`;
+    const section=selector=>body.querySelector(selector)?.closest('.settings-section');
+    const groups={display:[section('.theme-select')],account:[section('.account-form')],storage:[section('.manage-downloads')],updates:[section('.pwa-container'),section('.update-container, .apk-download')],records:[section('.personal-export-container'),section('.manage-diagnostics')],delete:[body.querySelector('.account-danger')]};
+    for(const [id,title,hint]of items){const page=document.createElement('section');page.id='settings-'+id;page.className='settings-page';page.dataset.managerPanel=id;page.hidden=true;const header=document.createElement('header');header.className='manager-page-heading';const h=document.createElement('h3');h.textContent=title;const p=document.createElement('p');p.textContent=hint;header.append(h,p);page.append(header,...groups[id].filter(Boolean));body.append(page);}
+    const display=groups.display[0];display.querySelector('.eyebrow')?.remove();display.querySelector('h3')?.remove();
+    for(const heading of body.querySelectorAll('.settings-section h3')){const h=document.createElement('h4');h.textContent=heading.textContent;heading.replaceWith(h);}
+    const identity=body.querySelector('.account-form').closest('section').querySelector('code');if(identity){const details=document.createElement('details'),summary=document.createElement('summary');details.className='account-uuid';summary.textContent='ユーザーUUID';details.append(summary,identity.cloneNode(true));identity.parentElement.replaceWith(details);}
+    bindSections(node,{items,initial:'display'});
     body.querySelector('.manage-diagnostics').onclick=()=>manageDiagnostics?.();
     const themeSelect = body.querySelector('.theme-select'); themeSelect.value = theme.value; themeSelect.onchange = () => theme.set(themeSelect.value);
     body.querySelector('.manage-downloads').onclick=()=>{node.close();manageDownloads?.();};
@@ -29,7 +38,7 @@ export function openSettings({ dialog, api, esc, theme, apkUrl, version, onUpdat
     if (mountUpdates) disposeUpdates = mountUpdates(body.querySelector('.update-container'), { onClose: () => node.close() });
     body.querySelectorAll('[data-manage-shelf]').forEach(button => { button.onclick = () => { node.close(); manageShelf(button.dataset.manageShelf); }; });
     const handle = (selector, action) => { const form = body.querySelector(selector); form.onsubmit = async event => {
-      event.preventDefault(); const button = form.querySelector('button'), error = form.querySelector('.form-error'); button.disabled = true; error.hidden = true;
+      event.preventDefault();if(!isCurrent()){node.close();return;} const button = form.querySelector('button'), error = form.querySelector('.form-error'); button.disabled = true; error.hidden = true;
       try { await action(form); } catch (err) { if (!disposed) { error.textContent = err.message; error.hidden = false; button.disabled = false; } }
     }; };
     handle('.account-form', async form => {

@@ -8,10 +8,10 @@ import { createResumableUpload } from './resumable-upload.js';
 import { beginUpdateActivity } from './update-busy.js';
 import {nativeTransfersAvailable,nativeUpload,configureNativeTransfers,invalidateTransfers} from './native-transfers.js';
 import {ciphertextHash} from './download-core.js';
-import {stopTransfers} from './transfer-manager.js';
+import {stopTransfers,clearTransferRecords} from './transfer-manager.js';
 
 configureNativeTransfers(()=>session?.token?{origin:endpoint,token:session.token,userId:session.user.id}:null);
-function invalidateTransferContext(){stopTransfers();if(session?.user.id)ciphertextHash(new TextEncoder().encode((endpoint||location.origin)+'|'+session.user.id)).then(invalidateTransfers).catch(()=>{});}
+function invalidateTransferContext(){stopTransfers();clearTransferRecords();if(session?.user.id)ciphertextHash(new TextEncoder().encode((endpoint||location.origin)+'|'+session.user.id)).then(invalidateTransfers).catch(()=>{});}
 export const native = Capacitor.isNativePlatform();
 let savedEndpoint;try{savedEndpoint=localStorage.getItem('mirea.server');}catch{}
 let endpoint = native ? (savedEndpoint || import.meta.env.VITE_API_URL || '') : '';

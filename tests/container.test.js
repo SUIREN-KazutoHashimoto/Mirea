@@ -16,7 +16,7 @@ test('release and TrueNAS configurations pin image, isolate data and avoid privi
  const docker=await read('Dockerfile');assert.equal(docker.match(/^ARG VERSION=(.+)$/m)?.[1].trim(),pkg.version,'Default container version label must match package.json');
  for(const path of ['compose.release.yaml','deploy/truenas/compose.yaml']){const yaml=await read(path);for(const v of ['ghcr.io/suiren-kazutohashimoto/mirea:'+pkg.version.replace('-beta','beta'),'user: "1000:1000"','read_only: true','no-new-privileges:true','cap_drop:','stop_grace_period: 2m','DATA_DIR: /data','host_ip:'])assert(yaml.includes(v),path+' '+v);assert(!yaml.includes('privileged: true'));assert(!yaml.includes('docker.sock'));assert(!yaml.includes(':latest'));}
  const nas=await read('deploy/truenas/compose.yaml');for(const v of ['create_host_path: false','host_ip: 127.0.0.1','mem_limit: 4g','pids_limit: 256','published: "13000"'])assert(nas.includes(v));
- const ci=await read('.github/workflows/verify.yml');for(const v of ['needs: [web-and-api, container, android]','scripts/check-container.mjs prepare','scripts/check-container.mjs verify','--force-recreate','packages: write'])assert(ci.includes(v));
+  const ci=await read('.github/workflows/verify.yml');for(const v of ['needs: [web-and-api, web-ui, container, android]','scripts/check-container.mjs prepare','scripts/check-container.mjs verify','--force-recreate','packages: write','pnpm test:ui'])assert(ci.includes(v));
  assert(ci.includes('mirea /usr/local/bin/node --input-type=module < scripts/check-storage-runtime.mjs'));
  assert(ci.includes('scripts/check-container-sandbox.mjs'));
 });
