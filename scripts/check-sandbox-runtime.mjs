@@ -29,7 +29,8 @@ const child=spawnSync(process.execPath,['-e',code],{encoding:'utf8'});assert.equ
 await new Promise((resolve,reject)=>{const worker=new Worker(code,{eval:true,execArgv:[]});worker.once('error',reject);worker.once('exit',code=>code===0?resolve():reject(Error('worker escaped sandbox')));});
 // Reproduce the old Unix VFS /var/tmp selection in a fresh, still-sandboxed
 // child, then run the SAME cascade with the launcher's /tmp environment.
-// A storyboard-sized BLOB makes the statement journal exceed its RAM buffer.
+// Many image-page rows and a bounded small cache force the cascade's statement
+// journal past its RAM buffer (freeing one BLOB alone need not dirty pages).
 // These are throwaway DBs under the isolated /data fixture, never real assets.
 const sqliteCascade=String.raw`
 import assert from 'node:assert/strict';
@@ -39,13 +40,14 @@ import {rmSync} from 'node:fs';
 const legacy=process.argv[1]==='legacy',file='/data/sqlite-cascade-'+randomUUID()+'.sqlite';
 let db,phase='seed',reproduced=false;
 try{
- db=new DatabaseSync(file);db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; CREATE TABLE items(id TEXT PRIMARY KEY); CREATE TABLE video_navigation(item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,storyboard BLOB);');
+ db=new DatabaseSync(file);db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; CREATE TABLE items(id TEXT PRIMARY KEY); CREATE TABLE image_pages(item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,page_number INTEGER NOT NULL,payload BLOB,PRIMARY KEY(item_id,page_number));');
  db.prepare('INSERT INTO items VALUES(?)').run('synthetic');
- db.prepare('INSERT INTO video_navigation VALUES(?,?)').run('synthetic',Buffer.alloc(8*1024*1024,7));
+ db.exec('BEGIN IMMEDIATE');const insert=db.prepare('INSERT INTO image_pages VALUES(?,?,?)');for(let n=1;n<=1000;n++)insert.run('synthetic',n,Buffer.alloc(1024,7));db.exec('COMMIT');
+ db.exec('PRAGMA cache_size=8');
  db.exec('BEGIN IMMEDIATE');phase='delete';
  try{db.prepare('DELETE FROM items WHERE id=?').run('synthetic');}
- catch(error){assert(legacy);assert.equal(phase,'delete');assert.equal(error.sqliteCode,14);db.exec('ROLLBACK');assert.equal(db.prepare('SELECT COUNT(*) n FROM items').get().n,1);assert.equal(db.prepare('SELECT length(storyboard) n FROM video_navigation').get().n,8*1024*1024);reproduced=true;}
- if(!reproduced){assert(!legacy,'Old temporary directory must reproduce SQLITE_CANTOPEN');db.exec('COMMIT');assert.equal(db.prepare('SELECT COUNT(*) n FROM items').get().n,0);assert.equal(db.prepare('SELECT COUNT(*) n FROM video_navigation').get().n,0);}
+ catch(error){assert(legacy);assert.equal(phase,'delete');assert.equal(error.sqliteCode,14);db.exec('ROLLBACK');assert.equal(db.prepare('SELECT COUNT(*) n FROM items').get().n,1);assert.equal(db.prepare('SELECT COUNT(*) n FROM image_pages').get().n,1000);assert.equal(db.prepare('SELECT SUM(length(payload)) n FROM image_pages').get().n,1000*1024);reproduced=true;}
+ if(!reproduced){assert(!legacy,'Old temporary directory must reproduce SQLITE_CANTOPEN');db.exec('COMMIT');assert.equal(db.prepare('SELECT COUNT(*) n FROM items').get().n,0);assert.equal(db.prepare('SELECT COUNT(*) n FROM image_pages').get().n,0);}
  assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
  console.log(JSON.stringify({legacy,reproduced,deleted:!legacy,rollbackPreserved:reproduced}));
 }finally{db?.close();for(const suffix of ['','-wal','-shm'])rmSync(file+suffix,{force:true});}
