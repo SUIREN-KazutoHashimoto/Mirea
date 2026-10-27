@@ -69,6 +69,7 @@ import './playback-dock.css';
 import {createPwaInstall,mountPwaInstall} from './pwa-install.js';
 import './pwa.css';
 import './forms.css';
+import './management.css';
 
 function updateTransferCount(){const badge=document.querySelector('.transfer-count');if(badge)badge.textContent=transferRows().filter(r=>r.state==='running').length||'';}
 window.addEventListener('mirea:transferchange',updateTransferCount);
@@ -78,7 +79,7 @@ const finishAppLaunch=showAppLaunch({native});
 const pwa=createPwaInstall({native,ensureWorker:ensureDownloadWorker});
 if(!native&&!import.meta.env.DEV)void pwa.prepare();
 let disposeAuthPwa;
-const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.18.2beta/mirea-0.18.2beta-android.apk';
+const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.19.0beta/mirea-0.19.0beta-android.apk';
 const currentApkUrl=()=>config.androidApkUrl?.startsWith('/api/v1/app-updates/')?absoluteUrl(config.androidApkUrl):config.androidApkUrl||defaultApkUrl;
 
 const root = document.querySelector('#app');
@@ -192,6 +193,7 @@ function dialog(title, body, extraClass = '') {
   videoPreviews?.setPaused('dialog', true);
   const node = document.createElement('dialog');
   node.className = `modal ${extraClass}`;
+  node.setAttribute('aria-label',title);
   node.innerHTML = `<div class="modal-header"><h2>${esc(title)}</h2><button class="icon-button close-modal" aria-label="閉じる">${icon('close')}</button></div>${body}`;
   document.body.append(node);
   node.querySelector('.close-modal').onclick = () => node.close();
@@ -293,7 +295,7 @@ function renderShell() {
   const seriesContext=document.createElement('div');seriesContext.className='series-context';seriesContext.hidden=true;document.querySelector('.collection-caption').before(seriesContext);
   document.querySelector('#add-series').onclick=()=>manageSeries(true);
   document.querySelector('#recent-history').onclick=openRecentHistory;
-  document.querySelector('#transfer-center').onclick=()=>openTransferCenter({dialog,esc});
+  document.querySelector('#transfer-center').onclick=()=>openTransferCenter({dialog,esc,onDownloads:openDownloadManager});
   updateTransferCount();
   const adminAnchor=document.querySelector('#nav-settings'),actor=getSession();
   if(!isOfflineSession())api('/admin/access',{signal:AbortSignal.timeout(2500)}).then(access=>{
@@ -318,10 +320,10 @@ function renderShell() {
 }
 
 function showSettings() {
-  const actor=getSession(),server=getEndpoint();
-  const current=()=>getSession()===actor && getEndpoint()===server;
+  const actor=getSession(),server=getEndpoint(),revision=sessionRevision();
+  const current=()=>sessionRevision()===revision&&getSession()?.user.id===actor?.user.id&&getSession()?.token===actor?.token&&getEndpoint()===server;
   if(offlineLibrary){openDownloadManager();return;}
-  openSettings({manageDiagnostics:()=>openErrorDiagnostics(dialog), dialog, api, esc, theme, flush:flushAnalytics, apkUrl: currentApkUrl(), version: config.version || '0.4.4-beta', manageShelf: id => openMembers(id), manageDownloads:openDownloadManager,manageCatalog:container=>{container.innerHTML='<button id="download-catalog" class="button secondary"><span>全アセットの一覧・表紙を保存</span></button><p id="catalog-download-status" role="status"></p>';const button=container.querySelector('button');button.disabled=offlineLibrary;button.onclick=downloadAllMetadata;}, mountUpdates: native ? mountAppUpdates : null, mountPwa:native?null:container=>mountPwaInstall(container,pwa),
+  openSettings({isCurrent:current,manageDiagnostics:()=>openErrorDiagnostics(dialog), dialog, api, esc, theme, flush:flushAnalytics, apkUrl: currentApkUrl(), version: config.version || '0.4.4-beta', manageShelf: id => openMembers(id), manageDownloads:openDownloadManager,manageCatalog:container=>{container.innerHTML='<button id="download-catalog" class="button secondary"><span>全アセットの一覧・表紙を保存</span></button><p id="catalog-download-status" role="status"></p>';const button=container.querySelector('button');button.disabled=offlineLibrary;button.onclick=downloadAllMetadata;}, mountUpdates: native ? mountAppUpdates : null, mountPwa:native?null:container=>mountPwaInstall(container,pwa),
     onUpdated: async result => { if(!current())return;closeDownloads();await setSession(result);await stopAnalytics().catch(()=>{});if(getSession()!==result || getEndpoint()!==server)return;await startAnalytics();if(getSession()!==result || getEndpoint()!==server)return;renderShell();await refresh();toast('アカウント情報を更新しました。他の端末では再ログインが必要です。'); },
     onDeleted: async () => { if(!current())return;const results=await Promise.allSettled([clearAccountDownloads(),clearAccountAnalytics(),clearAccountProgress()]);if(!current())return;const cacheError=results.some(r=>r.status==='rejected');clearThumbnails();setSession(null);loadGeneration++;shelves=[];items=[];activeShelf=null;renderAuth();toast(cacheError?'アカウントを削除しました。端末内データを消去できませんでした。ブラウザーのサイトデータを削除してください。':'アカウントと個人の記録、この端末のダウンロードを削除しました。'); }
   });

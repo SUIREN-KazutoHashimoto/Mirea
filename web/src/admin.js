@@ -1,17 +1,19 @@
 import {saveBackup} from './admin-downloads.js';
-import {getSession} from './api.js';
+import {getSession,sessionRevision} from './api.js';
 import {mountAdminJobs} from './admin-jobs-ui.js';
 import {mountAdminCleanup} from './admin-cleanup-ui.js';
 import {mountAdminReset} from './admin-reset-ui.js';
 
 const states={queued:'待機中',running:'実行中',processing:'処理中',uploading:'受信中',complete:'完了',failed:'失敗',cancelled:'取消',rolled_back:'旧版へ復旧'};
-const kinds={'validate-image':'画像の検証',thumbnail:'サムネイル',preview:'動画プレビュー',transcode:'配信画質・HLS',navigation:'動画ナビゲーション',backup_metadata:'メタデータバックアップ',backup_full:'全体バックアップ'};
 export async function openAdmin({dialog,api,esc,bytes,onStatistics,onReset}){
-  const actor=getSession();const access=await api('/admin/access');if(!access.isServerAdmin||getSession()!==actor)throw new Error('サーバー管理者のみ利用できます。');
-  const tabs=[['overview','概要'],['jobs','ジョブ・再生成'],['processing','転送・後処理設定'],['cleanup','ファイル整理'],['users','アカウント'],['shelves','本棚の権限'],['statistics','統計'],['backups','バックアップ'],['updates','サーバー更新'],['audit','管理操作の記録'],['reset','データのリセット']];
-  const node=dialog('サーバー管理',`<div class="admin-layout"><nav class="admin-nav" aria-label="サーバー管理"><span class="eyebrow">SERVER ADMINISTRATION</span>${tabs.map(([id,label])=>`<button type="button" data-admin-tab="${id}" aria-current="false">${label}</button>`).join('')}</nav><section class="admin-panel" aria-live="polite"></section></div>`,'admin-modal');
+  const actor=getSession(),actorRevision=sessionRevision();
+  const sameActor=()=>sessionRevision()===actorRevision&&getSession()?.user.id===actor?.user.id&&getSession()?.token===actor?.token;
+  const access=await api('/admin/access');if(!access.isServerAdmin||!sameActor())throw new Error('サーバー管理者のみ利用できます。');
+  const tabs=[['overview','概要'],['jobs','ジョブ管理'],['processing','処理の設定'],['cleanup','ファイル整理'],['users','アカウント'],['shelves','本棚の権限'],['statistics','統計'],['backups','バックアップ'],['updates','サーバー更新'],['audit','管理操作の記録'],['reset','データのリセット']];
+  const groups={overview:'運用',users:'アカウント・本棚',backups:'保守'};
+  const node=dialog('サーバー管理',`<div class="admin-layout manager-layout"><nav class="admin-nav manager-nav" aria-label="サーバー管理">${tabs.map(([id,label])=>`${groups[id]?`<span class="manager-nav-group">${groups[id]}</span>`:''}<button type="button" data-admin-tab="${id}" aria-current="false">${label}</button>`).join('')}</nav><label class="manager-mobile-nav admin-mobile-nav">管理項目<select class="admin-section-select">${tabs.map(([id,label])=>`<option value="${id}">${label}</option>`).join('')}</select></label><section class="admin-panel manager-panel" aria-busy="false"></section></div>`,'admin-modal');
   const panel=node.querySelector('.admin-panel');let active='',revision=0,disposed=false,poll;
-  const current=()=>!disposed&&getSession()===actor;
+  const current=()=>!disposed&&sameActor();
   node.addEventListener('close',()=>{disposed=true;revision++;clearInterval(poll);},{once:true});
   const status=error=>{if(current()){let box=panel.querySelector('.admin-status');if(!box){box=document.createElement('p');box.className='admin-status';box.setAttribute('role','status');panel.append(box);}box.textContent=error.message??error;}};
   function confirm(title,description,fields,submit,{password=true}={}){
@@ -22,9 +24,8 @@ export async function openAdmin({dialog,api,esc,bytes,onStatistics,onReset}){
     };
   }
   const action=(button,work)=>{button.onclick=async()=>{button.disabled=true;try{await work();}catch(error){status(error);}finally{if(current())button.disabled=false;}};};
-  const jobCard=job=>`<article class="admin-card"><div class="admin-card-title"><strong>${esc(job.title??kinds[job.kind]??job.kind)}</strong><span>${esc(states[job.state]??job.state)}</span></div><small>${esc(job.id)}${job.assetId?' · '+esc(job.assetId):''}</small>${job.progress?.stage||job.processing?.stage?`<small>${esc(job.progress?.stage??job.processing?.stage)} · ${Math.round(job.progress?.percent??job.processing?.percent??0)}%</small>`:''}${job.error?`<p>${esc(job.error)}</p>`:''}${job.state==='failed'&&job.upload?`<button class="button secondary" data-retry-upload="${esc(job.id)}">原本から再試行</button>`:''}</article>`;
   async function select(tab){
-    if(!current())return;active=tab;const generation=++revision;clearInterval(poll);panel.innerHTML='<p class="admin-loading">読み込んでいます…</p>';
+    if(!current()||!tabs.some(([id])=>id===tab))return;active=tab;const generation=++revision;clearInterval(poll);panel.innerHTML='<p class="admin-loading" role="status">読み込んでいます…</p>';panel.setAttribute('aria-busy','true');panel.scrollTop=0;node.querySelector('.admin-section-select').value=tab;
     node.querySelectorAll('[data-admin-tab]').forEach(b=>b.setAttribute('aria-current',String(b.dataset.adminTab===tab)));
     const valid=()=>current()&&generation===revision;
     try{
@@ -75,7 +76,7 @@ export async function openAdmin({dialog,api,esc,bytes,onStatistics,onReset}){
       }else if(tab==='audit'){
         const data=await api('/admin/audit');if(!valid())return;panel.innerHTML='<h3>管理操作の記録（最新100件）</h3>'+data.entries.map(row=>`<article class="admin-card admin-detail"><strong>${esc(row.action)}</strong><small>${new Date(row.createdAt).toLocaleString()} · 実行者 ${esc(row.actorId)} · 対象 ${esc(row.targetId)}</small><pre>${esc(row.detail)}</pre></article>`).join('');
       }
-    }catch(error){if(valid())panel.textContent=error.message;}
+    }catch(error){if(valid())panel.textContent=error.message;}finally{if(valid())panel.setAttribute('aria-busy','false');}
   }
-  node.querySelectorAll('[data-admin-tab]').forEach(button=>button.onclick=()=>select(button.dataset.adminTab));await select('overview');return node;
+  node.querySelectorAll('[data-admin-tab]').forEach(button=>button.onclick=()=>select(button.dataset.adminTab));node.querySelector('.admin-section-select').onchange=event=>select(event.currentTarget.value);await select('overview');return node;
 }

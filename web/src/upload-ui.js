@@ -13,6 +13,13 @@ export function openUploadDialog({dialog,api,upload,shelves,activeShelf,initialS
   const folderControls=document.createElement('div');folderControls.className='folder-upload-controls';folderControls.innerHTML='<button class="button secondary choose-upload-folder" type="button">フォルダを丸ごと選択</button><input type="file" name="folder" aria-label="アップロードするフォルダ" webkitdirectory multiple hidden><small class="upload-folder-note">フォルダはシリーズ、入れ子は子シリーズ、各ファイルは1アセットとして追加します。空フォルダは含みません。設定された件数上限・16階層。複数フォルダは繰り返し選択して追加できます。シリーズの選択は親の指定になります。</small>';zone.after(folderControls);
   const retain=node.querySelector('.retain-original'),retention=node.querySelector('.retention-note');
   node.querySelector('.upload-series-target').after(retain);retain.after(retention);retention.after(submit);folderControls.after(selection);
+  node.classList.add('manager-upload');
+  const destination=document.createElement('section'),filesSection=document.createElement('section');destination.className='upload-form-section';filesSection.className='upload-form-section';
+  destination.innerHTML='<h3><span>1</span> 追加先と保存方法</h3>';filesSection.innerHTML='<h3><span>2</span> ファイルを選択</h3>';
+  const shelfLabel=form.elements.shelf.closest('label'),seriesTarget=node.querySelector('.upload-series-target');form.insertBefore(destination,shelfLabel);destination.append(shelfLabel,seriesTarget,retain);
+  const retentionHelp=document.createElement('details');retentionHelp.className='upload-help';retentionHelp.innerHTML='<summary>原本の取り扱い</summary>';retentionHelp.append(retention);destination.append(retentionHelp,submit,errorBox,progressBox);
+  form.insertBefore(filesSection,zone);filesSection.append(zone,folderControls,selection);
+  const transferHelp=document.createElement('details');transferHelp.className='upload-help';transferHelp.innerHTML='<summary>転送とサーバー後処理について</summary>';transferHelp.append(node.querySelector('.upload-batch-note'));filesSection.append(transferHelp);
   const folderInput=form.elements.folder,folderButton=folderControls.querySelector('button');
   const urls=new Map(),alive=()=>!disposed&&node.isConnected&&isCurrent();
   const scanStatus=document.createElement('p');scanStatus.className='upload-scan-status';scanStatus.setAttribute('role','status');scanStatus.setAttribute('aria-live','polite');scanStatus.hidden=true;zone.before(scanStatus);

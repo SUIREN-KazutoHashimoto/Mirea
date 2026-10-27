@@ -92,6 +92,9 @@ test('thumbnail regeneration is durable, requires admin warning acknowledgement 
   assert.equal((await c.req('POST',`/admin/assets/${id}/regenerate`,c.reader,{acknowledgeCost:true,kind:'thumbnail'})).statusCode,403);
   const r=await c.req('POST',`/admin/assets/${id}/regenerate`,c.admin,{acknowledgeCost:true,kind:'thumbnail'});assert.equal(r.statusCode,202,r.body);
   const job=await c.job(r.json().job.id);assert.equal(job.state,'complete',job.error);
+  const history=(await c.req('GET','/admin/jobs',c.admin)).json().history.jobs.find(row=>row.id===job.id);
+  assert.equal(history.title,'Private title');assert.equal(history.shelf,'Private shelf');assert.equal(history.assetId,id);
+  assert(!('requested_by' in history)&&!('filename' in history));
   assert((await readFile(join(c.dataDir,'thumbnails',id+'.jpg'))).length>100);assert.deepEqual(await readFile(join(c.dataDir,'uploads',id)),before);
   assert.equal((await c.req('POST',`/admin/assets/${id}/regenerate`,c.admin,{acknowledgeCost:true,kind:'transcode'})).statusCode,400);
 });

@@ -7,6 +7,9 @@ import {openUploadDialog} from '../web/src/upload-ui.js';
 class Element {
  constructor(ast,parent=null){this.tag=ast.nodeName;this.parent=parent;this.attrs=new Map((ast.attrs??[]).map(a=>[a.name,a.value]));this.children=(ast.childNodes??[]).map(n=>new Element(n,this));this.dataset=Object.fromEntries([...this.attrs].filter(([k])=>k.startsWith('data-')).map(([k,v])=>[k.slice(5).replace(/-([a-z])/g,(_,c)=>c.toUpperCase()),v]));this.hidden=this.attrs.has('hidden');this.disabled=this.attrs.has('disabled');this.checked=this.attrs.has('checked');this.classList={add(){},remove(){}};this.text=ast.value??'';this.listeners=new Map();}
  get isConnected(){return this.parent?this.parent.isConnected:this.live===true;}
+ closest(selector){for(let node=this;node;node=node.parent)if(node.matches(selector))return node;return null;}
+ insertBefore(element,before){if(element.parent){const siblings=element.parent.children;siblings.splice(siblings.indexOf(element),1);}const index=before?this.children.indexOf(before):this.children.length;assert(index>=0);element.parent=this;this.children.splice(index,0,element);return element;}
+ append(...elements){for(const element of elements)this.insertBefore(element,null);}
  after(element){const siblings=this.parent.children;if(element.parent){const old=element.parent.children.indexOf(element);if(old>=0)element.parent.children.splice(old,1);}const index=siblings.indexOf(this);element.parent=this.parent;siblings.splice(index+1,0,element);}
  before(element){const siblings=this.parent.children;const index=siblings.indexOf(this);element.parent=this.parent;siblings.splice(index,0,element);}
  get innerHTML(){return '';}set innerHTML(html){this.children=parseFragment(html).childNodes.map(n=>new Element(n,this));}
