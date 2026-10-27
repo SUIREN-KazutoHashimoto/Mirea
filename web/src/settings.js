@@ -1,6 +1,6 @@
 import {mountPersonalExport} from './admin-downloads.js';
 
-export function openSettings({ dialog, api, esc, theme, apkUrl, version, onUpdated, onDeleted, manageShelf, manageDownloads,manageCatalog, mountUpdates,mountPwa,flush=async()=>{} }) {
+export function openSettings({ dialog, api, esc, theme, apkUrl, version, onUpdated, onDeleted, manageShelf, manageDownloads,manageCatalog,manageDiagnostics, mountUpdates,mountPwa,flush=async()=>{} }) {
   const node = dialog('設定', '<div class="modal-body settings-body"><p role="status">アカウントを確認しています…</p></div>', 'settings-modal');
   const body = node.querySelector('.modal-body');
   let disposed = false, disposeUpdates,disposeExport,disposePwa;
@@ -15,10 +15,12 @@ export function openSettings({ dialog, api, esc, theme, apkUrl, version, onUpdat
       <section class="settings-section"><h3>閲覧記録のダウンロード</h3><div class="personal-export-container"></div></section>
       ${mountPwa?'<section class="settings-section"><h3>ブラウザーアプリ（PWA）</h3><div class="pwa-container"></div></section>':''}
       <section class="settings-section"><h3>Androidアプリ</h3>${mountUpdates ? '<div class="update-container"></div>' : `<p class="muted">サーバー ${esc(version)} · 専用署名版APKです。旧テスト署名版からの初回移行は手動で行ってください。署名が異なるAPKは上書きできません。アンインストールすると端末内ダウンロードは失われます。</p><a class="button secondary apk-download" href="${esc(apkUrl)}" target="_blank" rel="noopener noreferrer">Android版APKをダウンロード ↗</a>`}</section>
+      <section class="settings-section"><h3>エラーの詳細</h3><p class="muted">この画面で発生したエラーの、個人情報を含まない診断情報を確認・コピーできます。再読み込みやアカウント／接続先の変更で消去します。</p><button type="button" class="button secondary manage-diagnostics">エラーの詳細を開く</button></section>
       <section class="settings-section account-danger"><h3>アカウントを削除</h3><p>アカウント・個人の閲覧記録・続き位置・暗号化ダウンロードの登録と、この端末の保存データを削除します。他の端末の暗号化データは開けなくなりますが、物理的な消去は各端末で行ってください。共有本棚の作品は残り、アップロード者の紐付けだけが外れます。自分だけの空の本棚も削除します。元に戻せません。</p>
       ${blocked.length ? `<div class="account-blockers"><strong>先に本棚の管理を引き継いでください</strong>${blocked.map(s => `<button class="text-button" type="button" data-manage-shelf="${esc(s.id)}">${esc(s.name)} · ${s.assetCount}作品／${s.memberCount}人 →</button>`).join('')}<small>自分だけの本棚なら、作品を削除して空にすることでも退会できます。</small></div>` : ''}
       ${account.lastServerAdmin ? '<p class="permission-note">最後のサーバー管理者です。先にサーバー管理メニューで別の管理者を指定する必要があります。</p>' : ''}
       <form class="account-delete"><label>確認のためメールアドレスを入力<input name="confirmEmail" type="email" autocomplete="off" required></label><label>現在のパスワード<input name="currentPassword" type="password" autocomplete="current-password" required maxlength="128"></label><label class="confirm-row"><input name="confirm" type="checkbox" required>削除内容を確認しました</label><p class="form-error" role="alert" hidden></p><button class="button danger" type="submit" ${blocked.length || account.lastServerAdmin ? 'disabled' : ''}>アカウントを完全に削除</button></form></section>`;
+    body.querySelector('.manage-diagnostics').onclick=()=>manageDiagnostics?.();
     const themeSelect = body.querySelector('.theme-select'); themeSelect.value = theme.value; themeSelect.onchange = () => theme.set(themeSelect.value);
     body.querySelector('.manage-downloads').onclick=()=>{node.close();manageDownloads?.();};
     manageCatalog?.(body.querySelector('.catalog-save-controls'));

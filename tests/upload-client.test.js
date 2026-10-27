@@ -15,6 +15,7 @@ test('web upload client recovers a lost part response and resumes received parts
   const oldStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
   const oldXhr = Object.getOwnPropertyDescriptor(globalThis, 'XMLHttpRequest');
   let mode = 'lose-response', lost = false, outage = false;
+  let firstStored;const firstStoredPromise=new Promise(resolve=>{firstStored=resolve;});
   const requests = [];
   class XHR {
     upload = {};
@@ -26,15 +27,19 @@ test('web upload client recovers a lost part response and resumes received parts
     async send(body) {
       const part = Number(this.url.split('/').at(-1));
       requests.push(part);
-      if (mode === 'outage' && (outage || part === 1)) { outage = true; this.onerror(); return; }
+      // Protocol v2 has several in-flight hashes/transfers. Make the fixture's
+      // outage occur after part zero is durably received, not whichever hash
+      // happens to finish first on a particular OS or runner.
+      if (mode === 'outage' && part !== 0) { await firstStoredPromise;outage = true; this.onerror(); return; }
       try {
         const response = await fetch(this.url, { method: this.method, headers: this.headers, body, signal: this.controller.signal });
         this.status = response.status;
         this.responseText = await response.text();
+        if(mode==='outage'&&part===0)firstStored();
         this.upload.onprogress?.({ lengthComputable: true, loaded: body.size });
-        if (mode === 'lose-response' && !lost) { lost = true; this.onerror(); return; }
+        if (mode === 'lose-response' && part === 0 && !lost) { lost = true; this.onerror(); return; }
         this.onload();
-      } catch { if (!this.controller.signal.aborted) this.onerror(); }
+      } catch { if(mode==='outage'&&part===0)firstStored();if (!this.controller.signal.aborted) this.onerror(); }
     }
   }
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {

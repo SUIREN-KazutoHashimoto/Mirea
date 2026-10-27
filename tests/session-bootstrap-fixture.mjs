@@ -3,6 +3,7 @@ import {readFile} from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import {createLoginStore} from '../web/src/session-store.js';
 import {connectionBudget} from '../web/src/connection-budget.js';
+import {requestError,clearDiagnostics} from '../web/src/error-diagnostics.js';
 const source=await readFile(new URL('../web/src/api.js',import.meta.url),'utf8'),origin='https://mirea.test',user={id:'owner',name:'Owner',email:'owner@test'},saved={user,token:'a'.repeat(43),expiresAt:Date.now()+86400000};
 async function scenario({native=true,cached=true,online=true,status,bodyDelay=false,loggedOut=false,temporarySession=false,reconnect=false}={}){
   let clears=0,requests=0,connected=false;const storage=new Map(),window=new EventTarget();
@@ -19,6 +20,7 @@ async function scenario({native=true,cached=true,online=true,status,bodyDelay=fa
   };
   const context=createContext({fetch,console,AbortSignal,AbortController,setTimeout,clearTimeout,URL,Response,TextEncoder,crypto,Event,window,location:{origin},localStorage:{getItem:()=>origin,setItem:()=>{}},sessionStorage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)}});
   const exports={
+    './error-diagnostics.js':{requestError,clearDiagnostics},
     './native-transfers.js':{nativeTransfersAvailable:()=>native,nativeUpload:()=>{},configureNativeTransfers:()=>{},invalidateTransfers:()=>{}},
     './download-core.js':{ciphertextHash:async()=> 'fixture-partition'},'./transfer-manager.js':{stopTransfers:()=>{}},
     './native-player-bridge.js':{NativePlayer:{},nativePlayerAvailable:()=>false,invalidateNativePlayback:()=>{}},

@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import {createErrorDiagnostic} from './error-diagnostics.js';
 import {registerLibraryCatalog} from './library-catalog.js';
 import {registerPlaylists} from './playlists.js';
 import {registerCustomThumbnails,customThumbnailRevision} from './custom-thumbnails.js';
@@ -127,9 +128,10 @@ export async function createApp(options = {}) {
   });
   app.setErrorHandler((err, req, reply) => {
     const status = err.statusCode && err.statusCode >= 400 && err.statusCode < 500 ? err.statusCode : 500;
-    if (status === 500) req.log.error({ err }, 'Request failed');
+    const diagnostic=createErrorDiagnostic(err,req,{status,serverVersion:packageInfo.version});
+    if (status === 500) req.log.error({ err,errorId:diagnostic.errorId }, 'Request failed');
     const message = err.validation ? '入力内容を確認してください。' : status === 500 ? 'サーバーでエラーが発生しました。' : err.message;
-    reply.code(status).send({ error: message });
+    reply.header('X-Mirea-Error-ID',diagnostic.errorId).code(status).send({ error: message,...(req.user?{diagnostic}:{}) });
   });
   app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: '見つかりません。' }));
 
@@ -173,7 +175,7 @@ export async function createApp(options = {}) {
   registerAppUpdates(app, { directory: updatesPath ? resolve(PROJECT_ROOT, updatesPath) : undefined,releaseVersion:options.remoteUpdates?packageInfo.version:undefined });
   let analytics;
   app.get('/api/v1/config', async () => ({ allowRegistration, ...processingSettings.value, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadProtocol:2, maxUploadFiles:1000, uploadSessionHours: 24, analytics,
-    version: packageInfo.version, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.18.0beta/mirea-0.18.0beta-android.apk' }));
+    version: packageInfo.version, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.18.1beta/mirea-0.18.1beta-android.apk' }));
   app.post('/api/v1/auth/register', { ...authLimits, schema: { body: object({ email, password, name: text(80),remember:{type:'boolean',default:true} },['email','password','name']) } }, async (req, reply) => {
     if (!allowRegistration) throw httpError(403, '新規登録は現在停止しています。');
     const normalizedEmail = req.body.email.trim().toLowerCase();
