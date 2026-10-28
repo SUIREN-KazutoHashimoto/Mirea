@@ -80,7 +80,7 @@ test('new upload validates full H264/AAC + all HLS variants before deleting orig
   const length=Math.min(manifest.chunkSize,manifest.files[0].size),decipher=createDecipheriv('aes-256-gcm',key,bytes.subarray(0,12));
   decipher.setAAD(Buffer.from(`mirea-download-v1|${manifest.id}|0|0|${length}`));decipher.setAuthTag(bytes.subarray(-16));
   const plain=Buffer.concat([decipher.update(bytes.subarray(12,-16)),decipher.final()]);
-  const rendition=await readFile(join(c.dataDir,'videos',item.id,'360p.mp4'));assert.deepEqual(plain,rendition.subarray(0,length));assert.notDeepEqual(bytes.subarray(0,length),plain);
+  const rendition=await readFile(join(c.dataDir,'videos',item.id,manifest.files[0].generation,'360p.mp4'));assert.deepEqual(plain,rendition.subarray(0,length));assert.notDeepEqual(bytes.subarray(0,length),plain);
   assert.equal((await c.req('POST',`/items/${item.id}/download`,c.viewer,{quality:'2160p'})).statusCode,400);
   const secondQuality=await c.req('POST',`/items/${item.id}/download`,c.viewer,{quality:'720p'});
   assert.notEqual(secondQuality.json().manifest.id,manifest.id);
@@ -98,7 +98,7 @@ test('server shutdown keeps processing state and verified source, then startup r
   const upload=await c.start(original);await started;await c.app.close();
   const db=new DatabaseSync(join(c.dataDir,'mirea.sqlite'));
   assert.equal(db.prepare('SELECT state FROM upload_sessions WHERE id=?').get(upload.id).state,'processing');db.close();
-  assert.deepEqual(await readFile(join(c.dataDir,'uploads','staging',upload.id,'raw-1')),original);
+  assert.deepEqual(await readFile(join(c.dataDir,'originals',upload.id)),original);
   c.app=await createApp({...c.options,videoTranscoder:undefined});
   const {item}=await c.wait(upload.id);assert.equal(item.id,upload.id);
   await assert.rejects(stat(join(c.dataDir,'originals',item.id)),{code:'ENOENT'});
@@ -109,13 +109,13 @@ test('conversion/postprocessing failure and restart preserve raw source indefini
   const media=createMediaProcessor(),c=await setup(t,{mediaProcessor:{...media,preview:async(...args)=>{if(fail)throw new Error('Synthetic postprocessing failure');return media.preview(...args);}}});
   const original=await makeMp4(join(c.dataDir,'input.mp4'),{duration:.3});
   const upload=await c.start(original,{retainOriginal:true});await c.wait(upload.id,'failed');
-  assert.deepEqual(await readFile(join(c.dataDir,'uploads','staging',upload.id,'raw-1')),original);
-  assert.equal((await c.req('GET',`/items/${upload.id}/content`,c.owner)).statusCode,404);
+  assert.deepEqual(await readFile(join(c.dataDir,'originals',upload.id)),original);
+  assert.equal((await c.req('GET',`/items/${upload.id}/content`,c.owner)).statusCode,200,'preview failure does not hide playable media');
   await c.app.close();
   const db=new DatabaseSync(join(c.dataDir,'mirea.sqlite'));db.prepare('UPDATE upload_sessions SET expires_at=1 WHERE id=?').run(upload.id);db.close();
   c.app=await createApp(c.options);
   const failed=(await c.req('GET','/uploads',c.owner)).json().uploads;assert.equal(failed[0].sourceRetained,true);assert.equal(failed[0].retainOriginal,true);
-  assert.deepEqual(await readFile(join(c.dataDir,'uploads','staging',upload.id,'raw-1')),original);
+  assert.deepEqual(await readFile(join(c.dataDir,'originals',upload.id)),original);
   fail=false;assert.equal((await c.req('POST',`/uploads/${upload.id}/retry`,c.owner)).statusCode,202);
   await c.wait(upload.id);
   assert.deepEqual(await readFile(join(c.dataDir,'originals',upload.id)),original);

@@ -78,7 +78,7 @@ public final class MireaTransferPlugin extends Plugin {
             folderProgress(0,files.length(),true);call.resolve(new JSObject().put("files",files));
         }catch(Exception e){call.reject("ファイルを取得できません。端末内に保存した1000ファイル以内を選んでください。");}});
     }
-    private PlaybackApi api(PluginCall c)throws Exception{return new PlaybackApi(c.getString("origin"),c.getString("token"),c.getString("userId"));}
+    private PlaybackApi api(PluginCall c)throws Exception{return new PlaybackApi(c.getString("origin"),c.getString("token"),c.getString("userId"),c.getString("shelfUnlock",""));}
     @PluginMethod public void enqueue(PluginCall call){
         PlaybackApi api=null;String offered=null;
         try{

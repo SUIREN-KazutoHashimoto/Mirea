@@ -79,7 +79,7 @@ export function openDatabase(filename) {
         UPDATE schema_version SET version = 2;
       `));
     } finally { db.exec('PRAGMA foreign_keys = ON'); }
-  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
+  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,21].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
   if (version < 10) {
     // v10 adds EPUB while retaining v9's nullable uploader attribution.
     // Account deletion removes attribution, not another member's shared assets.
@@ -417,6 +417,27 @@ export function openDatabase(filename) {
     preview_position_seconds REAL,preview_version INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL
   );UPDATE schema_version SET version=20;`);
+  transaction(db,()=>db.exec(`
+    CREATE TABLE IF NOT EXISTS media_ingest(
+      asset_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+      source_mime TEXT NOT NULL,source_filename TEXT NOT NULL,source_size INTEGER NOT NULL,
+      retain_original INTEGER NOT NULL CHECK(retain_original IN (0,1)),
+      canonical_ready INTEGER NOT NULL DEFAULT 0,source_removed INTEGER NOT NULL DEFAULT 0,
+      metadata_json TEXT NOT NULL,created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS media_tasks(
+      id TEXT PRIMARY KEY,asset_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK(kind IN ('thumbnail','transcode','preview')),
+      state TEXT NOT NULL CHECK(state IN ('queued','running','complete','failed','cancelled')),
+      progress_json TEXT NOT NULL DEFAULT '{}',error TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,
+      UNIQUE(asset_id,kind)
+    );
+    CREATE INDEX IF NOT EXISTS media_tasks_queue ON media_tasks(kind,state,created_at);
+    CREATE TABLE IF NOT EXISTS shelf_unlocks(token_hash TEXT PRIMARY KEY,session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,shelf_id TEXT NOT NULL REFERENCES shelves(id) ON DELETE CASCADE,password_hash TEXT NOT NULL,expires_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS shelf_biometric_keys(id TEXT NOT NULL,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,public_key TEXT NOT NULL,password_hash TEXT NOT NULL,PRIMARY KEY(id,user_id));
+    CREATE TABLE IF NOT EXISTS shelf_challenges(challenge TEXT PRIMARY KEY,session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,shelf_id TEXT NOT NULL REFERENCES shelves(id) ON DELETE CASCADE,key_id TEXT NOT NULL,expires_at INTEGER NOT NULL);
+    UPDATE schema_version SET version=21;
+  `));
   if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Database foreign key validation failed');
   return db;
 }

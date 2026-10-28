@@ -20,6 +20,7 @@ try{
  app=await createApp({dataDir,rateLimit:false,allowRegistration:true});
  const owner=(await app.inject({method:'POST',url:'/api/v1/auth/register',payload:{name:'表示確認ユーザー',email:'ui-qa@example.invalid',password:'synthetic-ui-check-password'}})).json();
  const headers={authorization:'Bearer '+owner.token},shelf=(await app.inject({method:'POST',url:'/api/v1/shelves',headers,payload:{name:'表示確認の本棚'}})).json().id;
+ const privateShelf=(await app.inject({method:'POST',url:'/api/v1/shelves',headers,payload:{name:'プライベートの表示確認'}})).json().id;
  const db=new DatabaseSync(join(dataDir,'mirea.sqlite'));
  try{
   const pdf=makePdf(),cover=await sharp({create:{width:300,height:450,channels:3,background:'#5050aa'}}).webp().toBuffer();
@@ -29,6 +30,7 @@ try{
    db.prepare('INSERT INTO admin_jobs(id,kind,asset_id,state,progress_json,error,requested_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').run(randomUUID(),'thumbnail',id,['running','queued','complete','failed'][n-1],JSON.stringify({stage:'thumbnail',percent:n===1?42:n===3?100:0}),n===4?'表紙を生成できませんでした（合成データ）':null,owner.user.id,Date.now()-n*60000,Date.now());
   }
   db.prepare("INSERT INTO user_access VALUES(?,'admin',0) ON CONFLICT(user_id) DO UPDATE SET server_role='admin'").run(owner.user.id);
+  db.prepare('UPDATE shelves SET private=1 WHERE id=?').run(privateShelf);
  }finally{db.close();}
  await app.listen({host:'127.0.0.1',port:0});const apiOrigin='http://127.0.0.1:'+app.server.address().port;
  const bootstrap="sessionStorage.setItem('mirea.session:web',"+JSON.stringify(JSON.stringify({origin:'',remember:false,session:owner}))+');';
@@ -39,7 +41,10 @@ try{
   const context=await browser.newContext({viewport,colorScheme,serviceWorkers:'block',acceptDownloads:false});
   await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort('blockedbyclient'));
   page=await context.newPage();const errors=[];page.on('pageerror',error=>errors.push(error.message));
-  page.setDefaultTimeout(15000);await page.goto(origin,{waitUntil:'networkidle'});await page.locator('#nav-settings').waitFor({state:'attached'});
+  page.setDefaultTimeout(15000);await page.goto(origin,{waitUntil:'networkidle'});
+  await page.waitForFunction(()=>document.querySelector('#nav-settings,.retry-connection'));
+  if(await page.locator('.retry-connection').count())await page.locator('.retry-connection').click();
+  await page.locator('#nav-settings').waitFor({state:'attached'});
   const nav=async selector=>{await page.waitForTimeout(200);const menu=page.locator('#open-drawer');if(await menu.isVisible()&&await menu.getAttribute('aria-expanded')!=='true')await menu.click();await page.locator(selector).click();};
   const shot=async label=>{await page.screenshot({path:join(output,name+'-'+label+'.png')});const layout=await page.locator('dialog[open]').last().evaluate(node=>({width:node.clientWidth,scrollWidth:node.scrollWidth,height:node.clientHeight,scrollHeight:node.scrollHeight,overflows:[...node.querySelectorAll('.manager-panel,.job-table-wrap,.transfer-list,.upload-form-section')].filter(n=>n.getClientRects().length&&n.scrollWidth>n.clientWidth+2).map(n=>n.className)}));assert(layout.scrollWidth<=layout.width+2,JSON.stringify({name,label,layout}));assert.deepEqual(layout.overflows,[],name+' '+label+' content overflow');report.push({name,label,layout});const scroller=page.locator('dialog[open] .manager-panel:visible,dialog[open] .transfer-list:visible,dialog[open] .upload-batch-form:visible').last();if(await scroller.count()&&await scroller.evaluate(n=>n.scrollHeight>n.clientHeight+30)){const top=await scroller.evaluate(n=>{const top=n.scrollTop;n.scrollTop=n.scrollHeight;return top;});await page.screenshot({path:join(output,name+'-'+label+'-bottom.png')});await scroller.evaluate((n,top)=>n.scrollTop=top,top);}};
   await nav('#nav-settings');await page.locator('.account-form').waitFor({state:'attached'});
@@ -65,8 +70,11 @@ try{
   await page.locator('.transfer-details').first().focus();await page.evaluate(()=>{window.qaFocused=document.activeElement;window.qaTransfers[0]({percent:57});});assert.equal(await page.evaluate(()=>document.activeElement===window.qaFocused),true,'progress must retain focus');
   for(const [view,count]of [['attention',1],['complete',1],['all',4]]){await page.locator('[data-transfer-view='+view+']').click();assert.equal(await page.locator('.transfer-row').count(),count);await shot('transfers-'+view);}
   await page.locator('.transfer-direction').selectOption('download');assert.equal(await page.locator('.transfer-row').count(),2);await page.locator('.transfer-query').fill('再試行');assert.equal(await page.locator('.transfer-row').count(),1);await page.locator('.transfer-center .close-modal').click();
-  await nav('#open-upload');await page.locator('.manager-upload').waitFor();await page.waitForFunction(()=>!document.querySelector('.manager-upload [type=submit]').disabled);await shot('upload');
+  await nav('[data-shelf="'+shelf+'"]');await nav('#open-upload');await page.locator('.manager-upload').waitFor();await page.waitForFunction(()=>!document.querySelector('.manager-upload [type=submit]').disabled);await shot('upload');
   await page.locator('input[name=file]').setInputFiles([{name:'one.pdf',mimeType:'application/pdf',buffer:makePdf()},{name:'two.pdf',mimeType:'application/pdf',buffer:makePdf()}]);await page.locator('[data-entry-title]').first().waitFor();assert.equal(await page.locator('[data-entry-title]').count(),2);await shot('upload-selected');await page.locator('.manager-upload .close-modal').click();
+  await nav('[data-shelf="'+privateShelf+'"]');await page.locator('.private-shelf-auth').waitFor();await shot('private-shelf-password');
+  await page.locator('.private-shelf-auth input').fill('incorrect');await page.locator('.private-shelf-auth [type=submit]').click();await page.locator('.private-shelf-auth .form-error:not([hidden])').waitFor();await shot('private-shelf-error');
+  await page.locator('.private-shelf-auth input').fill('synthetic-ui-check-password');await page.locator('.private-shelf-auth [type=submit]').click();await page.locator('.private-shelf-auth').waitFor({state:'detached'});await nav('#nav-all');await nav('[data-shelf="'+privateShelf+'"]');await page.locator('.private-shelf-auth').waitFor();await page.locator('.private-shelf-auth').evaluate(n=>n.closest('dialog').close());
   assert.deepEqual(errors,[],name+' browser errors');report.push({name,pageErrors:errors});await context.close();page=null;
  }
  await writeFile(join(output,'report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({success:true,screenshots:report.filter(r=>r.label).length,output}));

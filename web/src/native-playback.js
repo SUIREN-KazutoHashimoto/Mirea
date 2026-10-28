@@ -6,6 +6,7 @@ import { prepareNativeDownload,downloadedThumbnail,listDownloads } from './downl
 import {offlineCatalog,offlineCollection,offlineSeriesContext} from './offline-catalog.js';
 import {offlineVault,offlinePartition} from './offline-vault.js';
 import { beginUpdateActivity } from './update-busy.js';
+import {shelfUnlockValue} from './private-shelves.js';
 
 let release,dock,dockIdentity,refreshEpoch=0;
 export async function refreshNativePlayback(){
@@ -49,6 +50,6 @@ export async function openNativePlayback(item,{restart=false,continuous=true,ana
     }
   }
   if(!valid())throw new Error('再生準備を取り消しました。');
-  await NativePlayer.open({...(offlineSeries?{offlineSeries}:{}),...(artwork?{artwork}:{}),origin,token:session.token,userId:session.user.id,item,restart,continuous,analytics,version,autoplay:true,...(download?{download,offline:isOfflineSession()}:{})});
+  await NativePlayer.open({...(offlineSeries?{offlineSeries}:{}),...(artwork?{artwork}:{}),origin,token:session.token,userId:session.user.id,shelfUnlock:shelfUnlockValue(),item,restart,continuous,analytics,version,autoplay:true,...(download?{download,offline:isOfflineSession()}:{})});
   await refreshNativePlayback();
 }

@@ -36,6 +36,16 @@ export async function probeAudio(source) {
   }
 }
 
+// Read embedded artwork before audio encoding, in the thumbnail lane.
+export async function audioThumbnail(source,destination){
+  const info=await probeAudio(source);let artwork=false;
+  if(info.cover){
+    try{await exec(ffmpegPath(),['-hide_banner','-loglevel','error','-nostdin','-y','-max_alloc','268435456',...INPUT,'-i',source,'-map',`0:${info.cover.index}`,'-frames:v','1','-an','-threads','1','-vf',"scale=w='min(1024,iw)':h='min(1024,ih)':force_original_aspect_ratio=decrease",'-c:v','mjpeg','-f','image2',destination],{timeout:30000,maxBuffer:1024*1024,signal:jobCancellationSignal(),windowsHide:true,killSignal:'SIGKILL'});artwork=true;}
+    catch(error){if(jobCancellationSignal()?.aborted)throw error;}
+  }
+  if(!artwork)await audioPlaceholder(destination);return {pageCount:1,artwork};
+}
+
 export function createAudioTranscoder() {
   let closed=false;
   const children=new Set();
@@ -62,7 +72,7 @@ export function createAudioTranscoder() {
     try{await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',code=>code===0&&!failure?resolve():reject(failure??new Error(`FFmpeg failed (${code}): ${stderr}`)));});authorize();if(closed)throw closingError();}
     finally{clearInterval(timer);children.delete(active);}
   }
-  async function convert(source,folder,{authorize,report}) {
+  async function convert(source,folder,{authorize,report,thumbnail:makeThumbnail=true}) {
     const deadline=Date.now()+MAX_SECONDS*1000;
     try{
       if(closed)throw closingError();authorize();report({stage:'probe',percent:0});
@@ -81,6 +91,7 @@ export function createAudioTranscoder() {
       if(!size || size>MAX_BYTES || result.audio.codec_name!=='aac' || result.audio.profile!=='LC' || result.audio.channels!==(info.audio.channels===1?1:2) || Number(result.audio.sample_rate)!==48000 || result.cover ||
         Math.abs(result.duration-info.duration)>Math.max(2,info.duration*.02))throw new Error('Invalid normalized audio');
       await run(['-xerror',...INPUT,'-i',output,'-map','0:a:0','-f','null','-'],settings);
+      if(!makeThumbnail)return {version:1,duration:result.duration,codec:'AAC-LC',bitrate:info.audio.channels===1?96000:192000,channels:result.audio.channels,sampleRate:48000,size,artwork:Boolean(info.cover)};
       report({stage:'thumbnail',percent:0});
       let artwork=false;
       if(info.cover){

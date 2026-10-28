@@ -106,7 +106,7 @@ public final class TransferEngine {
         String id=state.getString("id");j.data.put("uploadId",id);
         if("uploading".equals(state.getString("state"))){
             int chunk=state.getInt("chunkSize");if(chunk<1||chunk>16777216)throw new IllegalArgumentException();
-            int parallel=Math.max(1,Math.min(2,state.optInt("maxParallelParts",1)));
+            int parallel=Math.max(1,Math.min(4,state.optInt("maxParallelParts",1)));
             ExecutorService partsPool=Executors.newFixedThreadPool(parallel);Deque<Future<?>> inflight=new ArrayDeque<>();
             try{
                 for(int f=0;f<files.length();f++){

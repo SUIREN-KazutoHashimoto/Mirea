@@ -21,7 +21,7 @@ export async function copyStorageTree(source,destination,{authorize=()=>{}}={}){
 // with a same-filesystem rename. Raw sources remain recoverable until success.
 export async function moveStorage(source,destination,{authorize=()=>{},renameFile=rename,onSourceCleanupError=()=>{}}={}){
  source=resolve(source);destination=resolve(destination);const rel=relative(source,destination);if(!rel||!isAbsolute(rel)&&rel!=='..'&&!rel.startsWith('..'+sep))throw Error('Invalid storage move');
- authorize();try{await renameFile(source,destination);return;}catch(error){if(error.code!=='EXDEV')throw error;}
+ authorize();try{await renameFile(source,destination);await syncDirectory(dirname(destination));return;}catch(error){if(error.code!=='EXDEV')throw error;}
  const parent=dirname(destination),work=join(parent,'.mirea-publish-'+randomUUID()),payload=join(work,'payload');await mkdir(work,{mode:0o700});
  try{await copyStorageTree(source,payload,{authorize});authorize();await rename(payload,destination);await syncDirectory(parent);}
  catch(error){throw error;}

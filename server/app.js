@@ -49,7 +49,9 @@ import {registerShelfManagement} from './shelf-management.js';
 import {registerRememberSessions,issueRememberCookie,clearRememberCookie} from './remember-session.js';
 
 import {thumbnailWebp} from './thumbnail-webp.js';
-import {createJobPool} from './job-pool.js';
+import {createJobLanes} from './job-pool.js';
+import {createMediaPipeline,mediaContentSource} from './media-pipeline.js';
+import {registerPrivateShelves} from './private-shelves.js';
 import {createProcessingSettings,registerProcessingSettings} from './processing-settings.js';
 import {registerHistoryRemoval} from './history.js';
 import {assertAssetChanges,registerNameIntegrity} from './name-integrity.js';
@@ -78,16 +80,19 @@ export async function createApp(options = {}) {
   const {mediaDir,uploadDir,stagingDir,booksDir,thumbnailDir,videoDir,originalDir,previewDir}=storage;
   const db = openDatabase(join(dataDir, 'mirea.sqlite'));
   if(options.bootstrapAdmin)await initializeDefaultAdmin(db);
-  const processingSettings=createProcessingSettings(db),jobPool=createJobPool(()=>processingSettings.value.maxConcurrentJobs);
+  const processingSettings=createProcessingSettings(db),jobPool=createJobLanes(()=>processingSettings.value);
   const reset=createMediaReset({db,storage});
   try{await reset.recover();}catch(error){db.close();throw error;}
-  const media = options.mediaProcessor ?? createMediaProcessor();
+  const media = options.mediaProcessor ?? createMediaProcessor({thumbnailLimit:()=>processingSettings.value.maxConcurrentThumbnails,previewLimit:()=>processingSettings.value.maxConcurrentPreviews});
   const videoTranscoder=options.videoTranscoder??createVideoTranscoder();
   const audioTranscoder=options.audioTranscoder??createAudioTranscoder();
-  const ensureThumbnail = createThumbnailStore(db, media, uploadDir, thumbnailDir);
+  const legacyThumbnail = createThumbnailStore(db, media, uploadDir, thumbnailDir);
+  let mediaPipeline;
+  const ensureThumbnail=async item=>{if(!mediaPipeline?.has(item.id))return legacyThumbnail(item);const path=await mediaPipeline.ensureThumbnail(item);try{await access(path);return path;}catch(error){if(error.code!=='ENOENT')throw error;if(db.prepare('SELECT canonical_ready FROM media_ingest WHERE asset_id=?').get(item.id)?.canonical_ready)return legacyThumbnail(item);throw httpError(503,'サムネイルを準備しています。');}};
+  ensureThumbnail.inspect=()=>legacyThumbnail.inspect();
   const coverRevision=db.prepare('SELECT image_id,updated_at FROM thumbnail_overrides WHERE asset_id=?');
   const videoCoverRevision=db.prepare('SELECT updated_at FROM video_thumbnail_state WHERE asset_id=?');
-  const publicItem=i=>{const generated=videoCoverRevision.get(i.id);const row=coverRevision.get(i.id),image=row?customThumbnailRevision(row):generated?customThumbnailRevision({image_id:i.id,updated_at:generated.updated_at}):null;return {...basePublicItem(i),...(image?{thumbnailUrl:'/api/v1/items/'+i.id+'/thumbnail?revision='+image}:{})};};
+  const publicItem=i=>{const generated=videoCoverRevision.get(i.id);const row=coverRevision.get(i.id),image=row?customThumbnailRevision(row):generated?customThumbnailRevision({image_id:i.id,updated_at:generated.updated_at}):null;const source=db.prepare('SELECT canonical_ready,source_mime,metadata_json FROM media_ingest WHERE asset_id=?').get(i.id);return {...basePublicItem(i),...(source?{...(!source.canonical_ready?{mimeType:source.source_mime}:{}),originalPlayback:!source.canonical_ready,downloadReady:Boolean(source.canonical_ready),mediaInfo:JSON.parse(source.metadata_json),processingTasks:db.prepare('SELECT kind,state FROM media_tasks WHERE asset_id=?').all(i.id)}:{}),...(image?{thumbnailUrl:'/api/v1/items/'+i.id+'/thumbnail?revision='+image}:{})};};
   const maxUploadBytes = Number(options.maxUploadBytes ?? process.env.MAX_UPLOAD_BYTES ?? 2147483648);
   if (!Number.isSafeInteger(maxUploadBytes) || maxUploadBytes <= 0) throw new Error('Invalid MAX_UPLOAD_BYTES');
   const chunkSize = Number(options.chunkSize ?? process.env.UPLOAD_CHUNK_BYTES ?? 8 * 1024 * 1024);
@@ -101,7 +106,7 @@ export async function createApp(options = {}) {
   await app.register(cors, {
     origin: (origin, cb) => cb(null, Boolean(origin && allowedOrigins.includes(origin))),
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
-    allowedHeaders: ['Authorization', 'Content-Type', 'Range', 'X-Chunk-SHA256'],
+    allowedHeaders: ['Authorization', 'Content-Type', 'Range', 'X-Chunk-SHA256','X-Mirea-Shelf-Unlock'],
     exposedHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length', 'X-Next-Cursor','X-Chunk-SHA256'],
     maxAge: 600
   });
@@ -113,6 +118,8 @@ export async function createApp(options = {}) {
   const sweep = setInterval(() => {
     db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(Date.now());
     db.prepare('DELETE FROM playback_tickets WHERE expires_at <= ?').run(Date.now());
+    db.prepare('DELETE FROM shelf_unlocks WHERE expires_at<=?').run(Date.now());
+    db.prepare('DELETE FROM shelf_challenges WHERE expires_at<=?').run(Date.now());
   }, 30 * 60 * 1000);
   sweep.unref();
   app.addHook('onClose', async () => { clearInterval(sweep); db.close(); });
@@ -131,7 +138,7 @@ export async function createApp(options = {}) {
     const diagnostic=createErrorDiagnostic(err,req,{status,serverVersion:packageInfo.version});
     if (status === 500) req.log.error({ err,errorId:diagnostic.errorId }, 'Request failed');
     const message = err.validation ? '入力内容を確認してください。' : status === 500 ? 'サーバーでエラーが発生しました。' : err.message;
-    reply.header('X-Mirea-Error-ID',diagnostic.errorId).code(status).send({ error: message,...(req.user?{diagnostic}:{}) });
+    reply.header('X-Mirea-Error-ID',diagnostic.errorId).code(status).send({ error: message,...(status===423&&err.shelfUnlockRequired?{shelfUnlockRequired:err.shelfUnlockRequired}:{}),...(req.user?{diagnostic}:{}) });
   });
   app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: '見つかりません。' }));
 
@@ -166,6 +173,7 @@ export async function createApp(options = {}) {
   }
   const auth = { preHandler: async req => authenticate(req) };
   const adminAccess=createAdminAccess(db,options,authenticate);
+  registerPrivateShelves(app,{db,authenticate,membership,rateLimit:options.rateLimit});
   registerProcessingSettings(app,{processingSettings,jobPool,adminAccess});
   registerHistoryRemoval(app,{db,authenticate,findItem});
   registerRememberSessions(app,{db,authenticate,enabled:adminAccess.enabled,rateLimit:options.rateLimit});
@@ -175,7 +183,7 @@ export async function createApp(options = {}) {
   registerAppUpdates(app, { directory: updatesPath ? resolve(PROJECT_ROOT, updatesPath) : undefined,releaseVersion:options.remoteUpdates?packageInfo.version:undefined });
   let analytics;
   app.get('/api/v1/config', async () => ({ allowRegistration, ...processingSettings.value, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadProtocol:2, maxUploadFiles:1000, uploadSessionHours: 24, analytics,
-    version: packageInfo.version, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.19.0beta/mirea-0.19.0beta-android.apk' }));
+    version: packageInfo.version, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.20.0beta/mirea-0.20.0beta-android.apk' }));
   app.post('/api/v1/auth/register', { ...authLimits, schema: { body: object({ email, password, name: text(80),remember:{type:'boolean',default:true} },['email','password','name']) } }, async (req, reply) => {
     if (!allowRegistration) throw httpError(403, '新規登録は現在停止しています。');
     const normalizedEmail = req.body.email.trim().toLowerCase();
@@ -255,22 +263,23 @@ export async function createApp(options = {}) {
     return { shelf: { ...shelf, role }, pendingUploads:pendingShelfUploads(db,req.params.id), series:shelfSeries(db,req.params.id), items: db.prepare('SELECT * FROM items WHERE shelf_id=? ORDER BY created_at DESC, id').all(req.params.id).map(item=>({...publicItem(item),series:series.get(item.id)??null,progress:progress.get(item.id)??null})) };
   });
   await registerCustomThumbnails(app,{db,thumbnailDir,media,authenticate,findItem,membership});
+  mediaPipeline=await createMediaPipeline(app,{db,media,videoTranscoder,audioTranscoder,jobPool,originalDir,uploadDir,thumbnailDir,previewDir,videoDir,stagingDir,adminAccess});
   const uploads = await registerResumableUploads(app, {
-    db, media, videoTranscoder, audioTranscoder, uploadDir, stagingDir, booksDir, thumbnailDir, videoDir, originalDir, previewDir, authenticate, membership, maxUploadBytes, chunkSize, publicItem,adminAccess,maintenance,processingSettings,jobPool
+    db, media, videoTranscoder, audioTranscoder, uploadDir, stagingDir, booksDir, thumbnailDir, videoDir, originalDir, previewDir, authenticate, membership, maxUploadBytes, chunkSize, publicItem,adminAccess,maintenance,processingSettings,jobPool,mediaPipeline
   });
   registerVideoStreams(app,{db,videoDir,authenticate,findItem});
   registerAccounts(app, { db, authenticate, membership, loginResult, cleanupUploads: uploads.cleanupUploads, rateLimit: options.rateLimit,adminAccess });
   const videoPreviews = await registerVideoPreviews(app, { db, media, dataDir, uploadDir, authenticate, findItem,jobPool });
     const navigation = await registerVideoNavigation(app,{db,uploadDir,originalDir,videoDir,authenticate,findItem,membership,maintenance,rateLimit:options.rateLimit,jobPool,generateNavigation:options.generateNavigation});
-  async function removeAssetFiles(item){return Promise.allSettled([
+  async function removeAssetFiles(item){await mediaPipeline.cancel(item.id);return Promise.allSettled([
     item.mime_type===IMAGE_BOOK_MIME?removeItemDirectory(booksDir,item.id):unlink(join(uploadDir,item.id)),
     ...(item.mime_type===EPUB_MIME?[removeItemDirectory(booksDir,item.id)]:[]),unlink(join(thumbnailDir,item.id+'.jpg')),unlink(join(thumbnailDir,item.id+'.webp')),
     videoPreviews.remove(item.id),removeItemDirectory(videoDir,item.id),unlink(join(originalDir,item.id))
   ]);}
   registerShelfManagement(app,{db,authenticate,membership,maintenance,removeFiles:removeAssetFiles,cleanupUploads:uploads.cleanupUploads,adminAccess,rateLimit:options.rateLimit});
-  const adminJobs=await registerAdminJobs(app,{db,adminAccess,media,videoTranscoder,uploadDir,booksDir,thumbnailDir,previewDir,videoDir,originalDir,dataDir,uploads,maintenance,videoPreviews,ensureThumbnail,jobPool,rateLimit:options.rateLimit});
+  const adminJobs=await registerAdminJobs(app,{db,adminAccess,media,videoTranscoder,uploadDir,booksDir,thumbnailDir,previewDir,videoDir,originalDir,dataDir,uploads,maintenance,videoPreviews,ensureThumbnail,jobPool,mediaPipeline,rateLimit:options.rateLimit});
   registerAdmin(app,{db,adminAccess,uploads,rateLimit:options.rateLimit});
-  maintenance.setBusy(()=>uploads.busy||adminJobs.busy||videoPreviews.busy||navigation.busy||media.busy);
+  maintenance.setBusy(()=>uploads.busy||mediaPipeline.busy||adminJobs.busy||videoPreviews.busy||navigation.busy||media.busy);
   await registerAdminCleanup(app,{db,dataDir,mediaDir,adminAccess,maintenance,options});
   registerAdminReset(app,{db,storage,adminAccess,maintenance,reset,options});
   await registerAdminBackups(app,{db,dataDir,mediaDir,adminAccess,maintenance,options});
@@ -431,17 +440,18 @@ export async function createApp(options = {}) {
   app.post('/api/v1/items/:id/playback-ticket', auth, async req => {
     const item = findItem(req.params.id, req.user.id);
     if (item.mime_type === IMAGE_BOOK_MIME) throw httpError(400, '画像の本はページビューアで開いてください。');
+    const source=mediaContentSource(db,item,storage);
     const token = newToken();
-    const expiresAt = Math.min(Date.now() + TICKET_MS, req.session.expires_at);
+    const expiresAt = Math.min(Date.now() + (source.original?7*3600000:TICKET_MS), req.session.expires_at);
     db.prepare('INSERT INTO playback_tickets VALUES (?, ?, ?, ?)').run(hashToken(token), req.session.id, req.params.id, expiresAt);
     const metadata=videoMetadata(db,item.id);
-    if(metadata)db.prepare('INSERT INTO playback_generations VALUES(?,?)').run(hashToken(token),metadata.generation??'base');
-    return { url: `/api/v1/items/${req.params.id}/content?ticket=${token}`, expiresAt,
+    if(source.original||metadata)db.prepare('INSERT INTO playback_generations VALUES(?,?)').run(hashToken(token),source.original?'source':metadata.generation??'base');
+    return { url: `/api/v1/items/${req.params.id}/content?ticket=${token}`, expiresAt,size:source.size,mimeType:source.mimeType,original:source.original,
       ...(metadata?{hlsUrl:`/api/v1/items/${item.id}/hls/master.m3u8?ticket=${token}`,renditions:metadata.renditions.map(({quality,width,height,size})=>({quality,width,height,size}))}:{}) };
   });
   app.route({ method: ['GET', 'HEAD'], url: '/api/v1/items/:id/content', handler: async (req, reply) => {
-    let userId;
-    if (req.headers.authorization) {
+    let userId,raw=false;
+    if (req.headers.authorization&&!req.query.ticket) {
       authenticate(req);
       userId = req.user.id;
     } else {
@@ -450,22 +460,24 @@ export async function createApp(options = {}) {
         WHERE t.token_hash=? AND t.item_id=? AND t.expires_at>? AND s.expires_at>?`).get(hashToken(token), req.params.id, Date.now(), Date.now());
       if (!ticket) throw httpError(401, '閲覧用URLの期限が切れています。もう一度開いてください。');
       userId = ticket.user_id;
+      raw=db.prepare('SELECT generation FROM playback_generations WHERE token_hash=?').get(hashToken(token))?.generation==='source';
     }
     const item = findItem(req.params.id, userId);
     if (item.mime_type === IMAGE_BOOK_MIME) throw httpError(400, '画像の本はページビューアで開いてください。');
-    await access(join(uploadDir, item.id)).catch(() => { throw httpError(404, 'ファイルが見つかりません。'); });
+    const source=mediaContentSource(db,item,storage,{raw});
+    await access(source.path).catch(() => { throw httpError(404, 'ファイルが見つかりません。'); });
     // Membership is checked again after I/O so revocations cannot race this response.
     findItem(req.params.id, userId);
     let range;
-    try { range = parseRange(req.headers.range, item.size); }
-    catch (error) { reply.header('Content-Range', `bytes */${item.size}`); throw error; }
-    reply.header('Content-Type', item.mime_type);
+    try { range = parseRange(req.headers.range, source.size); }
+    catch (error) { reply.header('Content-Range', `bytes */${source.size}`); throw error; }
+    reply.header('Content-Type', source.mimeType);
     reply.header('Accept-Ranges', 'bytes');
     reply.header('Content-Disposition', `inline; filename="media"; filename*=UTF-8''${encodeURIComponent(item.filename).replace(/['()]/g, c => '%' + c.charCodeAt(0).toString(16))}`);
-    reply.header('Content-Length', range ? range.end - range.start + 1 : item.size);
-    if (range) reply.code(206).header('Content-Range', `bytes ${range.start}-${range.end}/${item.size}`);
+    reply.header('Content-Length', range ? range.end - range.start + 1 : source.size);
+    if (range) reply.code(206).header('Content-Range', `bytes ${range.start}-${range.end}/${source.size}`);
     if (req.method === 'HEAD') return reply.send();
-    return reply.send(createReadStream(join(uploadDir, item.id), range ?? {}));
+    return reply.send(createReadStream(source.path, range ?? {}));
   } });
   const webRoot = options.webRoot ?? fileURLToPath(new URL('../dist/', import.meta.url));
   try {

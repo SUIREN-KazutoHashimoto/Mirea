@@ -92,7 +92,7 @@ export function openUploadDialog({dialog,api,upload,shelves,activeShelf,initialS
     if(!confirm('この転送の未完了アップロードと後処理を中止し、原本を削除しますか？'))return;
     const deleteCompleted=completed.length&&confirm('完了済みの'+completed.length+'アセットも削除しますか？（キャンセルを選ぶと完了分は残します）');
     activeBatch?.cancel();
-    for(const row of results.values())if(isCurrent()&&row.uploadId&&row.state!=='complete')await api('/uploads/'+row.uploadId,{method:'DELETE'}).catch(()=>{});
+    for(const row of results.values())if(isCurrent()&&row.uploadId&&row.state!=='complete')await api(row.item?'/items/'+row.item.id:'/uploads/'+row.uploadId,{method:'DELETE'}).catch(()=>{});
     if(deleteCompleted)for(const row of completed)if(isCurrent())await api('/items/'+row.item.id,{method:'DELETE'});
     for(const record of [...folderRecords.values()].reverse())if(isCurrent()&&record.created&&record.id){try{const info=await api('/series/'+record.id);await api('/series/'+record.id,{method:'DELETE',body:{revision:info.series.revision,onlyIfEmpty:true}});}catch{/* Reused/nonempty/concurrently changed series are never removed. */}}
     await onChanged();
