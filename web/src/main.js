@@ -119,6 +119,7 @@ let series=[],activeSeries='',seriesReturnView,historyMode=false,historyRows=[];
 let libraryPoll,pullRefresh,refreshBusy=false,librarySnapshot='',offlineLibrary=false,synchronizing,offlineLibraryData,metadataCacheWarning=false;
 let seriesContinuous=true,appDrawer,cardGestures,displayedItems=[];
 let thumbnailRequest, thumbnailObserver, thumbnailUrls = new Map(), videoPreviews;
+let thumbnailLoading=new WeakSet();
 let nativeAppActive = true, nativeStateRevision = 0;
 if (native) {
   App.addListener('backButton',({canGoBack})=>{
@@ -159,7 +160,7 @@ function clearThumbnails() {
   thumbnailRequest?.abort();
   thumbnailObserver?.disconnect();
   for (const url of thumbnailUrls.values()) URL.revokeObjectURL(url);
-  thumbnailUrls.clear();thumbnailRequest=null;thumbnailObserver=null;
+  thumbnailUrls.clear();thumbnailRequest=null;thumbnailObserver=null;thumbnailLoading=new WeakSet();
 }
 function loadThumbnails() {
   thumbnailRequest ??= new AbortController();
@@ -168,6 +169,7 @@ function loadThumbnails() {
     for (const entry of entries) if (entry.isIntersecting) {
       const img = entry.target;
       thumbnailObserver.unobserve(img);
+      if(thumbnailLoading.has(img))continue;thumbnailLoading.add(img);
       libraryThumbnail({id:img.dataset.localThumbnail,thumbnailUrl:img.dataset.thumbnail},signal).then(blob => {
         if (signal.aborted || !img.isConnected) return;
         const url = URL.createObjectURL(blob);
@@ -178,11 +180,12 @@ function loadThumbnails() {
         if (signal.aborted || !img.isConnected) return;
         const placeholder = img.parentElement.querySelector('.cover-placeholder');
         if (placeholder) { placeholder.textContent = offlineLibrary?'表紙は未保存です':'表紙を読み込めません'; placeholder.title = error.message; }
-      });
+      }).finally(()=>thumbnailLoading.delete(img));
     }
   }, { rootMargin: '200px' });
+  thumbnailObserver.disconnect();
   for(const [img,url]of thumbnailUrls)if(!img.isConnected){URL.revokeObjectURL(url);thumbnailUrls.delete(img);thumbnailObserver.unobserve(img);}
-  document.querySelectorAll('[data-thumbnail]').forEach(img => {if(!img.getAttribute('src'))thumbnailObserver.observe(img);});
+  document.querySelectorAll('[data-thumbnail]').forEach(img => {if(!img.getAttribute('src')&&!thumbnailLoading.has(img))thumbnailObserver.observe(img);});
 }
 let toastTimer;
 function toast(message) {
