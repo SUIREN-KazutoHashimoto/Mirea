@@ -16,7 +16,7 @@ import static org.junit.Assert.*;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk=35,shadows=PlaybackActivityTest.RatePlayer.class)
 public class PlaybackLifecycleTest {
-    static final class ParkedExecutor extends java.util.concurrent.AbstractExecutorService {
+    static class ParkedExecutor extends java.util.concurrent.AbstractExecutorService {
         boolean stopped;public void execute(Runnable task){}public void shutdown(){stopped=true;}public java.util.List<Runnable> shutdownNow(){stopped=true;return java.util.List.of();}public boolean isShutdown(){return stopped;}public boolean isTerminated(){return stopped;}public boolean awaitTermination(long n,TimeUnit unit){return stopped;}
     }
     private MediaPlayer seed(PlaybackService service,String name)throws Exception{
@@ -51,6 +51,17 @@ public class PlaybackLifecycleTest {
             ReflectionHelpers.setField(s,"request",request);ReflectionHelpers.setField(s,"item",item);ReflectionHelpers.setField(s,"api",new PlaybackApi(request.getString("origin"),request.getString("token"),request.getString("userId")));
             s.speed(1.5f);s.pause();s.quality("legacy");assertFalse((Boolean)ReflectionHelpers.getField(s,"desiredPlaying"));assertFalse(((JSONObject)ReflectionHelpers.getField(s,"request")).getBoolean("autoplay"));assertEquals(42000,s.position());assertEquals(1.5,s.status().getDouble("rate"),.001);
             s.reconnect();assertEquals(42000,s.position());assertFalse((Boolean)ReflectionHelpers.getField(s,"desiredPlaying"));
+        }finally{c.destroy();s.stopped.get(5,TimeUnit.SECONDS);}
+    }
+    @Test public void pausedOfflineSeriesNavigationKeepsPausedIntentAfterOnlineConnectionWasLost()throws Exception{
+        ServiceController<PlaybackService> c=Robolectric.buildService(PlaybackService.class).create();PlaybackService s=c.get();
+        try{
+            java.util.concurrent.ExecutorService prep=ReflectionHelpers.getField(s,"preparation"),meta=ReflectionHelpers.getField(s,"metadata");prep.shutdown();meta.shutdown();ReflectionHelpers.setField(s,"preparation",new ParkedExecutor());ReflectionHelpers.setField(s,"metadata",new ParkedExecutor(){@Override public void execute(Runnable task){task.run();}});
+            seed(s,"offline-series.m4a");String a="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",b="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",seriesId="cccccccc-cccc-cccc-cccc-cccccccccccc";
+            JSONObject first=new JSONObject().put("id",a).put("kind","audio").put("series",new JSONObject().put("id",seriesId)),second=new JSONObject().put("id",b).put("kind","audio").put("series",new JSONObject().put("id",seriesId)).put("offlineDownload",new JSONObject().put("id","dddddddd-dddd-dddd-dddd-dddddddddddd").put("assetId",b));
+            JSONObject request=new JSONObject().put("origin","https://mirea.example").put("token","a".repeat(43)).put("userId",b).put("item",first).put("autoplay",true).put("offline",true).put("offlineSeries",new JSONObject().put("series",new JSONObject().put("id",seriesId)).put("items",new org.json.JSONArray().put(first).put(second)));
+            ReflectionHelpers.setField(s,"item",first);ReflectionHelpers.setField(s,"request",request);ReflectionHelpers.setField(s,"api",new PlaybackApi(request.getString("origin"),request.getString("token"),request.getString("userId")));PlaybackRetry retry=ReflectionHelpers.getField(s,"retry");retry.unavailable(android.os.SystemClock.elapsedRealtime());
+            s.pause();s.navigate(1);Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();JSONObject next=ReflectionHelpers.getField(s,"request");assertEquals(b,next.getJSONObject("item").getString("id"));assertFalse(next.getBoolean("autoplay"));assertTrue(next.has("download"));assertFalse((Boolean)ReflectionHelpers.getField(s,"desiredPlaying"));
         }finally{c.destroy();s.stopped.get(5,TimeUnit.SECONDS);}
     }
 }

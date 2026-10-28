@@ -63,6 +63,11 @@ try{
  page=await context.newPage();page.setDefaultTimeout(20000);await page.goto(apiOrigin,{waitUntil:'domcontentloaded'});
  await page.locator('.card-open[data-open="'+audioId+'"]').waitFor();await page.locator('.app-launch').waitFor({state:'detached'});
  for(const id of [audioId,videoId]){await page.locator('.card-open[data-open="'+id+'"]').click({button:'right'});await page.locator('.action-download').click();await page.locator('.start-download').click();await page.waitForFunction(()=>document.querySelector('.download-status')?.textContent.startsWith('暗号化して保存しました'),{},{timeout:60000});await page.locator('dialog[open] .close-modal').click();}
+ for(const [id,kind]of [[audioId,'audio'],[videoId,'video']]){
+  await page.locator('.card-open[data-open="'+id+'"]').click();await page.waitForFunction(kind=>document.querySelector('.mirea-player '+kind)?.readyState>=2,kind);await page.locator('.player-play').click();await page.waitForFunction(kind=>!document.querySelector('.mirea-player '+kind)?.paused,kind);
+  const before=await page.locator('.mirea-player '+kind).evaluate(m=>m.currentTime);await context.setOffline(true);await page.waitForTimeout(1200);assert(await page.locator('.mirea-player '+kind).evaluate(m=>!m.paused&&m.currentTime,kind)>before+.2,kind+' keeps playing across a live network loss');
+  await page.screenshot({path:join(output,'phone-'+kind+'-live-offline.png')});report.push({name:'phone',label:kind+'-live-offline'});await context.setOffline(false);await page.evaluate(()=>document.querySelector('.viewer-screen').close());
+ }
  await context.setOffline(true);await page.reload({waitUntil:'domcontentloaded'});await page.locator('.card-open[data-open="'+audioId+'"]:enabled').waitFor();await page.locator('.app-launch').waitFor({state:'detached'});
  for(const [id,kind]of [[audioId,'audio'],[videoId,'video']]){
   await context.setOffline(true);await page.locator('.card-open[data-open="'+id+'"]').click();await page.waitForFunction(kind=>document.querySelector('.mirea-player '+kind)?.readyState>=2,kind);
