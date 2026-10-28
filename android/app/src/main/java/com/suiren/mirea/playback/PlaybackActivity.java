@@ -35,7 +35,7 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
     private float zoom=1,panX,panY;private String shownAsset="";
     private final Handler handler=new Handler(Looper.getMainLooper());
     private final Runnable tick=new Runnable(){public void run(){if(destroyed)return;render();handler.postDelayed(this,500);}};
-    private final BroadcastReceiver changed=new BroadcastReceiver(){public void onReceive(Context c,Intent i){render();}};
+    private final BroadcastReceiver changed=new BroadcastReceiver(){public void onReceive(Context c,Intent i){if(!i.getBooleanExtra("progressOnly",false))render();}};
     private PlaybackService service(){return PlaybackService.current;}
     @Override public void onCreate(Bundle saved){
         super.onCreate(saved);createdAt=SystemClock.elapsedRealtime();orientation=new PlaybackPresentation.Orientation(saved==null?0:saved.getInt("orientationMode"));

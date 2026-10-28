@@ -189,17 +189,21 @@ export async function authorizeDownload(ctx,record){
   }
   grant.key='';return {...await vault.lease(ctx.partition,record.manifest.id),online:true};
 }
-let syncing;
-export function syncDownloads({items=[]}={}){
+let syncing;const syncTimes=new Map();
+export function syncDownloads({items=[],force=false,refreshCovers=false}={}){
   if(syncing)return syncing;
   syncing=(async()=>{
     const ctx=context(),store=await openDownloadDb();
+    if(isOfflineSession()||!force&&Date.now()-(syncTimes.get(ctx.partition)??0)<300000)return;
     for(const row of await store.list(ctx.partition)){
       if(!current(ctx))return;
       if(row.state!=='ready')continue;
       try{
         const lease=await authorizeDownload(ctx,row);
-        await saveThumbnail(ctx,row.assetId);
+        // A failed reachability check never starts hundreds of lease/cover
+        // requests. Opening an individual asset still authorizes independently.
+        if(!lease.online)return;
+        if(refreshCovers||!await downloadedThumbnail(row.assetId))await saveThumbnail(ctx,row.assetId);
         try{const snapshot=await api(`/items/${row.assetId}/progress`);if(current(ctx))rememberDownloadProgress({id:row.assetId},snapshot);}catch{/* Pending revisions must never be overwritten. */}
         if(nativePlayerAvailable()&&['audio','video'].includes(row.manifest.kind)){
           if(lease.online)await NativePlayer.leaseSave({origin:ctx.endpoint,token:ctx.token,userId:ctx.userId,shelfUnlock:shelfUnlockValue(),id:row.manifest.id});lease.key='';
@@ -211,6 +215,7 @@ export function syncDownloads({items=[]}={}){
       }
       await new Promise(resolve=>setTimeout(resolve,400));
     }
+    if(current(ctx))syncTimes.set(ctx.partition,Date.now());
   })().finally(()=>{syncing=null;});return syncing;
 }
 export async function openDownloaded(item,onLock=()=>{}){

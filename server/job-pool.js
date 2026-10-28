@@ -1,8 +1,10 @@
 // Bounded shared execution, distinct from durable database queues and transfer slots.
 import {jobContext,jobCancellationSignal} from './job-context.js';
 export function createJobPool(limit=()=>5){
-  const waiting=[],keyed=new Map();let running=0,transferUntil=0,wake;
-  function prioritizeTransfers(ms=1200){transferUntil=Math.max(transferUntil,Date.now()+ms);if(!wake){wake=setTimeout(()=>{wake=null;pump();},Math.max(1,transferUntil-Date.now()));wake.unref?.();}if(waiting.length)wake.ref?.();}
+  const waiting=[],keyed=new Map();let running=0,transferUntil=0,transferCooldown=0,wake;
+  // A busy transfer may briefly yield CPU, but repeated chunks must never move
+  // the deadline forever and starve otherwise independent media lanes.
+  function prioritizeTransfers(ms=200){const now=Date.now();if(ms>0&&now>=transferCooldown){transferUntil=now+Math.min(250,ms);transferCooldown=transferUntil+1000;}if(now<transferUntil&&!wake){wake=setTimeout(()=>{wake=null;pump();},Math.max(1,transferUntil-now));wake.unref?.();}if(waiting.length)wake?.ref?.();}
 
   function pump(){if(waiting.length&&Date.now()<transferUntil){prioritizeTransfers(0);return;}while(waiting.length&&running<limit()){
     const row=waiting.shift(),{work,resolve,reject}=row;running++;

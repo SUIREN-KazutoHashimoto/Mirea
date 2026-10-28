@@ -3,6 +3,7 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, stat, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { availableParallelism } from 'node:os';
 import bundledFfprobe from '@derhuerst/ffprobe-static';
 import { ffmpegPath } from './media.js';
 import { httpError } from './security.js';
@@ -55,7 +56,8 @@ export function videoLadder(width,height) {
   });
 }
 
-export function createVideoTranscoder() {
+export function encoderThreads(concurrency=5,cpus=availableParallelism()){return Math.max(1,Math.min(4,Math.floor(Math.max(1,cpus-2)/Math.max(1,concurrency))));}
+export function createVideoTranscoder({concurrency=()=>5}={}) {
   let closed=false;
   const controllers=new Set();
   async function run(args,{authorize,deadline,onProgress,folder,controller,duration}) {
@@ -101,11 +103,12 @@ export function createVideoTranscoder() {
         const settings={authorize,deadline,controller,folder,duration:info.duration,onProgress:percent=>report({stage:'encode',quality:tier.quality,percent,completed:index,total:ladder.length})};
         // Fixed 30fps, aligned 4-second keyframes in every rendition. Encode all
         // frames (never the 6-second preview). Silence is added only if no audio.
-        const encodeArgs=['-protocol_whitelist','file,pipe','-format_whitelist',FORMATS,'-threads','1','-i',source,
+        const threads=String(encoderThreads(concurrency()));
+        const encodeArgs=['-protocol_whitelist','file,pipe','-format_whitelist',FORMATS,'-threads',threads,'-i',source,
           ...(!info.audio?['-f','lavfi','-i','anullsrc=channel_layout=stereo:sample_rate=48000']:[]),
           '-map',`0:${info.video.index}`,'-map',info.audio?`0:${info.audio.index}`:'1:a:0','-sn','-dn','-map_metadata','-1','-map_chapters','-1',
           '-vf',`scale=${tier.width}:${tier.height},setsar=1,fps=30`,
-          '-c:v','libx264','-preset','veryfast','-profile:v','high','-level:v','4.1','-pix_fmt','yuv420p','-threads','1',
+          '-c:v','libx264','-preset','veryfast','-profile:v','high','-level:v','4.1','-pix_fmt','yuv420p','-threads',threads,
           '-b:v',String(tier.bitrate-128000),'-maxrate',String(tier.bitrate-128000),'-bufsize',String((tier.bitrate-128000)*2),
           '-g','120','-keyint_min','120','-sc_threshold','0','-force_key_frames','expr:gte(t,n_forced*4)',
           '-c:a','aac','-ac','2','-ar','48000','-b:a','128k','-af','aresample=async=1:first_pts=0,apad',
@@ -123,9 +126,9 @@ export function createVideoTranscoder() {
         const size=(await stat(mp4)).size;
         if(!size||size>MAX_FILE||result.video.codec_name!=='h264'||result.video.pix_fmt!=='yuv420p'||result.audio?.codec_name!=='aac'||result.video.width!==tier.width||result.video.height!==tier.height||
           Math.abs(result.duration-info.duration)>Math.max(.25,info.duration*.005)) throw new Error('Transcoded output validation failed');
-        // A full decode detects truncated/corrupt later packets, not only headers.
-        await run(['-v','error','-xerror','-protocol_whitelist','file,pipe','-i',mp4,'-map','0:v:0','-map','0:a:0','-threads','1','-f','null','-'],settings);
-        await run(['-protocol_whitelist','file,pipe','-i',mp4,'-map','0:v:0','-map','0:a:0','-c','copy','-hls_time','4','-hls_playlist_type','vod',
+        // Read every MP4 packet strictly while remuxing, then decode every HLS
+        // frame below. The exact same encoded packets need only one full decode.
+        await run(['-xerror','-err_detect','explode','-protocol_whitelist','file,pipe','-i',mp4,'-map','0:v:0','-map','0:a:0','-c','copy','-hls_time','4','-hls_playlist_type','vod',
           '-hls_segment_type','fmp4','-hls_flags','independent_segments','-hls_fmp4_init_filename',`${tier.quality}-init.mp4`,
           '-hls_segment_filename',join(folder,`${tier.quality}-%05d.m4s`),'-f','hls',join(folder,`${tier.quality}.m3u8`)],settings);
         const playlist=await readFile(join(folder,`${tier.quality}.m3u8`),'utf8');

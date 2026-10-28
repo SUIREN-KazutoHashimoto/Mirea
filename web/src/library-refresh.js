@@ -40,7 +40,7 @@ export function mountLibraryRefresh({main,button,onRefresh,blocked=()=>false,doc
       const result=await pending;if(disposed)return;
       if(result?.status==='cancelled'){display('idle');return;}
       const offline=result?.status==='offline',failed=result?.status==='failed';
-      display(failed?'failed':'done',failed?'更新できませんでした。再度お試しください。':offline?'オフラインです。接続後に同期します。':'更新しました',56);
+      display(failed?'failed':'done',failed?'更新できませんでした。再度お試しください。':offline?'保存した一覧を表示しています。':'更新しました',56);
       timer=setTimer(()=>display('idle'),failed||offline?2600:1000);
     }catch{
       if(!disposed){display('failed','更新できませんでした。再度お試しください。',56);timer=setTimer(()=>display('idle'),2600);}

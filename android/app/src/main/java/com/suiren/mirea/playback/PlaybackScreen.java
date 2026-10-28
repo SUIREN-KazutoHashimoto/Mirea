@@ -40,6 +40,7 @@ public final class PlaybackScreen extends FrameLayout {
     private Boolean audioWide;
     private int insetLeft,insetTop,insetRight,insetBottom;
     private JSONObject model=new JSONObject();
+    private JSONObject shownNavigation;private Bitmap shownStoryboard;private Boolean videoMode;
     private Bitmap artwork;
     private AudioBackdrop backdrop;private boolean motionForeground,audioPlaying;
     public void setMotionForeground(boolean value){motionForeground=value;updateMotion();}
@@ -62,7 +63,7 @@ public final class PlaybackScreen extends FrameLayout {
         audioDetails=column();audioDetails.setPadding(dp(24),dp(12),dp(24),dp(12));
         audioEyebrow=text("MIREA / AUDIO",11,ACCENT);audioEyebrow.setLetterSpacing(.18f);audioDetails.addView(audioEyebrow);
         audioTitle=text("Mirea",25,WHITE);audioTitle.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));audioTitle.setMaxLines(2);audioTitle.setEllipsize(TextUtils.TruncateAt.END);audioTitle.setTag("audio-title");audioTitle.setAccessibilityHeading(true);LinearLayout.LayoutParams titleParams=linear(-1,-2);titleParams.topMargin=dp(10);audioDetails.addView(audioTitle,titleParams);
-        audioMeta=text("ストリーミング",12,MUTED);LinearLayout.LayoutParams metaParams=linear(-1,-2);metaParams.topMargin=dp(8);audioDetails.addView(audioMeta,metaParams);
+        audioMeta=text("",12,MUTED);audioMeta.setVisibility(GONE);LinearLayout.LayoutParams metaParams=linear(-1,-2);metaParams.topMargin=dp(8);audioDetails.addView(audioMeta,metaParams);
         audioNote=text("",12,ACCENT);audioDetails.addView(audioNote,linear(-1,-2));
         audioSeek=seek("audio-seek");LinearLayout.LayoutParams seekParams=linear(-1,dp(48));seekParams.topMargin=dp(10);audioDetails.addView(audioSeek,seekParams);
         audioTime=text("0:00 / 0:00",12,MUTED);audioTime.setTypeface(Typeface.MONOSPACE);audioTime.setGravity(Gravity.END);audioDetails.addView(audioTime,linear(-1,-2));
@@ -120,7 +121,7 @@ public final class PlaybackScreen extends FrameLayout {
     @Override protected void onDetachedFromWindow(){if(backdrop!=null)backdrop.stop();cancelHold();cancelScrub();super.onDetachedFromWindow();}
     public void cancelScrub(){heatmap.setSeeking(false);if(preview!=null&&preview.precise)finishPrecise(false,scrubOrigin);if(preview!=null)preview.hide();if(scrubbing){scrubCancelled=true;scrubbing=false;actions.scrub(false);}}
     private void finishPrecise(boolean commit,long position){preview.hide();scrubbing=false;scrubCancelled=true;heatmap.setSeeking(false);actions.seek(commit?position:scrubOrigin);actions.scrub(false);if(scrubPlaying)actions.perform("resume-scrub");}
-    public void navigation(JSONObject nav,Bitmap sheet){preview.data(nav,sheet);if(videoSeek instanceof ChapterSeekBar)((ChapterSeekBar)videoSeek).chapters(nav);}
+    public void navigation(JSONObject nav,Bitmap sheet){if(shownNavigation==nav&&shownStoryboard==sheet)return;shownNavigation=nav;shownStoryboard=sheet;preview.data(nav,sheet);if(videoSeek instanceof ChapterSeekBar)((ChapterSeekBar)videoSeek).chapters(nav);}
     public void resetZoom(){zoom=1;}
     public boolean cancelPrecise(){if(!preview.precise)return false;finishPrecise(false,scrubOrigin);return true;}
     public boolean preciseSeek(){if(!isVideo||!preview.available()||!model.optBoolean("prepared"))return false;scrubOrigin=model.optLong("positionMs");scrubPlaying=model.optBoolean("playing");scrubbing=true;scrubCancelled=false;preview.show(scrubOrigin,true);heatmap.setSeeking(true);actions.scrub(true);actions.perform("pause-scrub");return true;}
@@ -147,13 +148,14 @@ public final class PlaybackScreen extends FrameLayout {
     }
     public void setVideo(boolean value){
         if(isVideo!=value)cancelScrub();
-        if(isVideo!=value||audioWide==null){isVideo=value;audioBody.setVisibility(value?GONE:VISIBLE);rotate.setVisibility(value?VISIBLE:GONE);replaceBackdrop(value?null:new AudioBackdrop(artwork,model.optJSONObject("item")==null?"Mirea":model.optJSONObject("item").optString("id")));header.setBackground(value?new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,new int[]{0xd908101d,0x0008101d}):null);}
+        if(videoMode==null||videoMode!=value){videoMode=value;isVideo=value;audioBody.setVisibility(value?GONE:VISIBLE);rotate.setVisibility(value?VISIBLE:GONE);replaceBackdrop(value?null:new AudioBackdrop(artwork,model.optJSONObject("item")==null?"Mirea":model.optJSONObject("item").optString("id")));header.setBackground(value?new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,new int[]{0xd908101d,0x0008101d}):null);}
         updateVisibility();
     }
-    public void setChromeVisible(boolean value){if(!value)cancelScrub();chrome=value;updateVisibility();}
-    public void setPip(boolean value){if(value)cancelScrub();pip=value;setVisibility(value?GONE:VISIBLE);updateMotion();}
+    public void setChromeVisible(boolean value){if(chrome==value)return;if(!value)cancelScrub();chrome=value;updateVisibility();}
+    public void setPip(boolean value){if(pip==value)return;if(value)cancelScrub();pip=value;setVisibility(value?GONE:VISIBLE);updateMotion();}
     public void landscape(boolean value){rotate.setContentDescription(value?"縦画面に切り替え":"横画面に切り替え");}
     private void updateVisibility(){header.setVisibility(!isVideo||chrome?VISIBLE:GONE);center.setVisibility(isVideo&&chrome?VISIBLE:GONE);videoFooter.setVisibility(isVideo&&chrome?VISIBLE:GONE);}
+    private String controlsIdentity="";
     public void bind(JSONObject value,Bitmap image){
         model=value;boolean video=value.optBoolean("video"),prepared=value.optBoolean("prepared"),playing=value.optBoolean("playing"),busy=value.optBoolean("buffering");setVideo(video);
         if(!prepared||!value.optString("error").isEmpty())cancelScrub();
@@ -162,11 +164,13 @@ public final class PlaybackScreen extends FrameLayout {
         if(artwork!=image){artwork=image;cover.setImageBitmap(image);if(!video)replaceBackdrop(new AudioBackdrop(image,item==null?"Mirea":item.optString("id")));}cover.setVisibility(image==null?GONE:VISIBLE);
         audioPlaying=playing&&!busy&&value.optString("error").isEmpty();updateMotion();
         duration=value.optLong("durationMs");long position=value.optLong("positionMs");String label=PlaybackPresentation.time(position)+" / "+PlaybackPresentation.time(duration);if(!scrubbing){videoTime.setText(label);audioTime.setText(label);int p=duration>0?(int)Math.max(0,Math.min(10000,position*10000/duration)):0;videoSeek.setProgress(p);audioSeek.setProgress(p);}
-        String caption=value.optString("caption");captions.setText(caption);captions.setTextSize(value.optInt("captionSize",20));captions.setVisibility(video&&!caption.isEmpty()?VISIBLE:GONE);LayoutParams cp=(LayoutParams)captions.getLayoutParams();cp.bottomMargin=insetBottom+dp(chrome?170:36);captions.setLayoutParams(cp);
+        String caption=value.optString("caption");captions.setText(caption);captions.setTextSize(value.optInt("captionSize",20));captions.setVisibility(video&&!caption.isEmpty()?VISIBLE:GONE);LayoutParams cp=(LayoutParams)captions.getLayoutParams();int margin=insetBottom+dp(chrome?170:36);if(cp.bottomMargin!=margin){cp.bottomMargin=margin;captions.setLayoutParams(cp);}
+        String identity=video+"|"+prepared+"|"+playing+"|"+busy+"|"+duration+"|"+value.optString("quality")+"|"+value.optString("actualQuality")+"|"+value.optDouble("rate",1)+"|"+value.optString("repeat")+"|"+value.optBoolean("shuffle")+"|"+value.optBoolean("hasSeries")+"|"+value.optBoolean("download")+"|"+value.optString("notice")+"|"+value.optString("error")+"|"+value.optBoolean("holdBoost");
+        if(identity.equals(controlsIdentity))return;controlsIdentity=identity;
         for(ImageButton button:new ImageButton[]{videoPlay,audioPlay}){button.setEnabled(prepared);button.setAlpha(prepared?1f:.45f);button.setContentDescription(playing?"一時停止":"再生");button.setImageDrawable(new PlaybackIcon(playing?"pause":"play",button==audioPlay?0xff142039:WHITE));}
         videoSeek.setEnabled(prepared);audioSeek.setEnabled(prepared);videoSeek.setKeyProgressIncrement((int)Math.max(1,50000000/Math.max(1,duration)));audioSeek.setKeyProgressIncrement(videoSeek.getKeyProgressIncrement());String selected=value.optString("quality","legacy"),qualityLabel=selected.equals("legacy")?"標準":selected.equals("auto")?"自動":selected.equals("higher")?"高画質":selected.equals("data")?"省データ":selected+" 固定";quality.setText(qualityLabel);quality.setContentDescription("画質："+qualityLabel+" 現在 "+value.optString("actualQuality"));quality.setVisibility(video&&!value.optBoolean("download")?VISIBLE:GONE);speed.setText(String.format(java.util.Locale.ROOT,"%s×",value.optDouble("rate",1)) .replace(".0×","×"));
         String repeat=value.optString("repeat","off");audioRepeat.setText(repeat.equals("one")?"単体リピート":repeat.equals("series")?"シリーズリピート":"リピートなし");audioRepeat.setContentDescription("リピート："+audioRepeat.getText());audioRepeat.setTextColor(repeat.equals("off")?WHITE:ACCENT);audioShuffle.setText(value.optBoolean("shuffle")?"シャッフル：オン":"シャッフル：オフ");audioShuffle.setContentDescription(audioShuffle.getText());audioShuffle.setSelected(value.optBoolean("shuffle"));audioShuffle.setEnabled(value.optBoolean("hasSeries"));audioShuffle.setAlpha(value.optBoolean("hasSeries")?1f:.4f);
-        String source=value.optBoolean("download")?"暗号化保存データ":"ストリーミング";audioMeta.setText(source+(busy?" · 読み込み中…":""));String notice=value.optString("notice");audioNote.setText(notice);audioNote.setVisibility(notice.isEmpty()?GONE:VISIBLE);videoNote.setText(notice);videoNote.setVisibility(notice.isEmpty()?GONE:VISIBLE);
+        audioMeta.setText(busy?"読み込み中…":"");audioMeta.setVisibility(busy?VISIBLE:GONE);String notice=value.optString("notice");audioNote.setText(notice);audioNote.setVisibility(notice.isEmpty()?GONE:VISIBLE);videoNote.setText(notice);videoNote.setVisibility(notice.isEmpty()?GONE:VISIBLE);
         String error=value.optString("error");if(!error.equals(errorText.getText().toString()))errorText.setText(error);errorCard.setVisibility(error.isEmpty()?GONE:VISIBLE);loading.setVisibility(video&&busy&&error.isEmpty()?VISIBLE:GONE);videoPlay.setVisibility(busy?INVISIBLE:VISIBLE);videoTransport.setVisibility(error.isEmpty()&&!value.optBoolean("holdBoost")?VISIBLE:INVISIBLE);
     }
     @Override protected void onSizeChanged(int w,int h,int oldw,int oldh){super.onSizeChanged(w,h,oldw,oldh);speed.setVisibility(w>=dp(480)&&getResources().getConfiguration().fontScale<1.5f?VISIBLE:GONE);post(this::layoutAudio);}

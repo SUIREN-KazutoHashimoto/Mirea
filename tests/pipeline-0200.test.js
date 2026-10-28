@@ -47,6 +47,7 @@ test('verified original publishes before a blocked encoder; next upload and cove
  const pdf=await c.upload(makePdf(),'Document','application/pdf');await until(()=>c.db.prepare('SELECT state FROM upload_sessions WHERE id=?').get(pdf).state==='complete');assert.equal(entered,true);
  release();await until(()=>c.db.prepare('SELECT state FROM upload_sessions WHERE id=?').get(id).state==='complete');
  const after=await c.app.inject({url:ticket.url,headers:{range:'bytes=0-31'}});assert.deepEqual(after.rawPayload,bytes.subarray(0,32));assert.equal((await c.req('POST','/items/'+id+'/playback-ticket')).json().renditions.length,1);
+ const token=new URL(ticket.url,'https://mirea.test').searchParams.get('ticket'),renewed=await c.req('POST','/items/'+id+'/playback-ticket',{ticket:token});assert.equal(renewed.statusCode,200,renewed.body);assert.equal(renewed.json().url,ticket.url);assert.equal(renewed.json().original,true);assert.equal(renewed.json().hlsUrl,undefined,'renewing a playing original never silently promotes its source');
  assert.equal(c.db.prepare("SELECT COUNT(*) n FROM media_tasks WHERE asset_id=? AND state='complete'").get(id).n,3);assert.equal((await c.req('POST','/items/'+id+'/download')).statusCode,200);
 });
 test('acknowledged duplicate parts do not rewrite disk, and missing persisted parts can be repaired',async t=>{

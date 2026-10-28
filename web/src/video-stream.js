@@ -6,7 +6,7 @@ import {resolveQualityPreference} from './quality-preference.js';
 export function attachVideoStream(video,{ticket,absoluteUrl,renew,onQuality=()=>{},onOptions=()=>{},onError=()=>{},initialQuality='auto',onChoose=()=>{},HlsClass=Hls,events=globalThis.window}) {
   let hls,disposed=false,selected=resolveQualityPreference(ticket.renditions??[],initialQuality),preferred=initialQuality,actual='unknown',refreshing,refreshTimer,streamKind='mp4',manifestReady=false;
   const restores=new Set();
-  let restoring,retryPending=false;
+  let restoring,retryPending=false,retrySeamless=false;
   const emit=()=>onQuality({selectedQuality:['higher','data'].includes(selected)?'auto':selected,actualQuality:actual,streamKind,
     ...(Number.isFinite(hls?.bandwidthEstimate)?{bandwidthEstimate:Math.min(10000000000,Math.max(0,Math.round(hls.bandwidthEstimate)))}:{})});
   const qualities=()=>ticket.renditions??[];
@@ -27,16 +27,16 @@ export function attachVideoStream(video,{ticket,absoluteUrl,renew,onQuality=()=>
   }
   function scheduleRefresh() {
     clearTimeout(refreshTimer);
-    if(!disposed&&renew&&ticket.expiresAt)refreshTimer=setTimeout(()=>reconnect().catch(onError),Math.max(1000,ticket.expiresAt-Date.now()-60000));
+    if(!disposed&&renew&&ticket.expiresAt)refreshTimer=setTimeout(()=>reconnect({seamless:true}).catch(onError),Math.max(1000,ticket.expiresAt-Date.now()-60000));
   }
-  async function reconnect() {
+  async function reconnect({seamless=false}={}) {
     if(disposed||!renew)return;
     if(refreshing)return refreshing;
     clearTimeout(refreshTimer);
-    refreshing=(async()=>{const next=await renew();if(disposed)return;retryPending=false;ticket=next;selected=streamKind==='mp4'?'legacy':resolveQualityPreference(qualities(),preferred);manifestReady=false;restoreSource(sourceUrl());options();emit();scheduleRefresh();})().catch(error=>{retryPending=true;if(!disposed)refreshTimer=setTimeout(()=>reconnect().catch(onError),30000);throw error;}).finally(()=>{refreshing=null;});
+    refreshing=(async()=>{const next=await renew(seamless?ticket:null);if(disposed)return;retryPending=false;const same=next.url===ticket.url&&next.hlsUrl===ticket.hlsUrl;ticket=next;if(!seamless||!same){selected=streamKind==='mp4'?'legacy':resolveQualityPreference(qualities(),preferred);manifestReady=false;restoreSource(sourceUrl());options();emit();}scheduleRefresh();})().catch(error=>{retryPending=true;retrySeamless=seamless;if(!disposed)refreshTimer=setTimeout(()=>reconnect({seamless}).catch(onError),30000);throw error;}).finally(()=>{refreshing=null;});
     return refreshing;
   }
-  const connected=()=>{if(retryPending&&!disposed)reconnect().catch(onError);};events?.addEventListener('online',connected);
+  const connected=()=>{if(retryPending&&!disposed)reconnect({seamless:retrySeamless}).catch(onError);};events?.addEventListener('online',connected);
   const intent=event=>{if(restoring&&typeof event.detail?.playing==='boolean')restoring.playing=event.detail.playing;};video.addEventListener('mirea:playback-intent',intent);
   function choose(value) {
     if(!['auto','higher','data'].includes(value)&&!qualities().some(q=>q.quality===value))return;
@@ -55,7 +55,7 @@ export function attachVideoStream(video,{ticket,absoluteUrl,renew,onQuality=()=>
   }
   if(ticket.hlsUrl&&HlsClass.isSupported()){
     streamKind='hls';
-    hls=new HlsClass({maxBufferLength:20,maxMaxBufferLength:30,backBufferLength:30,enableWorker:true,autoStartLoad:false});
+    hls=new HlsClass({maxBufferLength:90,maxMaxBufferLength:180,maxBufferSize:64*1024*1024,backBufferLength:10,enableWorker:true,autoStartLoad:false});
     hls.on(HlsClass.Events.MANIFEST_PARSED,()=>{if(disposed)return;manifestReady=true;if(applyLevel())hls.startLoad();options();emit();});
     hls.on(HlsClass.Events.LEVEL_SWITCHED,(_event,data)=>{const level=hls.levels[data.level];actual=qualities().find(q=>q.width===level?.width&&q.height===level?.height)?.quality??'unknown';options();emit();});
     hls.on(HlsClass.Events.ERROR,(_event,data)=>{if(data.fatal&&!disposed)onError(new Error('配信を読み込めません。アクセス権と通信を確認し、再接続してください。'));});
