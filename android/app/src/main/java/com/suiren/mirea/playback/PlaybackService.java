@@ -84,7 +84,7 @@ public final class PlaybackService extends Service {
         try{
             JSONObject asset=next.getJSONObject("item");String id=asset.getString("id");
             if(!PlaybackApi.uuid(id)||!Arrays.asList("audio","video").contains(asset.getString("kind")))throw new IOException("Invalid media identity");
-            PlaybackApi nextApi=new PlaybackApi(next.getString("origin"),next.getString("token"),next.getString("userId"));
+            PlaybackApi nextApi=new PlaybackApi(next.getString("origin"),next.getString("token"),next.getString("userId"),next.optString("shelfUnlock",""));
             if(api!=null&&api.partition.equals(nextApi.partition)&&item!=null&&id.equals(item.optString("id"))&&prepared&&!next.optBoolean("restart")&&!next.has("quality")){nextApi.close();changed();return;}
             boolean sameOrder=api!=null&&api.partition.equals(nextApi.partition)&&(next.optBoolean("orderContinuation")||item!=null&&id.equals(item.optString("id")));if(!sameOrder)order=new PlaybackOrder();
             endBoost();final int epoch=++generation;cancelContinuation();record("close");checkpoint(true);releasePlayer();
@@ -101,7 +101,7 @@ public final class PlaybackService extends Service {
                         File folder=new PlaybackCache(this).folder(nextApi.partition,manifest.getString("id"));if(!new File(folder,"complete").isFile())throw new IOException("Encrypted cache incomplete");
                         candidate=new PlaybackSource(nextApi,grant,folder);grant.remove("key");resolvedQuality=verified.getJSONArray("files").getJSONObject(0).optString("quality","download");
                     }else{
-                        long size=asset.getLong("size");String path="/api/v1/items/"+id+"/content";
+                        JSONObject ticket=nextApi.json("/items/"+id+"/playback-ticket","POST",null);long size=ticket.optLong("size",asset.getLong("size"));String path=ticket.optBoolean("original")?ticket.getString("url"):"/api/v1/items/"+id+"/content";
                         if("video".equals(asset.getString("kind"))){JSONObject info=nextApi.json("/items/"+id+"/video","GET",null);availableQualities=info.optJSONArray("renditions");if(availableQualities==null)availableQualities=new JSONArray();resolvedQuality=PlaybackQuality.resolve(availableQualities,resolvedQuality);
                             if(!"legacy".equals(resolvedQuality)){adaptiveGeneration=info.optString("generation","base");if(!adaptiveGeneration.equals("base")&&!PlaybackApi.uuid(adaptiveGeneration))throw new IOException("Invalid media generation");}}
                         if(adaptiveGeneration==null){if(size<1||size>8589934592L)throw new IOException("Invalid media size");candidate=new PlaybackSource(nextApi,path,size);}

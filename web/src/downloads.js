@@ -7,6 +7,7 @@ import {rememberDownloadProgress} from './progress.js';
 import {offlineVault} from './offline-vault.js';
 import {nativeTransfersAvailable,NativeTransfer,nativeTransferTask} from './native-transfers.js';
 import {trackTransfer} from './transfer-manager.js';
+import {shelfUnlockValue} from './private-shelves.js';
 
 let nativeImport;
 export function syncNativeDownloads(){
@@ -118,7 +119,7 @@ async function performDownload(item,onProgress=()=>{},externalSignal,quality){
   const signal=externalSignal?AbortSignal.any([controller.signal,externalSignal]):controller.signal;
   try{
     if(nativeTransfersAvailable()){
-      const nativeContext={origin:ctx.endpoint,token:ctx.token,userId:ctx.userId},task=nativeTransferTask(nativeContext,'download',{assetId:item.id,title:item.title,...(quality?{quality}:{})},row=>onProgress({received:row.received,total:row.total||item.size,message:row.state==='queued'?'順番待ち':'暗号化データを保存中'}));
+      const nativeContext={origin:ctx.endpoint,token:ctx.token,userId:ctx.userId,shelfUnlock:shelfUnlockValue()},task=nativeTransferTask(nativeContext,'download',{assetId:item.id,title:item.title,...(quality?{quality}:{})},row=>onProgress({received:row.received,total:row.total||item.size,message:row.state==='queued'?'順番待ち':'暗号化データを保存中'}));
       const stop=()=>task.abort();signal.addEventListener('abort',stop,{once:true});if(signal.aborted)stop();
       try{await task.promise;signal.throwIfAborted();if(!current(ctx))throw new Error('ログイン先が変更されました。');await syncNativeDownloads();const store=await openDownloadDb();return await store.getPackage(packageKey(ctx,item.id));}
       finally{signal.removeEventListener('abort',stop);}
@@ -201,7 +202,7 @@ export function syncDownloads({items=[]}={}){
         await saveThumbnail(ctx,row.assetId);
         try{const snapshot=await api(`/items/${row.assetId}/progress`);if(current(ctx))rememberDownloadProgress({id:row.assetId},snapshot);}catch{/* Pending revisions must never be overwritten. */}
         if(nativePlayerAvailable()&&['audio','video'].includes(row.manifest.kind)){
-          if(lease.online)await NativePlayer.leaseSave({origin:ctx.endpoint,token:ctx.token,userId:ctx.userId,id:row.manifest.id});lease.key='';
+          if(lease.online)await NativePlayer.leaseSave({origin:ctx.endpoint,token:ctx.token,userId:ctx.userId,shelfUnlock:shelfUnlockValue(),id:row.manifest.id});lease.key='';
         }
       }catch(error){
         const item=items.find(item=>item.id===row.assetId&&!item.pending);
@@ -251,7 +252,7 @@ export async function prepareNativeDownload(item,valid=()=>true,onProgress=()=>{
   const record=await store.getPackage(packageKey(ctx,item.id));if(record?.state!=='ready')return null;
   const manifest=validateManifest(record.manifest);
   const lease=await authorizeDownload(ctx,record);
-  if(lease.online)await NativePlayer.leaseSave({origin:ctx.endpoint,token:ctx.token,userId:ctx.userId,id:manifest.id});lease.key='';
+  if(lease.online)await NativePlayer.leaseSave({origin:ctx.endpoint,token:ctx.token,userId:ctx.userId,shelfUnlock:shelfUnlockValue(),id:manifest.id});lease.key='';
   const prepared=await NativePlayer.cacheBegin({origin:ctx.endpoint,token:ctx.token,userId:ctx.userId,manifest});
   if(prepared.ready)return manifest;
   let received=0;

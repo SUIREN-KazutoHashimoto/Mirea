@@ -34,6 +34,8 @@ export async function registerVideoPreviews(app, { db, media, dataDir, uploadDir
   }
   function start(item) {
     const id = item.id;
+    const automatic=db.prepare("SELECT state FROM media_tasks WHERE asset_id=? AND kind='preview'").get(id);
+    if(automatic&&['queued','running','failed','cancelled'].includes(automatic.state))return {state:automatic.state==='failed'||automatic.state==='cancelled'?'unavailable':'processing',retryAfterMs:1500};
     if (closing || pending.size >= 4) return { state: 'busy', retryAfterMs: 2500 };
     const work = async () => {
       try {
@@ -54,7 +56,7 @@ export async function registerVideoPreviews(app, { db, media, dataDir, uploadDir
         await removeFile(temporaryFor(id));
       }
     };
-    const job=(jobPool?jobPool.run(work,'preview:'+id):work()).catch(error => app.log.error({ err: error }, 'Video preview cleanup failed'));
+    const job=(jobPool?jobPool.run(work,'preview:'+id,'preview'):work()).catch(error => app.log.error({ err: error }, 'Video preview cleanup failed'));
     pending.set(id, job);
     job.finally(() => pending.delete(id));
     return { state: 'processing', retryAfterMs: 1200 };

@@ -127,8 +127,8 @@ test('failed processing retains complete sources indefinitely, permits retry, an
   const c=await setup(t,{mediaProcessor:{...media,validateImage:async(...args)=>{if(fail)throw Error('Injected cover verification failure');return media.validateImage(...args);}}});
   const original=await makeAudio(join(c.dataDir,'retry.wav'));
   const upload=await c.start(original),failed=await c.wait(upload.id,'failed');assert.equal(failed.sourceRetained,true);
-  assert.deepEqual(await readFile(join(c.dataDir,'uploads','staging',upload.id,'raw-1')),original);
-  await assert.rejects(stat(join(c.dataDir,'uploads',upload.id)),{code:'ENOENT'});
+  assert.deepEqual(await readFile(join(c.dataDir,'originals',upload.id)),original);
+  assert.equal(failed.item.originalPlayback,false,'encoding can finish even if artwork fails');
   await c.app.close();const db=new DatabaseSync(join(c.dataDir,'mirea.sqlite'));db.prepare('UPDATE upload_sessions SET expires_at=1 WHERE id=?').run(upload.id);db.close();
   fail=false;c.app=await createApp({...c.options,mediaProcessor:media});
   assert.equal((await c.req('GET',`/uploads/${upload.id}`,c.owner)).json().sourceRetained,true);
@@ -137,12 +137,12 @@ test('failed processing retains complete sources indefinitely, permits retry, an
   await assert.rejects(stat(join(c.dataDir,'uploads','staging',upload.id)),{code:'ENOENT'});
 });
 
-test('audio job shutdown is durable and startup resumes, without publishing partially converted data',async t=>{
+test('audio job shutdown is durable and startup resumes, while the immutable original is already published',async t=>{
   let entered,rejectJob;const started=new Promise(resolve=>{entered=resolve;});
   const audioTranscoder={convert(){entered();return new Promise((_resolve,reject)=>{rejectJob=reject;});},close(){rejectJob?.(Object.assign(Error('Shutdown'),{code:'SERVER_CLOSING'}));}};
   const c=await setup(t,{audioTranscoder}),original=await makeAudio(join(c.dataDir,'restart.wav'));
   const upload=await c.start(original);await started;await c.app.close();
-  const db=new DatabaseSync(join(c.dataDir,'mirea.sqlite'));assert.equal(db.prepare('SELECT state FROM upload_sessions WHERE id=?').get(upload.id).state,'processing');assert.equal(db.prepare('SELECT COUNT(*) n FROM items').get().n,0);db.close();
+  const db=new DatabaseSync(join(c.dataDir,'mirea.sqlite'));assert.equal(db.prepare('SELECT state FROM upload_sessions WHERE id=?').get(upload.id).state,'processing');assert.equal(db.prepare('SELECT COUNT(*) n FROM items').get().n,1);assert.equal(db.prepare('SELECT canonical_ready FROM media_ingest WHERE asset_id=?').get(upload.id).canonical_ready,0);db.close();
   c.app=await createApp({...c.options,audioTranscoder:undefined});assert.equal((await c.wait(upload.id)).item.kind,'audio');
 });
 
@@ -156,18 +156,17 @@ test('multipart compatibility uploads use the same normalization; malformed and 
   const noAccess=await c.req('POST',`/shelves/${c.shelf}/uploads`,c.viewer,{title:'No',files:[{filename:'a.wav',mime:'audio/wav',size:bytes.length}]});assert.equal(noAccess.statusCode,403);
 });
 
-test('audio probes reject video/playlist inputs, and ACL revocation during postprocessing cannot publish',async t=>{
+test('audio probes reject video/playlist inputs; disabling the uploader stops encoding and preserves the published original',async t=>{
   const media=createMediaProcessor();let entered,release;const started=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
   const c=await setup(t,{mediaProcessor:{...media,validateImage:async(...args)=>{entered();await gate;return media.validateImage(...args);}}});
   const list=join(c.dataDir,'remote.m3u8');await writeFile(list,'#EXTM3U\n#EXTINF:1,\nhttps://example.test/private.aac\n');await assert.rejects(probeAudio(list),{statusCode:422});
   const video=join(c.dataDir,'video.mp4');await exec(ffmpegPath(),['-hide_banner','-loglevel','error','-y','-f','lavfi','-i','color=s=32x32:d=1','-f','lavfi','-i','sine=duration=1','-threads','1','-c:v','libx264','-c:a','aac','-shortest',video],{timeout:15000,windowsHide:true});await assert.rejects(probeAudio(video),{statusCode:422});
   const original=await makeAudio(join(c.dataDir,'revoked.wav')),upload=await c.start(original);await started;
-  // Revoke the upload's authenticated session while verified output is not public.
-  await c.req('POST','/auth/logout',c.owner);release();
+  const control=new DatabaseSync(join(c.dataDir,'mirea.sqlite'));control.prepare("INSERT INTO user_access VALUES(?,'user',1)").run(c.owner.user.id);control.close();release();
   for(let n=0;n<250;n++){
     const db=new DatabaseSync(join(c.dataDir,'mirea.sqlite')),row=db.prepare('SELECT state FROM upload_sessions WHERE id=?').get(upload.id),items=db.prepare('SELECT COUNT(*) n FROM items').get().n;db.close();
-    if(row.state==='failed'){assert.equal(items,0);break;}if(n===249)assert.fail('Revoked job did not stop');await delay(20);
+    if(row.state==='failed'){assert.equal(items,1);break;}if(n===249)assert.fail('Revoked job did not stop');await delay(20);
   }
-  assert.deepEqual(await readFile(join(c.dataDir,'uploads','staging',upload.id,'raw-1')),original);
+  assert.deepEqual(await readFile(join(c.dataDir,'originals',upload.id)),original);
   await assert.rejects(stat(join(c.dataDir,'uploads',upload.id)),{code:'ENOENT'});
 });

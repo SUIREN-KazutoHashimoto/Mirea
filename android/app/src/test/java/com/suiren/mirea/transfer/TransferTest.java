@@ -50,4 +50,13 @@ public class TransferTest {
  @Test public void inputChunksAreBoundedAndDetectTruncatedSelections()throws Exception{
   assertArrayEquals(new byte[]{1,2,3},TransferEngine.readPart(new ByteArrayInputStream(new byte[]{1,2,3}),3));assertThrows(EOFException.class,()->TransferEngine.readPart(new ByteArrayInputStream(new byte[]{1,2}),3));
  }
+ @Test public void parallelUploadBuffersFitSmallHeapsAndRespectServerBounds(){
+  int chunk=8*1024*1024;
+  assertEquals(4,TransferEngine.parallelParts(chunk,4,256L*1024*1024));
+  assertEquals(2,TransferEngine.parallelParts(chunk,4,128L*1024*1024));
+  assertEquals(1,TransferEngine.parallelParts(chunk,4,64L*1024*1024));
+  assertEquals(2,TransferEngine.parallelParts(chunk*2,4,256L*1024*1024));
+  assertEquals(1,TransferEngine.parallelParts(chunk,1,512L*1024*1024));
+  assertEquals(1,TransferEngine.parallelParts(chunk,0,512L*1024*1024));
+ }
 }

@@ -1,10 +1,10 @@
 import {transaction} from './database.js';
 import {assertUploadName} from './name-integrity.js';
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, rename, unlink, open, writeFile } from 'node:fs/promises';
+import { mkdir, rename, unlink, open, writeFile,stat } from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { join } from 'node:path';
-import { Transform, Readable } from 'node:stream';
+import { Transform, Readable,Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { httpError } from './security.js';
 import { IMAGE_TYPES, MAX_BOOK_PAGES, MAX_IMAGE_BYTES, removeItemDirectory } from './media.js';
@@ -50,7 +50,7 @@ export async function registerResumableUploads(app, context) {
   }
   function status(upload,detail=true) {
     const parts = detail?db.prepare('SELECT file_index,part_index,size,sha256 FROM upload_parts WHERE upload_id=? ORDER BY file_index,part_index').all(upload.id):[];
-    const item = upload.state === 'complete' && db.prepare('SELECT * FROM items WHERE id=?').get(upload.id);
+    const item = db.prepare('SELECT * FROM items WHERE id=?').get(upload.id);
     return {
       id: upload.id, shelfId:upload.shelf_id, maxParallelParts:4, protocolVersion:2, state: upload.state, chunkSize: upload.chunk_size, expiresAt: upload.expires_at,
       seriesId:upload.target_series_id,seriesWarning:upload.series_warning,
@@ -85,6 +85,7 @@ export async function registerResumableUploads(app, context) {
       if (!upload || upload.state !== 'processing') { if (upload?.state === 'cancelled') await discard(id); return; }
       const existing = db.prepare('SELECT 1 FROM items WHERE id=?').get(id);
       if (existing) {
+        if(context.mediaPipeline?.has(id)){context.mediaPipeline.pump();await removeItemDirectory(transferDir,id);return;}
         db.prepare("UPDATE upload_sessions SET state='complete' WHERE id=?").run(id);
         await discard(id);
         return;
@@ -114,7 +115,10 @@ export async function registerResumableUploads(app, context) {
           })());
           await pipeline(source, createWriteStream(join(stage, `raw-${fileIndex + 1}`), { flags: 'wx', mode: 0o600 }));
         }
-        await publishStagedUpload(context, upload, () => authorizeJob(upload));
+        if(context.mediaPipeline&&isTimedMime(files[0].mime)){
+          await context.mediaPipeline.accept(upload,()=>authorizeJob(upload));
+          await removeItemDirectory(transferDir,id);
+        }else await publishStagedUpload(context, upload, () => authorizeJob(upload));
       } catch (error) {
         if(error.code==='SERVER_CLOSING'||get(id)?.state==='cancelled')return; // durable processing state is recovered on startup
         db.prepare("UPDATE upload_sessions SET state='failed',error=? WHERE id=? AND state='processing'").run(
@@ -219,7 +223,7 @@ export async function registerResumableUploads(app, context) {
       requireSlot(upload.user_id);
       db.prepare('DELETE FROM admin_upload_retries WHERE upload_id=?').run(upload.id);
       db.prepare("UPDATE upload_sessions SET state='processing',error=NULL,session_id=?,processing_json='{}' WHERE id=?").run(req.session.id,upload.id);
-      schedule(upload.id);
+      if(!context.mediaPipeline?.retry(upload.id))schedule(upload.id);
     });
     return reply.code(202).send(status(get(req.params.id)));
   });
@@ -242,6 +246,9 @@ export async function registerResumableUploads(app, context) {
         if (!/^[a-f0-9]{64}$/.test(expectedHash ?? '')) throw httpError(400, '分割データのSHA-256が必要です。');
         if (req.headers['content-length'] && Number(req.headers['content-length']) !== expectedSize) throw httpError(400, '分割データの長さが不正です。');
         const temporary = join(transferDir, upload.id, `${fileIndex}-${partIndex}.${randomUUID()}.partial`);
+        const destination = join(transferDir, upload.id, `${fileIndex}-${partIndex}`);
+        const previous = db.prepare('SELECT size,sha256 FROM upload_parts WHERE upload_id=? AND file_index=? AND part_index=?').get(upload.id,fileIndex,partIndex);
+        const reusable=previous?.size===expectedSize&&previous.sha256===expectedHash&&(await stat(destination).catch(error=>{if(error.code==='ENOENT')return null;throw error;}))?.size===expectedSize;
         const hash = createHash('sha256');
         let size = 0;
         try {
@@ -251,21 +258,22 @@ export async function registerResumableUploads(app, context) {
             hash.update(bytes);context.jobPool.prioritizeTransfers?.();
             done(null, bytes);
           } });
-          await pipeline(req.body, inspect, createWriteStream(temporary, { flags: 'wx', mode: 0o600 }),{signal});
+          // A lost acknowledgement may resend an already durable part. Verify
+          // every incoming byte, but avoid rewriting the same file to disk.
+          await pipeline(req.body, inspect,reusable?new Writable({write(_bytes,_encoding,done){done();}}):createWriteStream(temporary, { flags: 'wx', mode: 0o600,highWaterMark:1024*1024 }),{signal});
           if (size !== expectedSize || hash.digest('hex') !== expectedHash) throw httpError(422, '分割データの長さ、またはSHA-256が一致しません。');
           authenticate(req);
           if(owned(req).state!=='uploading')throw httpError(409,'アップロードをキャンセルしました。');
-          const previous = db.prepare('SELECT size,sha256 FROM upload_parts WHERE upload_id=? AND file_index=? AND part_index=?').get(upload.id, fileIndex, partIndex);
-          if (previous) {
-            if (previous.size !== size || previous.sha256 !== expectedHash) throw httpError(409, '受信済みの分割データと一致しません。');
-          } else {
-            const destination = join(transferDir, upload.id, `${fileIndex}-${partIndex}`);
+          if(previous&&(previous.size!==size||previous.sha256!==expectedHash))throw httpError(409,'受信済みの分割データと一致しません。');
+          if(!reusable){
+            const handle=await open(temporary,'r+');try{await handle.sync();}finally{await handle.close();}
             // A crash between rename and INSERT can leave an uncommitted part.
             await unlink(destination).catch(error => { if (error.code !== 'ENOENT') throw error; });
             await rename(temporary, destination);
+            if(process.platform!=='win32'){const directory=await open(join(transferDir,upload.id),'r');try{await directory.sync();}finally{await directory.close();}}
             authenticate(req);
             if(owned(req).state!=='uploading')throw httpError(409,'アップロードをキャンセルしました。');
-            db.prepare('INSERT INTO upload_parts VALUES(?,?,?,?,?)').run(upload.id, fileIndex, partIndex, size, expectedHash);
+            db.prepare('INSERT OR REPLACE INTO upload_parts VALUES(?,?,?,?,?)').run(upload.id, fileIndex, partIndex, size, expectedHash);
           }
         } finally { await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
       });
@@ -291,7 +299,7 @@ export async function registerResumableUploads(app, context) {
   app.delete('/api/v1/uploads/:id', auth, async (req, reply) => {
     await exclusive(req.params.id, async () => {
       const upload = owned(req);
-      if (upload.state === 'complete') throw httpError(409, '保存済みです。削除を確認してコンテンツ一覧から削除してください。');
+      if (upload.state === 'complete'||context.mediaPipeline?.has(upload.id)) throw httpError(409, '原本を保存済みです。削除を確認してコンテンツ一覧から削除してください。');
       db.prepare("UPDATE upload_sessions SET state='cancelled' WHERE id=?").run(upload.id);
       context.jobPool.cancel(upload.id);await stopParts(upload.id);
       if(!jobs.has(upload.id))await discard(upload.id);
@@ -300,7 +308,7 @@ export async function registerResumableUploads(app, context) {
   });
   return {
     async cancelForDeletion(ids){
-      for(const id of ids){db.prepare("UPDATE upload_sessions SET state='cancelled' WHERE id=? AND state!='complete'").run(id);context.jobPool.cancel(id);await stopParts(id);}
+      for(const id of ids){db.prepare("UPDATE upload_sessions SET state='cancelled' WHERE id=? AND state!='complete'").run(id);context.jobPool.cancel(id);await stopParts(id);await context.mediaPipeline?.cancel(id);}
       await Promise.allSettled(ids.map(id=>jobs.get(id)).filter(Boolean));
       for(const id of ids){await discard(id);db.prepare('DELETE FROM upload_sessions WHERE id=?').run(id);}
     },
@@ -313,7 +321,7 @@ export async function registerResumableUploads(app, context) {
         membership(upload.shelf_id,upload.user_id,['owner','editor']);
         requireSlot(upload.user_id);
         db.prepare('INSERT INTO admin_upload_retries VALUES(?,?,?) ON CONFLICT(upload_id) DO UPDATE SET admin_id=excluded.admin_id,session_id=excluded.session_id').run(id,adminId,sessionId);
-        db.prepare("UPDATE upload_sessions SET state='processing',error=NULL,processing_json='{}' WHERE id=?").run(id);schedule(id);
+        db.prepare("UPDATE upload_sessions SET state='processing',error=NULL,processing_json='{}' WHERE id=?").run(id);if(!context.mediaPipeline?.retry(id))schedule(id);
       });
     },
     get busy(){return jobs.size>0||locked.size>0||partTransfers.size>0||sweeping;},
@@ -339,7 +347,7 @@ export async function registerResumableUploads(app, context) {
         db.prepare("UPDATE upload_sessions SET state='processing' WHERE id=?").run(id);
         await schedule(id);
         const state=get(id);
-        if(state.state!=='complete')throw httpError(422,`${state.error||'メディアを変換できませんでした。'} 処理状況から再試行できます。`);
+        if(state.state!=='complete'&&!context.mediaPipeline?.has(id))throw httpError(422,`${state.error||'メディアを変換できませんでした。'} 処理状況から再試行できます。`);
         return publicItem(db.prepare('SELECT * FROM items WHERE id=?').get(id));
       }catch(error){if(get(id)?.state==='uploading'){await discard(id);db.prepare('DELETE FROM upload_sessions WHERE id=?').run(id);}throw error;}
     },

@@ -81,6 +81,12 @@ public final class TransferEngine {
     }
     private InputStream input(JSONObject f)throws Exception{return context.getContentResolver().openInputStream(Uri.parse(f.getString("uri")));}
     static byte[] readPart(InputStream input,int length)throws IOException{byte[] bytes=new byte[length];int offset=0;while(offset<length){int n=input.read(bytes,offset,length-offset);if(n<0)throw new EOFException("Source file changed");offset+=n;}return bytes;}
+    static int parallelParts(int chunk,int advertised,long maxHeap){
+        // Three transfer workers may run together. Limit each file's buffers to
+        // one eighth of the app heap, retaining room for playback and the UI.
+        if(chunk<1||chunk>16777216)return 1;
+        return Math.max(1,Math.min(advertised,(int)Math.max(1,Math.min(4,maxHeap/8/chunk))));
+    }
     private void upload(Job j)throws Exception{
         JSONArray files=j.data.getJSONArray("files"),publicFiles=new JSONArray(),identities=new JSONArray();j.total=0;
         for(int f=0;f<files.length();f++){
@@ -106,7 +112,7 @@ public final class TransferEngine {
         String id=state.getString("id");j.data.put("uploadId",id);
         if("uploading".equals(state.getString("state"))){
             int chunk=state.getInt("chunkSize");if(chunk<1||chunk>16777216)throw new IllegalArgumentException();
-            int parallel=Math.max(1,Math.min(2,state.optInt("maxParallelParts",1)));
+            int parallel=parallelParts(chunk,state.optInt("maxParallelParts",1),Runtime.getRuntime().maxMemory());
             ExecutorService partsPool=Executors.newFixedThreadPool(parallel);Deque<Future<?>> inflight=new ArrayDeque<>();
             try{
                 for(int f=0;f<files.length();f++){

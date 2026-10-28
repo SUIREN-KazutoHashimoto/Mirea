@@ -9,8 +9,9 @@ import { beginUpdateActivity } from './update-busy.js';
 import {nativeTransfersAvailable,nativeUpload,configureNativeTransfers,invalidateTransfers} from './native-transfers.js';
 import {ciphertextHash} from './download-core.js';
 import {stopTransfers,clearTransferRecords} from './transfer-manager.js';
+import {clearShelfUnlocks,shelfUnlockValue,unlockRequiredShelf} from './private-shelves.js';
 
-configureNativeTransfers(()=>session?.token?{origin:endpoint,token:session.token,userId:session.user.id}:null);
+configureNativeTransfers(()=>session?.token?{origin:endpoint,token:session.token,userId:session.user.id,shelfUnlock:shelfUnlockValue()}:null);
 function invalidateTransferContext(){stopTransfers();clearTransferRecords();if(session?.user.id)ciphertextHash(new TextEncoder().encode((endpoint||location.origin)+'|'+session.user.id)).then(invalidateTransfers).catch(()=>{});}
 export const native = Capacitor.isNativePlatform();
 let savedEndpoint;try{savedEndpoint=localStorage.getItem('mirea.server');}catch{}
@@ -64,6 +65,7 @@ export async function initializeSession({signal}={}){
 export const getSession = () => session;
 export const getEndpoint = () => endpoint;
 export function setEndpoint(value) {
+  clearShelfUnlocks();
   const url = new URL(value);
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
     throw new Error('HTTPSのサーバーURLを入力してください（例：https://mirea.example.com）。');
@@ -74,6 +76,7 @@ export function setEndpoint(value) {
   try{localStorage.setItem('mirea.server', endpoint);}catch{}
 }
 export function setSession(value,{remember=rememberChoice,broadcast=true}={}) {
+  clearShelfUnlocks();
   invalidateNativePlayback();invalidateTransferContext();
   const oldToken=session?.token,oldUser=session?.user.id;if(!value||value.user?.id!==oldUser)clearDiagnostics();authRevision++;
   session = value;
@@ -88,7 +91,7 @@ if(typeof window!=='undefined')window.addEventListener('storage',event=>{
   if(change?.origin===(endpoint||location.origin)&&change.logout){setSession(null,{broadcast:false});window.dispatchEvent(new Event('mirea:unauthorized'));}
 });
 export const absoluteUrl = path => `${endpoint}${path}`;
-export const authHeaders = () => ({ Authorization: `Bearer ${session?.token ?? ''}` });
+export const authHeaders = () => ({ Authorization: `Bearer ${session?.token ?? ''}`,...(shelfUnlockValue()?{'X-Mirea-Shelf-Unlock':shelfUnlockValue()}:{}) });
 
 export async function api(path, options = {}) {
   if (native && !endpoint) throw new Error('接続先のサーバーURLを設定してください。');
@@ -108,6 +111,7 @@ export async function api(path, options = {}) {
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     options.signal?.throwIfAborted();
+    if(response.status===423&&data.shelfUnlockRequired&&!options.shelfRetried){await unlockRequiredShelf(data.shelfUnlockRequired);if(context!==authRevision)throw Error('アカウントが変更されました。');return api(path,{...options,shelfRetried:true});}
     const error = requestError(data,response.status,{record:context===authRevision});
     if (response.status === 401 && session && session.token === token && !path.startsWith('/auth/login')) {
       setSession(null);
@@ -138,7 +142,7 @@ export function upload(shelfId, files, title, onProgress, options) {
   const token = session?.token;
   const release = beginUpdateActivity();
   let task;
-  try { task = nativeTransfersAvailable()&&files.every(file=>file.nativeId)?nativeUpload({origin:endpoint,token,userId:session.user.id},shelfId,files,title,onProgress,options):createResumableUpload({ endpoint, token, userId: session?.user?.id, isCurrent:()=>session?.token===token, unauthorized: () => {
+  try { task = nativeTransfersAvailable()&&files.every(file=>file.nativeId)?nativeUpload({origin:endpoint,token,userId:session.user.id,shelfUnlock:shelfUnlockValue()},shelfId,files,title,onProgress,options):createResumableUpload({ endpoint, token, shelfUnlock:shelfUnlockValue(),userId: session?.user?.id, isCurrent:()=>session?.token===token, unauthorized: () => {
     if (session?.token !== token) return;
     setSession(null);
     window.dispatchEvent(new Event('mirea:unauthorized'));

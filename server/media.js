@@ -100,13 +100,13 @@ function workerOperation(data) {
   });
 }
 
-// Serialize decoding to avoid allocating one large canvas per concurrent upload.
-export function createMediaProcessor() {
-  const pool=createJobPool(()=>5);
+// Bound decoder memory independently for thumbnails, previews and validation.
+export function createMediaProcessor({thumbnailLimit=()=>2,previewLimit=()=>1}={}) {
+  const pools={thumbnail:createJobPool(thumbnailLimit),preview:createJobPool(previewLimit),'validate-image':createJobPool(()=>2)};
   let sequence=0;const activity=new Map();
   const enqueue = (kind,job) => {
     const id='media-'+(++sequence),row={id,kind,state:'queued'};activity.set(id,row);
-    const current = pool.run(async()=>{row.state='running';try{return await job();}finally{activity.delete(id);}});
+    const current = pools[kind].run(async()=>{row.state='running';try{return await job();}finally{activity.delete(id);}});
     return current;
   };
   return {

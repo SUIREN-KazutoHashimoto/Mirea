@@ -23,6 +23,7 @@ async function scenario({native=true,cached=true,online=true,status,bodyDelay=fa
     './error-diagnostics.js':{requestError,clearDiagnostics},
     './native-transfers.js':{nativeTransfersAvailable:()=>native,nativeUpload:()=>{},configureNativeTransfers:()=>{},invalidateTransfers:()=>{}},
     './download-core.js':{ciphertextHash:async()=> 'fixture-partition'},'./transfer-manager.js':{stopTransfers:()=>{},clearTransferRecords:()=>{}},
+    './private-shelves.js':{clearShelfUnlocks:()=>{},shelfUnlockValue:()=>'',unlockRequiredShelf:async()=>{}},
     './native-player-bridge.js':{NativePlayer:{},nativePlayerAvailable:()=>false,invalidateNativePlayback:()=>{}},
     '@capacitor/core':{Capacitor:{isNativePlatform:()=>native},registerPlugin:()=>secure},
     './offline-vault.js':{offlineVault:async()=>vault,offlineIdentity:async()=>cached&&!loggedOut?{user,expiresAt:saved.expiresAt}:null,forgetOfflineIdentity:async()=>{}},

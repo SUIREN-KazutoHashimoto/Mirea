@@ -171,13 +171,14 @@ test('backup refuses active media jobs and releases the maintenance gate without
   assert.equal(c.db.prepare("SELECT COUNT(*) n FROM admin_jobs WHERE kind LIKE 'backup_%'").get().n,0);finish();assert.equal((await c.job(r.json().job.id)).state,'complete');
 });
 
-test('admin retries a failed timed upload with a delegated session even after uploader logout; source is removed only on success',async t=>{
+test('admin retries failed processing after uploader logout; the published original remains recoverable',async t=>{
   const real=createVideoTranscoder();let fail=true;
   const c=await setup(t,{videoTranscoder:{convert(...args){if(fail)throw httpError(422,'Synthetic conversion failure');return real.convert(...args);},close(){real.close();}}});
   const bytes=await makeMp4(join(c.dataDir,'retry.mp4'),{duration:.3,audio:true}),boundary='mirea-admin-retry';
   const body=Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="retry.mp4"\r\nContent-Type: video/mp4\r\n\r\n`),bytes,Buffer.from(`\r\n--${boundary}--\r\n`)]);
-  assert.equal((await c.req('POST',`/shelves/${c.shelf}/items`,c.reader,body,{'content-type':`multipart/form-data; boundary=${boundary}`})).statusCode,422);
-  const upload=c.db.prepare("SELECT * FROM upload_sessions WHERE state='failed'").get();assert(upload);await access(join(c.dataDir,'uploads','transfers',upload.id,'0-0'));
+  const published=await c.req('POST',`/shelves/${c.shelf}/items`,c.reader,body,{'content-type':`multipart/form-data; boundary=${boundary}`});assert.equal(published.statusCode,201,published.body);
+  const id=published.json().item.id;for(let n=0;n<200;n++){if(c.db.prepare('SELECT state FROM upload_sessions WHERE id=?').get(id).state==='failed')break;await delay(50);}
+  const upload=c.db.prepare("SELECT * FROM upload_sessions WHERE id=? AND state='failed'").get(id);assert(upload);assert.deepEqual(await readFile(join(c.dataDir,'originals',upload.id)),bytes);
   await c.req('POST','/auth/logout',c.reader);fail=false;
   const retried=await c.req('POST',`/admin/uploads/${upload.id}/retry`,c.admin,{acknowledgeCost:true});assert.equal(retried.statusCode,202,retried.body);
   for(let n=0;n<100;n++){if(c.db.prepare('SELECT state FROM upload_sessions WHERE id=?').get(upload.id).state==='complete')break;await delay(50);}

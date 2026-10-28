@@ -51,6 +51,7 @@ export async function registerDownloads(app,{db,dataDir,uploadDir,booksDir,video
     return item.mime_type===EPUB_MIME?join(booksDir,item.id,'book.json'):item.mime_type===IMAGE_BOOK_MIME?join(booksDir,item.id,`${file.number}.${imageExtension(file.mime)}`):join(uploadDir,item.id);
   }
   async function manifestFor(item,quality,generation){
+    if(db.prepare('SELECT 1 FROM media_ingest WHERE asset_id=? AND canonical_ready=0').get(item.id))throw httpError(409,'原本で再生できます。暗号化ダウンロードは変換の完了後に利用できます。');
     const files=item.mime_type===IMAGE_BOOK_MIME?db.prepare('SELECT page_number AS number,size,mime_type AS mime,width,height FROM image_pages WHERE item_id=? ORDER BY page_number').all(item.id):[{number:1,size:item.size,mime:item.mime_type}];
     const video=videoMetadata(db,item.id,generation);
     if(video){

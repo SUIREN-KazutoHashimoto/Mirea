@@ -58,6 +58,8 @@ import {offlineIdentity,offlineVault,offlinePartition} from './offline-vault.js'
 import {offlineCatalog,offlineCollection,offlineSeriesContext} from './offline-catalog.js';
 import './offline-catalog.css';
 import {showShelfMenu} from './shelf-menu.js';
+import {configurePrivateShelves,requirePrivateShelf} from './private-shelves.js';
+configurePrivateShelves({api,getSession,getEndpoint,isOffline:isOfflineSession,dialog,getShelf:id=>shelves.find(s=>s.id===id)});
 import {mountLibraryDrawer,mountAssetHold} from './library-interactions.js';
 import {downloadableSnapshot,runBulkDownloads} from './bulk-downloads.js';
 import './library-mobile.css';
@@ -79,7 +81,7 @@ const finishAppLaunch=showAppLaunch({native});
 const pwa=createPwaInstall({native,ensureWorker:ensureDownloadWorker});
 if(!native&&!import.meta.env.DEV)void pwa.prepare();
 let disposeAuthPwa;
-const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.19.0beta/mirea-0.19.0beta-android.apk';
+const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.20.0beta/mirea-0.20.0beta-android.apk';
 const currentApkUrl=()=>config.androidApkUrl?.startsWith('/api/v1/app-updates/')?absoluteUrl(config.androidApkUrl):config.androidApkUrl||defaultApkUrl;
 
 const root = document.querySelector('#app');
@@ -361,6 +363,8 @@ async function refresh({background=false,signal=AbortSignal.timeout(15000)}={}) 
     if (generation !== loadGeneration) return {status:'cancelled'};
     showNameIntegrity(response,false);
     const wasOffline=offlineLibrary;offlineLibrary=false;offlineLibraryData=null;shelves = response.shelves;
+    if(activeShelf)await requirePrivateShelf(shelves.find(s=>s.id===activeShelf));
+    if(generation!==loadGeneration)return {status:'cancelled'};
     if (activeShelf && !shelves.some(s => s.id === activeShelf)) activeShelf = null;
     if(!catalogBulkBusy)rememberCatalog(response,generation);
     // serverTime renews the metadata lease but must not redraw the library every minute.
@@ -403,7 +407,8 @@ async function refreshManually(){
   }catch(error){return {status:current()&&!error.status?'offline':'failed'};}
   finally{budget.dispose();}
 }
-function selectShelf(id) {
+async function selectShelf(id) {
+  try{await requirePrivateShelf(shelves.find(s=>s.id===id),{force:true});}catch(error){toast(error.message);return;}
   historyMode=false;historyRows=[];
   activePlaylist='';playlistDraft=null;
   activeShelf = id;
@@ -525,8 +530,8 @@ function renderItems(animate=false) {
     const item=entry.item;
     if(item.pending)return `<article class="media-card pending-card" aria-disabled="true"><div class="card-art pending-art">${icon(item.kind==='video'?'video':item.kind==='audio'?'audio':'book')}<span>${item.state==='uploading'?'アップロード中':esc(processingLabel(item.processing))}</span></div><div class="card-content"><span class="card-shelf">${esc(item.shelfName)}</span><h3>${esc(item.title)}</h3><p class="muted">処理が完了すると開けます</p><progress max="100" value="${Math.max(0,Math.min(100,Number(item.processing?.percent)||0))}" aria-label="後処理の進捗"></progress></div></article>`;
     const isBook = !isTimedKind(item.kind);
-    const label = item.kind === 'image-book' ? `画像・${item.pageCount}ページ` : item.kind === 'epub' ? 'EPUB' : item.kind === 'pdf' ? 'PDF' : item.kind === 'audio' ? 'AAC / M4A' : item.mimeType === 'video/mp4' ? 'MP4' : 'WebM';
-    return `<article class="media-card ${item.offlineUnavailable?'offline-unavailable':''}"><button class="card-open" ${item.offlineUnavailable?'disabled aria-disabled="true"':`data-open="${item.id}" aria-haspopup="dialog" aria-description="長押し、右クリック、またはShift+F10で作品メニューを開きます"`} ${!offlineLibrary&&item.kind==='video' ? `data-preview-id="${item.id}"` : ''} aria-label="${esc(item.title)}${item.offlineUnavailable?' · '+esc(item.offlineStatus):'を'+(isBook ? '読む' : '再生する')}"><div class="card-art actual-cover ${isBook ? 'book-cover' : item.kind==='audio' ? 'audio-cover' : 'video-cover'}"><img data-local-thumbnail="${item.id}" data-thumbnail="${esc(item.thumbnailUrl)}" alt="${esc(item.title)}のサムネイル"><span class="cover-placeholder">${icon(isBook ? 'book' : item.kind==='audio' ? 'audio' : 'video')}<span>表紙を読み込んでいます…</span></span><span class="media-type">${item.kind === 'image-book' ? 'IMAGE BOOK' : item.kind==='epub' ? 'EPUB' : isBook ? 'PDF' : item.kind==='audio' ? 'AUDIO' : 'VIDEO'}</span><span class="card-open-label">${isBook ? '本を開く' : '再生する'} ${icon('arrow')}</span></div><div class="card-content"><span class="card-shelf">${icon('shelf')}${esc(item.shelfName)}</span><h3>${esc(item.title)}</h3><div class="card-meta"><span>${label} <span class="meta-dot">·</span> ${bytes(item.size)}</span><span>${date(historyMode?item.lastSeenAt:item.createdAt)}</span></div><div class="card-progress">${esc(progressLabel(item,item.progress))}</div>${offlineLibrary?`<span class="card-offline-status">${esc(item.offlineStatus)}</span>`:''}</div></button></article>`;
+    const label = item.originalPlayback?'原本':item.kind === 'image-book' ? `画像・${item.pageCount}ページ` : item.kind === 'epub' ? 'EPUB' : item.kind === 'pdf' ? 'PDF' : item.kind === 'audio' ? 'AAC / M4A' : item.mimeType === 'video/mp4' ? 'MP4' : 'WebM';
+    return `<article class="media-card ${item.offlineUnavailable?'offline-unavailable':''}"><button class="card-open" ${item.offlineUnavailable?'disabled aria-disabled="true"':`data-open="${item.id}" aria-haspopup="dialog" aria-description="長押し、右クリック、またはShift+F10で作品メニューを開きます"`} ${!offlineLibrary&&item.kind==='video'&&(!shelves.find(s=>s.id===item.shelfId)?.private||activeShelf===item.shelfId) ? `data-preview-id="${item.id}"` : ''} aria-label="${esc(item.title)}${item.offlineUnavailable?' · '+esc(item.offlineStatus):'を'+(isBook ? '読む' : '再生する')}"><div class="card-art actual-cover ${isBook ? 'book-cover' : item.kind==='audio' ? 'audio-cover' : 'video-cover'}"><img data-local-thumbnail="${item.id}" data-thumbnail="${esc(item.thumbnailUrl)}" alt="${esc(item.title)}のサムネイル"><span class="cover-placeholder">${icon(isBook ? 'book' : item.kind==='audio' ? 'audio' : 'video')}<span>表紙を読み込んでいます…</span></span><span class="media-type">${item.kind === 'image-book' ? 'IMAGE BOOK' : item.kind==='epub' ? 'EPUB' : isBook ? 'PDF' : item.kind==='audio' ? 'AUDIO' : 'VIDEO'}</span><span class="card-open-label">${isBook ? '本を開く' : '再生する'} ${icon('arrow')}</span></div><div class="card-content"><span class="card-shelf">${icon('shelf')}${esc(item.shelfName)}</span><h3>${esc(item.title)}</h3><div class="card-meta"><span>${label} <span class="meta-dot">·</span> ${bytes(item.size)}</span><span>${date(historyMode?item.lastSeenAt:item.createdAt)}</span></div><div class="card-progress">${esc(progressLabel(item,item.progress))}</div>${item.originalPlayback?'<small class="muted">原本で再生可能 · 変換待ち／変換中</small>':''}${offlineLibrary?`<span class="card-offline-status">${esc(item.offlineStatus)}</span>`:''}</div></button></article>`;
   }).join('');
   node.querySelectorAll('[data-open]').forEach(button => { button.onclick = () => openViewer(source.find(i => i.id === button.dataset.open)); });
   node.querySelectorAll('[data-open-series]').forEach(button=>button.onclick=()=>openLibrarySeries(button.dataset.openSeries));
@@ -642,6 +647,9 @@ function deleteItem(item) {
 }
 async function openViewer(item,{startAtBeginning=false,autoplay=false,background=false,playbackOrder}={}) {
   if(!item||item.offlineUnavailable)return;
+  if(!item.shelfId){try{const cached=await(await offlineCatalog()).load(offlinePartition(getEndpoint(),getSession().user.id));const known=cached?.items?.find(i=>i.id===item.id);if(known)item={...known,...item,shelfId:known.shelfId};}catch{/* Content authorization still runs on the server. */}}
+  const shelf=shelves.find(s=>s.id===item.shelfId);
+  try{await requirePrivateShelf(shelf,{force:activeShelf!==shelf?.id&&!autoplay});}catch(error){toast(error.message);return;}
   if(nativePlayerAvailable()&&isTimedKind(item.kind)){
     document.querySelectorAll('.viewer-screen').forEach(screen=>screen.close());
     const preparing=dialog('再生を準備しています','<div class="modal-body"><p class="native-playback-status" role="status">アクセス権・続き位置・端末の保存データを確認しています…</p></div>');
@@ -776,9 +784,9 @@ function openAssetActions(item){
   const addPlaylist=node.querySelector('.action-playlist');if(addPlaylist)addPlaylist.onclick=act(()=>addAssetToPlaylist(item));
   node.refreshDownloadState=async()=>{
     try{const row=(await listDownloads()).find(row=>row.assetId===item.id);if(!node.isConnected||!current())return;
-      const ready=row?.state==='ready';download.hidden=ready;download.disabled=offlineLibrary;download.querySelector('span').textContent=row?'ダウンロードを再開':'暗号化ダウンロード';unregister.hidden=!row;
-      status.textContent=ready?'端末に暗号化保存済み':row?'取得途中のデータがあります。再開・解除できます。':offlineLibrary?'オフライン中は新しくダウンロードできません。':'';
-    }catch{if(node.isConnected&&current()){download.disabled=offlineLibrary;download.querySelector('span').textContent='暗号化ダウンロード';status.textContent='保存状態を確認できませんでした。';}}
+      const ready=row?.state==='ready';download.hidden=ready;download.disabled=offlineLibrary||item.downloadReady===false;download.querySelector('span').textContent=row?'ダウンロードを再開':'暗号化ダウンロード';unregister.hidden=!row;
+      status.textContent=item.downloadReady===false?'原本で再生できます。ダウンロードは変換完了後に利用できます。':ready?'端末に暗号化保存済み':row?'取得途中のデータがあります。再開・解除できます。':offlineLibrary?'オフライン中は新しくダウンロードできません。':'';
+    }catch{if(node.isConnected&&current()){download.disabled=offlineLibrary||item.downloadReady===false;download.querySelector('span').textContent='暗号化ダウンロード';status.textContent='保存状態を確認できませんでした。';}}
   };
   node.refreshDownloadState();
 }
@@ -985,7 +993,7 @@ async function bootstrapLogin(){
   try{await initializeSession({signal:budget.signal});phase('サーバーの設定を確認しています…');await loadConfig({signal:budget.signal});if(getSession()){phase('閲覧記録の保存領域を準備しています…');await startAnalytics();renderShell();if(isOfflineSession()){if(!await renderOfflineLibrary())throw new Error('有効なオフライン一覧情報がありません。オンラインで一度接続してください。');}else{await renderOfflineLibrary({markOffline:false}).catch(()=>false);await refresh({background:offlineLibrary});}synchronizeConnection();}else renderAuth();}
   catch(error){
     libraryPoll?.();libraryPoll=null;pullRefresh?.dispose();pullRefresh=null;clearThumbnails();
-    root.innerHTML=`<main class="reconnect-screen"><section><h1>サーバーに再接続</h1><p>${esc(error.message)}</p><p class="muted">通信に失敗しても、保持したログインは解除しません。オンラインで認証を確認してからライブラリを開きます。</p><button class="button primary retry-connection">もう一度接続する</button><button class="button secondary show-login">ログイン画面を開く</button></section></main>`;
+    root.innerHTML=`<main class="reconnect-screen"><section><h1>サーバーに再接続</h1><p>${esc(['AbortError','TimeoutError'].includes(error.name)?'接続の確認が時間内に完了しませんでした。もう一度接続してください。':error.message)}</p><p class="muted">通信に失敗しても、保持したログインは解除しません。オンラインで認証を確認してからライブラリを開きます。</p><button class="button primary retry-connection">もう一度接続する</button><button class="button secondary show-login">ログイン画面を開く</button></section></main>`;
     root.querySelector('.retry-connection').onclick=()=>bootstrapLogin();root.querySelector('.show-login').onclick=()=>renderAuth();
   }finally{budget.dispose();finishAppLaunch();}
 }

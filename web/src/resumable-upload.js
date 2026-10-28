@@ -4,12 +4,12 @@ const digest = async bytes => hex(await crypto.subtle.digest('SHA-256', bytes));
 const abortError = () => new Error('アップロードをキャンセルしました。');
 const transient = status => !status || [408, 409, 425, 429].includes(status) || status >= 500;
 
-export function createResumableUpload({ endpoint, token, userId, unauthorized, isCurrent=()=>true }, shelfId, files, title, onProgress, {retainOriginal=true,seriesId=null,protocolVersion=1,monitorProcessing=true}={}) {
+export function createResumableUpload({ endpoint, token, shelfUnlock='',userId, unauthorized, isCurrent=()=>true }, shelfId, files, title, onProgress, {retainOriginal=true,seriesId=null,protocolVersion=1,monitorProcessing=true}={}) {
   const controller = new AbortController();
   const { signal } = controller;
   const xhrs=new Set(),inflight=new Map();
   let uploadId, storageKey, cancelled = false, processing = false;
-  const headers = { Authorization: `Bearer ${token}` };
+  const headers = { Authorization: `Bearer ${token}`,...(shelfUnlock?{'X-Mirea-Shelf-Unlock':shelfUnlock}:{}) };
   const readSaved = () => { try { return JSON.parse(localStorage.getItem(storageKey)); } catch { return null; } };
   const save = value => { try { if (value) localStorage.setItem(storageKey, JSON.stringify(value)); else localStorage.removeItem(storageKey); } catch { /* private / full browser storage */ } };
   const sleep = ms => new Promise((resolve, reject) => {
@@ -30,10 +30,11 @@ export function createResumableUpload({ endpoint, token, userId, unauthorized, i
   }
   async function request(path, method = 'GET', body) {
     let response;
+    const deadline=AbortSignal.timeout(45000);
     try {
       response = await fetch(`${endpoint}/api/v1${path}`, {
         method, headers: { ...headers, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-        body: body ? JSON.stringify(body) : undefined, signal, cache: 'no-store'
+        body: body ? JSON.stringify(body) : undefined, signal:AbortSignal.any([signal,deadline]), cache: 'no-store'
       });
     } catch { throw Object.assign(new Error('通信が途切れました。同じファイルを選んで再試行すると、受信済みの続きから送信します。'), { status: 0 }); }
     const result = response.status === 204 ? null : await response.json().catch(() => ({}));
