@@ -16,6 +16,7 @@ import static org.junit.Assert.*;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk=35,shadows=PlaybackActivityTest.RatePlayer.class)
 public class PlaybackLifecycleTest {
+    static final class ReleaseProbe extends MediaPlayer {PlaybackApi api;boolean cancelledBeforeRelease;@Override public void release(){cancelledBeforeRelease=api.closed;super.release();}}
     static class ParkedExecutor extends java.util.concurrent.AbstractExecutorService {
         boolean stopped;public void execute(Runnable task){}public void shutdown(){stopped=true;}public java.util.List<Runnable> shutdownNow(){stopped=true;return java.util.List.of();}public boolean isShutdown(){return stopped;}public boolean isTerminated(){return stopped;}public boolean awaitTermination(long n,TimeUnit unit){return stopped;}
     }
@@ -63,5 +64,18 @@ public class PlaybackLifecycleTest {
             ReflectionHelpers.setField(s,"item",first);ReflectionHelpers.setField(s,"request",request);ReflectionHelpers.setField(s,"api",new PlaybackApi(request.getString("origin"),request.getString("token"),request.getString("userId")));PlaybackRetry retry=ReflectionHelpers.getField(s,"retry");retry.unavailable(android.os.SystemClock.elapsedRealtime());
             s.pause();s.navigate(1);Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();JSONObject next=ReflectionHelpers.getField(s,"request");assertEquals(b,next.getJSONObject("item").getString("id"));assertFalse(next.getBoolean("autoplay"));assertTrue(next.has("download"));assertFalse((Boolean)ReflectionHelpers.getField(s,"desiredPlaying"));
         }finally{c.destroy();s.stopped.get(5,TimeUnit.SECONDS);}
+    }
+    @Test public void connectionIsCancelledBeforeDecoderReleaseOnFailureStopAndReopen()throws Exception{
+        for(String action:new String[]{"failure","stop","reopen"}){
+            ServiceController<PlaybackService> c=Robolectric.buildService(PlaybackService.class).create();PlaybackService s=c.get();boolean destroyed=false;
+            try{
+                String name="release-"+action+".m4a";ShadowMediaPlayer.addMediaInfo(DataSource.toDataSource(name),new ShadowMediaPlayer.MediaInfo(120000,0));ReleaseProbe p=new ReleaseProbe();p.setDataSource(name);p.prepare();p.api=new PlaybackApi("https://mirea.example","a".repeat(43),"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+                JSONObject asset=new JSONObject().put("id","aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").put("kind","audio").put("size",100);ReflectionHelpers.setField(s,"api",p.api);ReflectionHelpers.setField(s,"player",p);ReflectionHelpers.setField(s,"prepared",true);ReflectionHelpers.setField(s,"item",asset);
+                if(action.equals("failure"))ReflectionHelpers.callInstanceMethod(s,"fail",ReflectionHelpers.ClassParameter.from(String.class,"Synthetic blocked transport"));
+                else if(action.equals("stop")){c.destroy();destroyed=true;}
+                else{java.util.concurrent.ExecutorService prep=ReflectionHelpers.getField(s,"preparation");prep.shutdown();ReflectionHelpers.setField(s,"preparation",new ParkedExecutor());ReflectionHelpers.setField(s,"request",new JSONObject().put("origin",p.api.origin).put("token","a".repeat(43)).put("userId",p.api.userId).put("item",asset));s.reconnect();}
+                assertTrue(action+" must abort transport before decoder release can wait on readAt",p.cancelledBeforeRelease);
+            }finally{if(!destroyed)c.destroy();s.stopped.get(5,TimeUnit.SECONDS);}
+        }
     }
 }
