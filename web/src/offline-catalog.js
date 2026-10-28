@@ -43,7 +43,7 @@ export function normalizeCatalog(input,userId){
 export function offlineCollection(catalog,rows,playable){
   const downloads=new Map(rows.map(row=>[row.assetId,row]));
   const items=catalog?catalog.items:rows.filter(row=>row.state==='ready').map(row=>{const m=row.manifest;return {id:row.assetId,title:m.title,kind:m.kind,mimeType:m.files[0].mime,pageCount:m.pageCount,size:m.files.reduce((n,f)=>n+f.size,0),createdAt:row.savedAt,shelfName:'端末のダウンロード',role:'viewer'};});
-  return {shelves:catalog?.shelves??[],series:catalog?.series??[],playlists:catalog?.playlists??[],items:items.map(item=>({...item,offlineUnavailable:!playable.has(item.id),offlineStatus:playable.has(item.id)?'オフラインで利用できます':downloads.get(item.id)?.state==='ready'?'オフライン視聴期限切れ':downloads.has(item.id)?'ダウンロード未完了':'未ダウンロード · オンラインで保存してください'}))};
+  return {shelves:catalog?.shelves??[],series:catalog?.series??[],playlists:catalog?.playlists??[],items:items.map(item=>({...item,offlineUnavailable:!playable.has(item.id),offlineStatus:playable.has(item.id)?'':downloads.get(item.id)?.state==='ready'?'接続すると視聴期限を更新できます':downloads.has(item.id)?'保存が完了していません':'この端末には保存されていません'}))};
 }
 
 export function offlineSeriesContext(catalog,assetId){

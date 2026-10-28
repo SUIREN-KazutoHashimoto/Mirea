@@ -40,3 +40,8 @@ test('failed renewal retries on network return and closing during renewal never 
   const stream=attachVideoStream(video,{ticket,events,absoluteUrl:p=>p,renew:async()=>{attempts++;if(attempts===1)throw Error('offline');return new Promise(resolve=>{finish=resolve;});}});
   try{video.currentTime=32;await assert.rejects(stream.reconnect(),/offline/);events.dispatchEvent(new Event('online'));await Promise.resolve();assert.equal(attempts,2);const before=video.src;stream.dispose();finish({...ticket,url:'/new',hlsUrl:'/hls/new'});await new Promise(resolve=>setTimeout(resolve,0));assert.equal(video.src,before);}finally{stream.dispose();}
 });
+test('automatic authorization renewal preserves the same URL, rate, position and playing element without reload',async()=>{
+ const video=new Video(),events=new EventTarget();let loads=0;video.load=()=>loads++;video.playbackRate=1.5;
+ const stream=attachVideoStream(video,{ticket,events,absoluteUrl:p=>p,renew:async previous=>{assert.equal(previous,ticket);return {...previous,expiresAt:Date.now()+3600000};}});
+ try{video.currentTime=47;video.paused=false;const source=video.src;await stream.reconnect({seamless:true});assert.equal(video.src,source);assert.equal(video.currentTime,47);assert.equal(video.playbackRate,1.5);assert.equal(video.paused,false);assert.equal(loads,0);events.dispatchEvent(new Event('online'));await Promise.resolve();assert.equal(loads,0);}finally{stream.dispose();}
+});

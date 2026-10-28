@@ -71,6 +71,16 @@ public class PlaybackScreenTest {
         }
     }
     private void capture(PlaybackScreen screen,String name)throws Exception{Bitmap bitmap=Bitmap.createBitmap(screen.getWidth(),screen.getHeight(),Bitmap.Config.ARGB_8888);Canvas canvas=new Canvas(bitmap);canvas.drawColor(Color.rgb(9,15,28));screen.draw(canvas);File folder=new File("build/reports/playback-ui");assertTrue(folder.isDirectory()||folder.mkdirs());try(FileOutputStream out=new FileOutputStream(new File(folder,name+".png"))){assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG,100,out));}bitmap.recycle();}
+    @Test public void progressTicksKeepVideoBackdropAndTransportDrawablesAndNeverExposeConnectionMode()throws Exception{
+        try(ActivityController<Activity> controller=Robolectric.buildActivity(Activity.class).setup()){
+            PlaybackScreen screen=create(controller.get(),true);layout(screen,360,800);ImageButton play=screen.findViewWithTag("action-play");android.graphics.drawable.Drawable icon=play.getDrawable(),header=screen.findViewWithTag("player-header").getBackground();
+            JSONObject state=new JSONObject().put("video",true).put("prepared",true).put("playing",true).put("durationMs",203000).put("rate",1).put("quality","720p");
+            for(int n=0;n<10;n++){state.put("positionMs",65000+n*500);screen.bind(state,null);assertSame(icon,play.getDrawable());assertSame(header,screen.findViewWithTag("player-header").getBackground());}
+            state.put("playing",false);screen.bind(state,null);assertNotSame(icon,play.getDrawable());assertEquals("再生",play.getContentDescription());
+            state.put("video",false).put("download",true);screen.bind(state,null);assertFalse(allText(screen).contains("暗号化保存データ"));assertFalse(allText(screen).contains("ストリーミング"));
+        }
+    }
+    private String allText(View view){String text=view instanceof TextView?((TextView)view).getText().toString():"";if(view instanceof ViewGroup)for(int n=0;n<((ViewGroup)view).getChildCount();n++)text+=allText(((ViewGroup)view).getChildAt(n));return text;}
     @Test @Config(qualifiers="w800dp-h360dp-land-mdpi") public void videoHasCompactNonOverlappingOverlayRotateButtonAndPipHidesEveryControl()throws Exception{
         try(ActivityController<Activity> controller=Robolectric.buildActivity(Activity.class).setup()){
             PlaybackScreen screen=create(controller.get(),true);layout(screen,800,360);

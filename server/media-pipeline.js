@@ -28,7 +28,9 @@ export async function createMediaPipeline(app,context){
  const ingest=id=>db.prepare('SELECT * FROM media_ingest WHERE asset_id=?').get(id);
  const task=id=>db.prepare('SELECT * FROM media_tasks WHERE id=?').get(id);
  const item=id=>db.prepare('SELECT * FROM items WHERE id=?').get(id);
- const report=(row,value)=>db.prepare('UPDATE media_tasks SET progress_json=?,updated_at=? WHERE id=?').run(JSON.stringify(value),Date.now(),row.id);
+ const progressUpdate=db.prepare('UPDATE media_tasks SET progress_json=?,updated_at=? WHERE id=?');
+ const reports=new Map();
+ const report=(row,value)=>{const json=JSON.stringify(value),now=Date.now(),last=reports.get(row.id);if(last&&(json===last.json||value.stage===last.stage&&now-last.time<500))return;reports.set(row.id,{json,time:now,stage:value.stage});progressUpdate.run(json,now,row.id);};
  const authorize=id=>{const asset=item(id);if(!asset)throw httpError(404,'アセットは削除されています。');if(asset.uploaded_by&&(!adminAccess.enabled(asset.uploaded_by)||!db.prepare("SELECT 1 FROM memberships WHERE shelf_id=? AND user_id=? AND role IN ('owner','editor')").get(asset.shelf_id,asset.uploaded_by)))throw httpError(403,'アップロード者の権限が変更されました。');return asset;};
  async function syncFile(path){const handle=await open(path,'r+');try{await handle.sync();}finally{await handle.close();}}
  async function syncDirectory(path){if(process.platform==='win32')return;const handle=await open(path,'r');try{await handle.sync();}finally{await handle.close();}}
@@ -86,21 +88,23 @@ export async function createMediaPipeline(app,context){
    }
   }finally{await removeItemDirectory(join(stagingDir,asset.id),row.id);}
  }
+ const readyTasks=db.prepare(`SELECT t.* FROM media_tasks t LEFT JOIN media_tasks p ON p.asset_id=t.asset_id AND p.kind=CASE t.kind WHEN 'transcode' THEN 'thumbnail' WHEN 'preview' THEN 'transcode' END
+  WHERE t.kind=? AND t.state='queued' AND (t.kind='thumbnail' OR p.state NOT IN ('queued','running')) ORDER BY t.created_at,t.id LIMIT ?`);
+ const failedPreviews=db.prepare("SELECT t.id,t.asset_id FROM media_tasks t JOIN media_tasks p ON p.asset_id=t.asset_id AND p.kind='transcode' WHERE t.kind='preview' AND t.state='queued' AND p.state IN ('failed','cancelled')");
  function pump(){
   if(closing||pumping)return;pumping=true;
   try{
-   const rows=db.prepare("SELECT * FROM media_tasks WHERE state='queued' ORDER BY CASE kind WHEN 'thumbnail' THEN 0 WHEN 'transcode' THEN 1 ELSE 2 END,created_at,id").all();
+   for(const row of failedPreviews.all()){db.prepare("UPDATE media_tasks SET state='failed',error=?,updated_at=? WHERE id=?").run('先に動画のトランスコードを再実行してください。',Date.now(),row.id);finish(row.asset_id).catch(error=>app.log.error({err:error},'Media task finalization failed'));}
+   const rows=[];for(const kind of ['thumbnail','transcode','preview']){const cap=Math.min(16,Math.max(2,(jobPool.inspect?.()[kind]?.limit??8)*2));if((counts.get(kind)??0)<cap)rows.push(...readyTasks.all(kind,cap));}
    for(const row of rows){
     if(active.has(row.id)||(counts.get(row.kind)??0)>=16)continue;
-    const dependency=row.kind==='transcode'?'thumbnail':row.kind==='preview'?'transcode':null;
-    if(dependency){const previous=db.prepare('SELECT state FROM media_tasks WHERE asset_id=? AND kind=?').get(row.asset_id,dependency);if(!previous||['queued','running'].includes(previous.state))continue;if(row.kind==='preview'&&previous.state!=='complete'){db.prepare("UPDATE media_tasks SET state='failed',error=?,updated_at=? WHERE id=?").run('先に動画のトランスコードを再実行してください。',Date.now(),row.id);finish(row.asset_id).catch(error=>app.log.error({err:error},'Media task finalization failed'));continue;}}
     counts.set(row.kind,(counts.get(row.kind)??0)+1);const promise=jobPool.run(async()=>{
      if(closing)return;const current=task(row.id);if(!current||current.state!=='queued')return;
      db.prepare("UPDATE media_tasks SET state='running',updated_at=? WHERE id=?").run(Date.now(),row.id);
      try{await execute(row);if(task(row.id)?.state==='running')db.prepare("UPDATE media_tasks SET state='complete',error=NULL,progress_json=?,updated_at=? WHERE id=?").run(JSON.stringify({stage:'complete',percent:100}),Date.now(),row.id);}
      catch(error){if(task(row.id)?.state==='running')db.prepare('UPDATE media_tasks SET state=?,error=?,updated_at=? WHERE id=?').run(closing||error.code==='SERVER_CLOSING'?'queued':'failed',closing||error.code==='SERVER_CLOSING'?null:'後処理を完了できませんでした。原本は保持されています。',Date.now(),row.id);if(!closing&&error.code!=='SERVER_CLOSING')app.log.error({err:error,jobId:row.id},'Media pipeline failed');}
      finally{await finish(row.asset_id);}
-    },row.id,row.kind).finally(()=>{active.delete(row.id);activeAssets.delete(row.id);counts.set(row.kind,counts.get(row.kind)-1);pump();});active.set(row.id,promise);activeAssets.set(row.id,row.asset_id);
+    },row.id,row.kind).finally(()=>{reports.delete(row.id);active.delete(row.id);activeAssets.delete(row.id);counts.set(row.kind,counts.get(row.kind)-1);pump();});active.set(row.id,promise);activeAssets.set(row.id,row.asset_id);
    }
   }finally{pumping=false;}
  }

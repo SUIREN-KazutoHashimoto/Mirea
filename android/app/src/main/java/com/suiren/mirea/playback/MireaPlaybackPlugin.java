@@ -15,8 +15,9 @@ public final class MireaPlaybackPlugin extends Plugin {
     private final java.util.concurrent.atomic.AtomicBoolean syncing=new java.util.concurrent.atomic.AtomicBoolean();
     private PlaybackCache cache;
     private volatile boolean visible;
-    private final BroadcastReceiver changed=new BroadcastReceiver(){public void onReceive(Context c,Intent i){if(visible)notifyListeners("playbackState",state());}};
+    private final BroadcastReceiver changed=new BroadcastReceiver(){public void onReceive(Context c,Intent i){if(visible)notifyListeners("playbackState",dockState());}};
     private JSObject state(){try{PlaybackService s=PlaybackService.current;return s==null?new JSObject().put("active",false):JSObject.fromJSONObject(s.status());}catch(Exception e){return new JSObject().put("active",false);}}
+    private JSObject dockState(){try{PlaybackService s=PlaybackService.current;return s==null?new JSObject().put("active",false):JSObject.fromJSONObject(s.dockStatus());}catch(Exception e){return new JSObject().put("active",false);}}
     @Override public void load(){cache=new PlaybackCache(getContext());ContextCompat.registerReceiver(getContext(),changed,new IntentFilter(PlaybackService.EVENT),ContextCompat.RECEIVER_NOT_EXPORTED);}
     @PluginMethod public void play(PluginCall call){getActivity().runOnUiThread(()->{PlaybackService s=PlaybackService.current;if(s!=null)s.play();call.resolve(state());});}
     @PluginMethod public void pause(PluginCall call){getActivity().runOnUiThread(()->{PlaybackService s=PlaybackService.current;if(s!=null)s.pause();call.resolve(state());});}
@@ -41,7 +42,7 @@ public final class MireaPlaybackPlugin extends Plugin {
     @PluginMethod public void cacheRemove(PluginCall call){io.submit(()->{try{cache.remove(call.getString("partition"),call.getString("id"));call.resolve();}catch(Exception e){call.reject("端末の暗号化データを削除できません。");}});}
     @PluginMethod public void cacheClear(PluginCall call){io.submit(()->{try{cache.clear(call.getString("partition"));call.resolve();}catch(Exception e){call.reject("端末の暗号化データを削除できません。");}});}
     @PluginMethod public void clearHistory(PluginCall call){io.submit(()->{try{String partition=call.getString("partition","");if(!partition.matches("[0-9a-f]{64}"))throw new Exception();try(PlaybackJournal journal=new PlaybackJournal(getContext())){journal.clear(partition);}call.resolve();}catch(Exception e){call.reject("端末内の再生記録を削除できません。");}});}
-    @Override protected void handleOnResume(){visible=true;notifyListeners("playbackState",state());}
+    @Override protected void handleOnResume(){visible=true;notifyListeners("playbackState",dockState());}
     @Override protected void handleOnPause(){visible=false;}
     @Override protected void handleOnDestroy(){try{getContext().unregisterReceiver(changed);}catch(Exception ignored){}io.shutdown();syncIo.shutdownNow();}
 }

@@ -23,7 +23,7 @@ public class VideoNavigationTest {
     }
     @Test public void adaptiveQualitySwitchKeepsOnePlayerAndPinsBothDimensions()throws Exception{
         JSONArray levels=new JSONArray("[{quality:'1080p',width:1920,height:1080},{quality:'720p',width:1280,height:720},{quality:'360p',width:640,height:360}]");
-        AdaptivePlayback p=new AdaptivePlayback(RuntimeEnvironment.getApplication(),api(),id,"base",levels,new AdaptivePlayback.Events(){public void ready(){}public void buffering(boolean v){}public void ended(){}public void failed(){}public void changed(){}public void seeked(){}});
+        AdaptivePlayback p=new AdaptivePlayback(RuntimeEnvironment.getApplication(),api(),id,"base",null,0,levels,new AdaptivePlayback.Events(){public void ready(){}public void buffering(boolean v){}public void ended(){}public void failed(){}public void changed(){}public void seeked(){}});
         try{p.quality("720p");TrackSelectionParameters fixed=p.player.getTrackSelectionParameters();assertEquals(1280,fixed.minVideoWidth);assertEquals(720,fixed.maxVideoHeight);p.quality("data");assertEquals(360,p.player.getTrackSelectionParameters().maxVideoHeight);p.quality("auto");assertEquals(0,p.player.getTrackSelectionParameters().minVideoHeight);assertEquals(Integer.MAX_VALUE,p.player.getTrackSelectionParameters().maxVideoHeight);p.quality("higher");assertTrue(p.player.getTrackSelectionParameters().forceHighestSupportedBitrate);}finally{p.player.release();}
     }
 }

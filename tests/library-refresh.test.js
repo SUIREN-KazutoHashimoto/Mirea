@@ -51,7 +51,7 @@ test('touch cancellation, visibility, blur, resize, blocked viewer/drawer and of
 });
 test('refresh button shares pending guard and reports offline/failure without hanging or retry loop',async()=>{
   for(const result of [{status:'offline'},{status:'failed'},new Error('network')]){
-    let calls=0;const s=setup(async()=>{calls++;if(result instanceof Error)throw result;return result;});s.button.dispatchEvent(new Event('click'));s.button.dispatchEvent(new Event('click'));await settle();assert.equal(calls,1);assert.equal(s.control.active,false);assert.equal(s.button.disabled,false);assert.equal(s.indicator.dataset.state,result.status==='offline'?'done':'failed');assert.match(s.indicator.label.textContent,result.status==='offline'?/オフライン/:/更新できません/);s.c.run();assert.equal(s.indicator.dataset.state,'idle');s.control.dispose();
+    let calls=0;const s=setup(async()=>{calls++;if(result instanceof Error)throw result;return result;});s.button.dispatchEvent(new Event('click'));s.button.dispatchEvent(new Event('click'));await settle();assert.equal(calls,1);assert.equal(s.control.active,false);assert.equal(s.button.disabled,false);assert.equal(s.indicator.dataset.state,result.status==='offline'?'done':'failed');assert.match(s.indicator.label.textContent,result.status==='offline'?/保存した一覧/:/更新できません/);assert.doesNotMatch(s.indicator.label.textContent,/オフライン/);s.c.run();assert.equal(s.indicator.dataset.state,'idle');s.control.dispose();
   }
 });
 test('dispose cancels listeners and late completion cannot recreate UI or alter next account shell',async()=>{

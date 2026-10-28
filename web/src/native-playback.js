@@ -9,13 +9,13 @@ import { beginUpdateActivity } from './update-busy.js';
 import {shelfUnlockValue} from './private-shelves.js';
 
 let release,dock,dockIdentity,refreshEpoch=0;
-export async function refreshNativePlayback(){
+export async function refreshNativePlayback(eventState){
   if(!nativePlayerAvailable())return;
   const epoch=++refreshEpoch,actor=getSession(),origin=getEndpoint(),generation=nativePlaybackGeneration(),identity=origin+'|'+actor?.user.id;
   if(dockIdentity!==identity){dock?.dispose();dock=null;dockIdentity=identity;}
   await nativePlaybackStopped();
   const current=()=>epoch===refreshEpoch&&getSession()?.token===actor?.token&&getEndpoint()===origin&&nativePlaybackGeneration()===generation;
-  const status=await NativePlayer.status();if(!current())return;
+  const status=typeof eventState?.active==='boolean'?eventState:await NativePlayer.status();if(!current())return;
   if(status.active&&!release)release=beginUpdateActivity();else if(!status.active&&release){release();release=null;}
   if(!status.active||!actor){dock?.dispose();dock=null;return;}
   if(!dock)dock=mountPlaybackDock({onRestore:()=>NativePlayer.show(),onToggle:state=>state.playing?NativePlayer.pause():NativePlayer.play(),onStop:()=>NativePlayer.stop().then(refreshNativePlayback),loadArtwork:async(state,signal)=>{
@@ -27,7 +27,7 @@ export async function refreshNativePlayback(){
 }
 export async function initializeNativePlayback(){
   if(!nativePlayerAvailable())return;
-  await NativePlayer.addListener('playbackState',()=>refreshNativePlayback().catch(()=>{}));
+  await NativePlayer.addListener('playbackState',state=>refreshNativePlayback(state).catch(()=>{}));
   await refreshNativePlayback();
 }
 export async function openNativePlayback(item,{restart=false,continuous=true,analytics=false,version='',isCurrent=()=>true,progress=()=>{}}={}){
@@ -45,8 +45,9 @@ export async function openNativePlayback(item,{restart=false,continuous=true,ana
   if(download){
     const partition=offlinePartition(origin,session.user.id),catalog=await(await offlineCatalog()).load(partition).catch(()=>null);
     if(catalog){
-      const rows=await listDownloads(),vault=await offlineVault(),playable=new Set();
-      await Promise.all(rows.filter(row=>row.state==='ready').map(async row=>{const lease=await vault.lease(partition,row.manifest.id).catch(()=>null);if(lease){playable.add(row.assetId);lease.key='';}}));
+      const rows=await listDownloads(),vault=await offlineVault(),playable=new Set(),members=new Set(offlineSeriesContext(offlineCollection(catalog,rows,playable),item.id).items.map(asset=>asset.id));
+      const ready=rows.filter(row=>row.state==='ready'&&members.has(row.assetId));let index=0;
+      await Promise.all(Array.from({length:Math.min(4,ready.length)},async()=>{while(valid()&&index<ready.length){const row=ready[index++],lease=await vault.lease(partition,row.manifest.id).catch(()=>null);if(lease){playable.add(row.assetId);lease.key='';}}}));
       const context=offlineSeriesContext(offlineCollection(catalog,rows,playable),item.id);
       if(context.series){const manifests=new Map(rows.filter(row=>row.state==='ready'&&playable.has(row.assetId)&&['audio','video'].includes(row.manifest.kind)).map(row=>[row.assetId,row.manifest]));offlineSeries={...context,items:context.items.map(asset=>({...asset,...(manifests.has(asset.id)?{offlineDownload:manifests.get(asset.id)}:{})}))};}
     }

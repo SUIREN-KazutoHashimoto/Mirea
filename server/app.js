@@ -84,7 +84,7 @@ export async function createApp(options = {}) {
   const reset=createMediaReset({db,storage});
   try{await reset.recover();}catch(error){db.close();throw error;}
   const media = options.mediaProcessor ?? createMediaProcessor({thumbnailLimit:()=>processingSettings.value.maxConcurrentThumbnails,previewLimit:()=>processingSettings.value.maxConcurrentPreviews});
-  const videoTranscoder=options.videoTranscoder??createVideoTranscoder();
+  const videoTranscoder=options.videoTranscoder??createVideoTranscoder({concurrency:()=>processingSettings.value.maxConcurrentJobs});
   const audioTranscoder=options.audioTranscoder??createAudioTranscoder();
   const legacyThumbnail = createThumbnailStore(db, media, uploadDir, thumbnailDir);
   let mediaPipeline;
@@ -436,12 +436,19 @@ export async function createApp(options = {}) {
   app.post('/api/v1/items/:id/playback-ticket', auth, async req => {
     const item = findItem(req.params.id, req.user.id);
     if (item.mime_type === IMAGE_BOOK_MIME) throw httpError(400, '画像の本はページビューアで開いてください。');
-    const source=mediaContentSource(db,item,storage);
-    const token = newToken();
+    const previous=req.body?.ticket;
+    if(previous!==undefined&&(typeof previous!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(previous)))throw httpError(400,'再生情報が不正です。');
+    const existing=previous&&db.prepare(`SELECT t.*,g.generation FROM playback_tickets t LEFT JOIN playback_generations g ON g.token_hash=t.token_hash
+      WHERE t.token_hash=? AND t.session_id=? AND t.item_id=? AND t.expires_at>?`).get(hashToken(previous),req.session.id,item.id,Date.now());
+    if(previous&&!existing)throw httpError(409,'再生URLを更新できません。プレイヤーから開き直してください。');
+    const source=mediaContentSource(db,item,storage,{raw:existing?.generation==='source'});
+    if(existing?.generation==='source')await access(source.path).catch(()=>{throw httpError(409,'再生中の原本が見つかりません。開き直してください。');});
+    const token = previous??newToken();
     const expiresAt = Math.min(Date.now() + (source.original?7*3600000:TICKET_MS), req.session.expires_at);
-    db.prepare('INSERT INTO playback_tickets VALUES (?, ?, ?, ?)').run(hashToken(token), req.session.id, req.params.id, expiresAt);
-    const metadata=videoMetadata(db,item.id);
-    if(source.original||metadata)db.prepare('INSERT INTO playback_generations VALUES(?,?)').run(hashToken(token),source.original?'source':metadata.generation??'base');
+    if(existing)db.prepare('UPDATE playback_tickets SET expires_at=? WHERE token_hash=?').run(expiresAt,hashToken(token));
+    else db.prepare('INSERT INTO playback_tickets VALUES (?, ?, ?, ?)').run(hashToken(token), req.session.id, req.params.id, expiresAt);
+    const metadata=source.original?null:videoMetadata(db,item.id,existing?.generation);
+    if(!existing&&(source.original||metadata))db.prepare('INSERT INTO playback_generations VALUES(?,?)').run(hashToken(token),source.original?'source':metadata.generation??'base');
     return { url: `/api/v1/items/${req.params.id}/content?ticket=${token}`, expiresAt,size:source.size,mimeType:source.mimeType,original:source.original,
       ...(metadata?{hlsUrl:`/api/v1/items/${item.id}/hls/master.m3u8?ticket=${token}`,renditions:metadata.renditions.map(({quality,width,height,size})=>({quality,width,height,size}))}:{}) };
   });
