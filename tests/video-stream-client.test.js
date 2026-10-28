@@ -28,3 +28,15 @@ test('non-HLS fallback keeps legacy MP4 and hides unsupported quality controls',
   const stream=attachVideoStream(video,{ticket,absoluteUrl:p=>p,onOptions:o=>{controls=o;},onQuality:q=>{quality=q;}});
   try{assert.equal(video.src,ticket.url);assert.deepEqual(controls.qualities,[]);assert.equal(quality.streamKind,'mp4');assert.equal(quality.selectedQuality,'legacy');}finally{stream.dispose();}
 });
+
+test('rapid source switches preserve the first position and rate until metadata, without restarting a paused viewer',()=>{
+  const video=new Video();video.playbackRate=1.5;video.load=()=>{};
+  const stream=attachVideoStream(video,{ticket,absoluteUrl:p=>p});
+  try{video.currentTime=42;stream.choose('720p');stream.choose('360p');video.dispatchEvent(new Event('loadedmetadata'));assert.equal(video.currentTime,42);assert.equal(video.playbackRate,1.5);assert.equal(video.paused,true);assert.match(video.src,/360p/);}finally{stream.dispose();}
+});
+
+test('failed renewal retries on network return and closing during renewal never changes the old source',async()=>{
+  const video=new Video(),events=new EventTarget();let attempts=0,finish;
+  const stream=attachVideoStream(video,{ticket,events,absoluteUrl:p=>p,renew:async()=>{attempts++;if(attempts===1)throw Error('offline');return new Promise(resolve=>{finish=resolve;});}});
+  try{video.currentTime=32;await assert.rejects(stream.reconnect(),/offline/);events.dispatchEvent(new Event('online'));await Promise.resolve();assert.equal(attempts,2);const before=video.src;stream.dispose();finish({...ticket,url:'/new',hlsUrl:'/hls/new'});await new Promise(resolve=>setTimeout(resolve,0));assert.equal(video.src,before);}finally{stream.dispose();}
+});

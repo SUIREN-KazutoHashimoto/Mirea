@@ -1,6 +1,6 @@
 {
   "name": "mirea",
-  "version": "0.20.0-beta",
+  "version": "0.20.1-beta",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.25.0",
@@ -19,7 +19,7 @@
     "test:package": "node --test tests/package.test.js",
     "android:sync": "vite build && cap sync android",
     "android:open": "cap open android",
-    "test:ui": "node scripts/check-management-ui.mjs"
+    "test:ui": "node scripts/check-management-ui.mjs && node scripts/check-player-ui.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.0.0",

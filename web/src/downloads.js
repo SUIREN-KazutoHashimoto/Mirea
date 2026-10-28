@@ -170,7 +170,7 @@ export async function authorizeDownload(ctx,record){
   const vault=await offlineVault();let grant;
   try{
     if(isOfflineSession())throw new Error('オフラインです。');
-    grant=await api(`/downloads/${record.manifest.id}/open`,{method:'POST',signal:AbortSignal.timeout(10000)});
+    grant=await api(`/downloads/${record.manifest.id}/open`,{method:'POST',signal:AbortSignal.timeout(2500)});
     if(!current(ctx))throw Object.assign(new Error('ログイン先が変更されました。'),{status:401});
     if(grant.manifest?.id!==record.manifest.id||grant.manifest?.assetId!==record.assetId)throw Object.assign(new Error('保存情報が一致しません。'),{status:409});
     await vault.saveLease(ctx.partition,grant,ctx.userId);

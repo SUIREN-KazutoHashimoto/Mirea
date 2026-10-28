@@ -81,7 +81,7 @@ const finishAppLaunch=showAppLaunch({native});
 const pwa=createPwaInstall({native,ensureWorker:ensureDownloadWorker});
 if(!native&&!import.meta.env.DEV)void pwa.prepare();
 let disposeAuthPwa;
-const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.20.0beta/mirea-0.20.0beta-android.apk';
+const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.20.1beta/mirea-0.20.1beta-android.apk';
 const currentApkUrl=()=>config.androidApkUrl?.startsWith('/api/v1/app-updates/')?absoluteUrl(config.androidApkUrl):config.androidApkUrl||defaultApkUrl;
 
 const root = document.querySelector('#app');
@@ -649,6 +649,7 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false,background
   if(!item||item.offlineUnavailable)return;
   if(!item.shelfId){try{const cached=await(await offlineCatalog()).load(offlinePartition(getEndpoint(),getSession().user.id));const known=cached?.items?.find(i=>i.id===item.id);if(known)item={...known,...item,shelfId:known.shelfId};}catch{/* Content authorization still runs on the server. */}}
   const shelf=shelves.find(s=>s.id===item.shelfId);
+  if(!shelf&&isOfflineSession()){toast('本棚情報が端末にありません。オンラインで一覧を同期してから開いてください。');return;}
   try{await requirePrivateShelf(shelf,{force:activeShelf!==shelf?.id&&!autoplay});}catch(error){toast(error.message);return;}
   if(nativePlayerAvailable()&&isTimedKind(item.kind)){
     document.querySelectorAll('.viewer-screen').forEach(screen=>screen.close());
@@ -732,16 +733,16 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false,background
       const {attachVideoStream}=await import('./video-stream.js');
       if(!node.isConnected)return;
       let stream,stopNetworkQuality;
-      const renew=()=>api(`/items/${item.id}/playback-ticket`,{method:'POST'});
+      const renew=()=>api(`/items/${item.id}/playback-ticket`,{method:'POST',signal:AbortSignal.timeout(5000)});
       const player=mountVideoPlayer(body,{onError,kind:item.kind,title:item.title,assetId:item.id,playback:seriesNavigation,onNavigate:direction=>seriesNavigation.navigate(direction),editNavigation:()=>openNavigationEditor({item,api,dialog,esc}),reconnect:async()=>{body.querySelector('.viewer-error')?.remove();if(downloaded)return downloaded.reconnect();await stream.reconnect();return null;}});
-      let coverUrl;
-      if(item.kind==='audio'){
-        try{
-          coverUrl=URL.createObjectURL(await libraryThumbnail(item));
-          if(!node.isConnected){URL.revokeObjectURL(coverUrl);player.dispose();return;}
-          player.surface.querySelector('img').src=coverUrl;player.surface.querySelector('img').hidden=false;
-        }catch{/* Audio remains usable when the cover request fails. */}
-      }
+      let coverUrl;const coverRequest=new AbortController();
+      // Artwork is optional: a slow thumbnail must never delay the media source,
+      // progress binding, controls, or the viewer's cleanup registration.
+      libraryThumbnail(item,coverRequest.signal).then(blob=>{
+        if(!blob||!node.isConnected||coverRequest.signal.aborted)return;
+        coverUrl=URL.createObjectURL(blob);player.setArtwork(coverUrl);
+        if(item.kind==='audio'){const image=player.surface.querySelector('img');image.src=coverUrl;image.hidden=false;}
+      }).catch(()=>{});
       const video = player.video;
       node.bindBackground(video,{key:progressServer+'|'+progressActor+'|'+item.id,id:item.id,loadArtwork:async(_state,signal)=>{
         if(getSession()?.user.id!==progressActor||getEndpoint()!==progressServer)return null;
@@ -751,7 +752,7 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false,background
         if(item.kind==='video')api(`/items/${item.id}/replay-heatmap`).then(value=>player.setHeatmap(value)).catch(()=>{/* Playback never depends on aggregate availability. */});
       const videoProgress=bindVideoProgress(video,progress);
       const stopNavigation=item.kind==='video'?loadVideoNavigation({id:item.id,api,blob:authenticatedBlob,set:player.setNavigation,isCurrent:()=>node.isConnected&&getSession()?.user.id===progressActor&&getEndpoint()===progressServer}):()=>{};
-      cleanup=()=>{stopNetworkQuality?.();stopNavigation();videoProgress();stream?.dispose();player.dispose();if(coverUrl)URL.revokeObjectURL(coverUrl);};cleanup.restart=()=>videoProgress.restart();
+      cleanup=()=>{coverRequest.abort();stopNetworkQuality?.();stopNavigation();videoProgress();stream?.dispose();player.dispose();if(coverUrl)URL.revokeObjectURL(coverUrl);};cleanup.restart=()=>videoProgress.restart();
       tracker?.video(video,player.surface);
       seriesNavigation.bindVideo(video,{autoplay});
       if(downloaded){
