@@ -7,9 +7,11 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 
 /** No persistent credentials, redirect following, permissive trust manager or arbitrary URLs. */
-public final class PlaybackApi {
+public final class PlaybackApi implements AutoCloseable {
     public final String origin, userId, partition;
     private String token,shelfUnlock;
+    private int connectTimeout=10000,readTimeout=15000;
+    private final java.util.Set<HttpURLConnection> connections=java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
     public volatile boolean closed;
     public static final class Failure extends IOException {
         public final int status;
@@ -28,10 +30,11 @@ public final class PlaybackApi {
         StringBuilder hex=new StringBuilder();for(byte b:digest)hex.append(String.format("%02x",b));partition=hex.toString();
     }
     public PlaybackApi fork()throws Exception{if(closed)throw new IOException("Closed context");return new PlaybackApi(origin,token,userId,shelfUnlock);}
+    public PlaybackApi background()throws Exception{PlaybackApi copy=fork();copy.connectTimeout=2000;copy.readTimeout=2000;return copy;}
     public static boolean uuid(String value){return value!=null&&value.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");}
-    public HttpURLConnection connection(String path,String method)throws IOException{
+    public synchronized HttpURLConnection connection(String path,String method)throws IOException{
         if(closed||!safePath(path))throw new IOException("Playback context closed or invalid path");
-        HttpURLConnection c=(HttpURLConnection)new URL(origin+path).openConnection();c.setInstanceFollowRedirects(false);c.setConnectTimeout(10000);c.setReadTimeout(15000);c.setRequestMethod(method);c.setRequestProperty("Authorization","Bearer "+token);if(!shelfUnlock.isEmpty())c.setRequestProperty("X-Mirea-Shelf-Unlock",shelfUnlock);c.setRequestProperty("Cache-Control","no-store");c.setRequestProperty("Accept-Encoding","identity");return c;
+        HttpURLConnection c=(HttpURLConnection)new URL(origin+path).openConnection();c.setInstanceFollowRedirects(false);c.setConnectTimeout(connectTimeout);c.setReadTimeout(readTimeout);c.setRequestMethod(method);c.setRequestProperty("Authorization","Bearer "+token);if(!shelfUnlock.isEmpty())c.setRequestProperty("X-Mirea-Shelf-Unlock",shelfUnlock);c.setRequestProperty("Cache-Control","no-store");c.setRequestProperty("Accept-Encoding","identity");connections.add(c);return c;
     }
     static boolean safePath(String path){
         if(path==null||!path.startsWith("/api/v1/")||path.contains("..")||path.contains("#")||path.contains("%")||path.contains("\\")||path.contains("\r")||path.contains("\n"))return false;
@@ -56,5 +59,5 @@ public final class PlaybackApi {
     public static byte[] read(InputStream input,int maximum)throws IOException{
         try(InputStream in=input;ByteArrayOutputStream out=new ByteArrayOutputStream()){byte[] buffer=new byte[16384];int n;while((n=in.read(buffer))!=-1){if(out.size()+n>maximum)throw new IOException("Response too large");out.write(buffer,0,n);}return out.toByteArray();}
     }
-    public void close(){closed=true;token="";shelfUnlock="";}
+    public void close(){HttpURLConnection[] active;synchronized(this){closed=true;token="";shelfUnlock="";active=connections.toArray(new HttpURLConnection[0]);connections.clear();}for(HttpURLConnection c:active)c.disconnect();}
 }

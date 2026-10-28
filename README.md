@@ -2,7 +2,7 @@
 
 ブラウザー版は[PWAとしてインストール](docs/pwa.md)できます。ログイン画面・設定に案内があり、既存の暗号化ダウンロードと7日間のオフライン視聴を利用します。
 
-**0.20.0beta**（内部 `0.20.0-beta`、Android versionCode 39）。[配布リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.20.0beta)、[変更履歴・制限](RELEASE.md)、[転送・メディア処理・プライベート本棚](docs/upload-pipeline.md)、[設定・ジョブ・転送の画面改善](docs/management-ui.md)、[エラー詳細とプライバシー](docs/error-diagnostics.md)、[TrueNAS 25.04.2.6 Custom App手順](docs/truenas-25.04.md)を参照してください。既存の専用APK署名を維持し、旧デバッグ署名からの初回移行だけは手動です。
+**0.20.1beta**（内部 `0.20.1-beta`、Android versionCode 40）。[配布リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.20.1beta)、[変更履歴・制限](RELEASE.md)、[プレイヤーの点検・修正](docs/player-reliability.md)、[転送・メディア処理・プライベート本棚](docs/upload-pipeline.md)、[設定・ジョブ・転送の画面改善](docs/management-ui.md)、[エラー詳細とプライバシー](docs/error-diagnostics.md)、[TrueNAS 25.04.2.6 Custom App手順](docs/truenas-25.04.md)を参照してください。既存の専用APK署名を維持し、旧デバッグ署名からの初回移行だけは手動です。
 
 コンテナは[stable／betaの追従タグ](docs/container-channels.md)に対応します。`beta`は最新の公開済みベータ版、`stable`は最初の正式版公開後から最新正式版を指します。版番号タグ・Gitタグは固定し、更新前のバックアップとNAS側での更新操作は引き続き必要です。
 

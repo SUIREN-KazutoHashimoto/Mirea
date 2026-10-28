@@ -3,17 +3,18 @@ import {resolveQualityPreference} from './quality-preference.js';
 
 // One HTMLVideoElement for the whole viewing session: ABR changes never create
 // a new view, reset resume state, or trigger series continuation.
-export function attachVideoStream(video,{ticket,absoluteUrl,renew,onQuality=()=>{},onOptions=()=>{},onError=()=>{},initialQuality='auto',onChoose=()=>{},HlsClass=Hls}) {
+export function attachVideoStream(video,{ticket,absoluteUrl,renew,onQuality=()=>{},onOptions=()=>{},onError=()=>{},initialQuality='auto',onChoose=()=>{},HlsClass=Hls,events=globalThis.window}) {
   let hls,disposed=false,selected=resolveQualityPreference(ticket.renditions??[],initialQuality),preferred=initialQuality,actual='unknown',refreshing,refreshTimer,streamKind='mp4',manifestReady=false;
   const restores=new Set();
+  let restoring,retryPending=false;
   const emit=()=>onQuality({selectedQuality:['higher','data'].includes(selected)?'auto':selected,actualQuality:actual,streamKind,
     ...(Number.isFinite(hls?.bandwidthEstimate)?{bandwidthEstimate:Math.min(10000000000,Math.max(0,Math.round(hls.bandwidthEstimate)))}:{})});
   const qualities=()=>ticket.renditions??[];
   function options() { onOptions({qualities:selected==='legacy'?[]:qualities(),selected,actual,auto:Boolean(hls||video.canPlayType('application/vnd.apple.mpegurl'))}); }
   function restoreSource(url) {
-    const position=video.currentTime,playing=!video.paused;
+    const snapshot=restoring??{position:video.currentTime,playing:!video.paused,rate:video.playbackRate};restoring=snapshot;
     for(const listener of restores)video.removeEventListener('loadedmetadata',listener);restores.clear();
-    const restore=()=>{video.removeEventListener('loadedmetadata',restore);restores.delete(restore);if(disposed)return;if(position>0&&Number.isFinite(video.duration))video.currentTime=Math.min(position,video.duration);if(playing)video.play().catch(()=>{});};
+    const restore=()=>{video.removeEventListener('loadedmetadata',restore);restores.delete(restore);if(disposed)return;restoring=null;if(Number.isFinite(video.duration))video.currentTime=Math.min(snapshot.position,video.duration);if(Number.isFinite(snapshot.rate))video.playbackRate=snapshot.rate;if(snapshot.playing)video.play().catch(()=>{});};
     restores.add(restore);
     video.addEventListener('loadedmetadata',restore,{once:true});
     if(hls)hls.loadSource(url);else{video.src=url;video.load();}
@@ -29,10 +30,14 @@ export function attachVideoStream(video,{ticket,absoluteUrl,renew,onQuality=()=>
     if(!disposed&&renew&&ticket.expiresAt)refreshTimer=setTimeout(()=>reconnect().catch(onError),Math.max(1000,ticket.expiresAt-Date.now()-60000));
   }
   async function reconnect() {
+    if(disposed||!renew)return;
     if(refreshing)return refreshing;
-    refreshing=(async()=>{const next=await renew();if(disposed)return;ticket=next;selected=streamKind==='mp4'?'legacy':resolveQualityPreference(qualities(),preferred);manifestReady=false;restoreSource(sourceUrl());options();emit();scheduleRefresh();})().finally(()=>{refreshing=null;});
+    clearTimeout(refreshTimer);
+    refreshing=(async()=>{const next=await renew();if(disposed)return;retryPending=false;ticket=next;selected=streamKind==='mp4'?'legacy':resolveQualityPreference(qualities(),preferred);manifestReady=false;restoreSource(sourceUrl());options();emit();scheduleRefresh();})().catch(error=>{retryPending=true;if(!disposed)refreshTimer=setTimeout(()=>reconnect().catch(onError),30000);throw error;}).finally(()=>{refreshing=null;});
     return refreshing;
   }
+  const connected=()=>{if(retryPending&&!disposed)reconnect().catch(onError);};events?.addEventListener('online',connected);
+  const intent=event=>{if(restoring&&typeof event.detail?.playing==='boolean')restoring.playing=event.detail.playing;};video.addEventListener('mirea:playback-intent',intent);
   function choose(value) {
     if(!['auto','higher','data'].includes(value)&&!qualities().some(q=>q.quality===value))return;
     selected=value;preferred=value;onChoose(value);
@@ -58,5 +63,5 @@ export function attachVideoStream(video,{ticket,absoluteUrl,renew,onQuality=()=>
   }else if(ticket.hlsUrl&&video.canPlayType('application/vnd.apple.mpegurl')){streamKind='hls';video.src=sourceUrl();actual=['auto','higher','data'].includes(selected)?'unknown':selected;}
   else{selected='legacy';actual='legacy';video.src=absoluteUrl(ticket.url);}
   options();emit();scheduleRefresh();
-  return {choose,reconnect,dispose(){disposed=true;clearTimeout(refreshTimer);for(const listener of restores)video.removeEventListener('loadedmetadata',listener);restores.clear();hls?.destroy();}};
+  return {choose,reconnect,dispose(){disposed=true;clearTimeout(refreshTimer);events?.removeEventListener('online',connected);video.removeEventListener('mirea:playback-intent',intent);for(const listener of restores)video.removeEventListener('loadedmetadata',listener);restores.clear();restoring=null;hls?.destroy();}};
 }

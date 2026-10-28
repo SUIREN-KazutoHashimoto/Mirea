@@ -39,6 +39,17 @@ test('a late PiP result after closing never restores a disposed player',async()=
   media.requestPictureInPicture=()=>new Promise(resolve=>{finish=()=>{doc.pictureInPictureElement=media;resolve();};});
   const binding=mountMediaSession(media,{kind:'video',document:doc,navigator:{}});const pending=binding.background(()=>assert.fail('disposed mini-player'));binding.dispose();finish();await pending;assert.equal(exits,1);
 });
+
+test('old viewer disposal never clears a newer OS media session; delayed artwork belongs to its owner',()=>{
+  const actions=new Map(),session={setActionHandler:(key,value)=>actions.set(key,value)},nav={mediaSession:session},Metadata=class{constructor(value){Object.assign(this,value);}};
+  const first=mountMediaSession(new Media(),{title:'Old',navigator:nav,MediaMetadata:Metadata,document:{}}),second=mountMediaSession(new Media(),{title:'Current',navigator:nav,MediaMetadata:Metadata,document:{}});
+  first.setArtwork('blob:old');first.dispose();assert.equal(session.metadata.title,'Current');assert.equal(typeof actions.get('play'),'function');second.setArtwork('blob:current');assert.equal(session.metadata.artwork[0].src,'blob:current');second.dispose();assert.equal(session.metadata,null);
+});
+
+test('Safari PiP toggles back inline and restoring presentation exits PiP without pausing',async()=>{
+  const media=new Media();await media.play();media.webkitPresentationMode='inline';media.webkitSupportsPresentationMode=()=>true;media.webkitSetPresentationMode=value=>{media.webkitPresentationMode=value;};
+  const binding=mountMediaSession(media,{document:{},navigator:{}});await binding.pip();assert.equal(media.webkitPresentationMode,'picture-in-picture');await binding.pip();assert.equal(media.webkitPresentationMode,'inline');await binding.pip();binding.exitPip();assert.equal(media.webkitPresentationMode,'inline');assert.equal(media.paused,false);binding.dispose();
+});
 test('background and PiP measure actual progression separately from visible/focused time; throttled gaps, paused time and seeks are not invented',()=>{
   let now=0,state={visible:false,focused:false,idle:false,backgroundPlayback:true,pictureInPicture:false,playing:true,seeking:false,buffering:false,rate:1,toMs:0};const events=[];
   const recorder=createViewRecorder({view:{id:randomUUID()},clock:()=>now,snapshot:()=>({...state}),emit:(_,event)=>events.push(event)});

@@ -7,7 +7,7 @@ import java.util.*;
 public final class PlaybackProgress {
     public interface Transport {JSONObject call(String method,JSONObject body)throws Exception;}
     public interface Store {JSONObject load()throws Exception;void save(JSONObject value)throws Exception;}
-    private final Transport remote;
+    private Transport remote;
     private final Store store;
     private long revision;
     private JSONObject pending,desired,last;
@@ -36,10 +36,14 @@ public final class PlaybackProgress {
         catch(java.io.IOException offline){/* Retain cached revision, position and exact pending IDs. */}
     }
     public JSONObject initial()throws Exception{
-        if(desired!=null)return new JSONObject(desired.toString());
-        if(pending!=null)return new JSONObject(pending.toString());
+        JSONObject local=desired!=null?desired:pending;
+        if(local!=null)return new JSONObject(local.toString()).put("completed",local.optLong("durationMs")>0&&local.optLong("positionMs")>=local.optLong("durationMs"));
         return last;
     }
+    public void transport(PlaybackApi api,String asset){remote=(method,body)->api.json("/items/"+asset+"/progress",method,body);}
+    // Bind an offline first play to the catalog's known revision. Reading a new
+    // revision only on reconnect would silently overwrite another device.
+    public void seed(JSONObject value)throws Exception{if(revision>=0||last!=null||pending!=null||desired!=null)return;revision=value==null?0:Math.max(0,value.optLong("revision",0));last=value==null?null:new JSONObject(value.toString());persist();}
     public void update(long position,long duration)throws Exception{if(conflicted||duration<=0)return;desired=new JSONObject().put("positionMs",Math.max(0,Math.min(position,duration))).put("durationMs",duration);persist();}
     private void persist()throws Exception{store.save(new JSONObject().put("revision",revision).put("pending",pending==null?JSONObject.NULL:pending).put("desired",desired==null?JSONObject.NULL:desired).put("last",last==null?JSONObject.NULL:last));}
     private void send()throws Exception{

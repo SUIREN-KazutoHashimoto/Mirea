@@ -31,6 +31,7 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
     art.append(image,label,heading);root.prepend(art);
     root.querySelector('.player-center').setAttribute('aria-label','音声を再生');
     root.querySelector('.player-reconnect').setAttribute('aria-label','音声へ再接続');
+    root.querySelector('.player-help').textContent='Space/K 再生 · J/L ±10秒 · ←/→ ±5秒 · 0–9 位置 · </> 速度';
   }
   const modeControls=doc.createElement('div');modeControls.className='player-mode-controls';modeControls.innerHTML='<label><span class="sr-only">リピート</span><select class="player-repeat" aria-label="リピート"><option value="off">リピートなし</option><option value="one">単体リピート</option><option value="series">シリーズリピート</option></select></label><button type="button" class="player-shuffle" aria-pressed="false">シャッフル</button>';
   root.querySelector('.player-controls').append(modeControls);const modeSelect=modeControls.querySelector('select'),shuffleButton=modeControls.querySelector('button');
@@ -40,14 +41,15 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
   video.controls = false;video.muted=playbackPreferences.muted;video.volume=playbackPreferences.volume;video.playbackRate=playbackPreferences.rate;
   const listeners = []; let disposed = false, timer, clickTimer, scrubbing = false, hasHeatmap = false,navigation;
   const listen = (target, event, fn, options) => { target.addEventListener(event, fn, options); listeners.push(() => target.removeEventListener(event, fn, options)); };
-  if(audioMode){const image=root.querySelector('.audio-art img');listen(image,'load',()=>applyCoverPalette(root,image,assetId||title));if(image.complete&&image.naturalWidth)applyCoverPalette(root,image,assetId||title);}
+  let artObserver;
+  if(audioMode){const art=root.querySelector('.audio-art'),image=art.querySelector('img');if(typeof ResizeObserver!=='undefined'){artObserver=new ResizeObserver(entries=>art.style.setProperty('--audio-art-height',Math.max(0,entries[0].contentRect.height)+'px'));artObserver.observe(art);}listen(image,'load',()=>applyCoverPalette(root,image,assetId||title));if(image.complete&&image.naturalWidth)applyCoverPalette(root,image,assetId||title);}
   const hold=audioMode?null:mountVideoHold(video,{document:doc,changed:active=>{boostLabel.hidden=!active;root.classList.toggle('hold-boost',active);showControls();}});
   const announceControls = visible => root.dispatchEvent(new CustomEvent('viewer:player-controls', { bubbles:true, detail:visible }));
   const setSeeking=active=>{scrubbing=active||Boolean(navigation?.precise);heatmap.hidden=!hasHeatmap||!scrubbing;navigation?.scrub(scrubbing);if(!scrubbing)update();showControls();};
   const seekInteraction=bindSeekInteraction(seek,{document:doc,changed:setSeeking});
   if(!audioMode)navigation=mountVideoNavigation(root,video,seek,{doc,format:formatVideoTime,seekTo:value=>seekVideo(video,value),seeking:setSeeking,onError,edit:editNavigation});
   function showControls() { root.classList.remove('controls-hidden'); announceControls(true); clearTimeout(timer); if (!audioMode && !video.paused) timer = setTimeout(() => { if (!scrubbing && !video.paused && !root.querySelector('.player-controls').contains(doc.activeElement)) { root.classList.add('controls-hidden'); announceControls(false); } }, 2600); }
-  const play = async () => { try { if (video.paused || video.ended) { if (video.ended) seekVideo(video, 0); await video.play(); } else video.pause(); } catch { if (!disposed) onError(new Error('再生を開始できません。再生ボタンを押すか、再接続してください。')); } };
+  const play = async () => { try {const playing=video.paused||video.ended;video.dispatchEvent(new CustomEvent('mirea:playback-intent',{detail:{playing}}));if(playing){if(video.ended)seekVideo(video,0);await video.play();}else video.pause();}catch{if(!disposed)onError(new Error('再生を開始できません。再生ボタンを押すか、再接続してください。'));}};
   const fullscreen = () => { const screen = root.closest('.viewer-screen') ?? root; const result = doc.fullscreenElement ? doc.exitFullscreen?.() : screen.requestFullscreen?.(); result?.catch?.(() => {}); };
   function update() {
     const duration = Number.isFinite(video.duration) ? video.duration : 0;
@@ -74,7 +76,7 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
   seek.oninput = () => { root.querySelector('.player-time').textContent = `${formatVideoTime(Number(seek.value))} / ${formatVideoTime(video.duration)}`;seek.style.setProperty('--played',`${Number(seek.value)/Math.max(1,video.duration)*100}%`); };
   seek.onchange = () => { if(!navigation?.precise)seekVideo(video, Number(seek.value)); update(); };
   for(const event of ['loadstart','emptied','error','enterpictureinpicture'])listen(video,event,()=>{navigation?.cancel();seekInteraction.cancel();});
-  for (const event of ['timeupdate', 'loadedmetadata', 'durationchange', 'play', 'pause', 'ended', 'volumechange']) listen(video, event, () => { update(); if (event !== 'timeupdate') showControls(); });
+  for (const event of ['timeupdate', 'loadedmetadata', 'durationchange', 'seeked','play', 'pause', 'ended', 'volumechange','ratechange']) listen(video, event, () => { update();if(event==='ratechange'&&!hold?.active)root.querySelector('.player-speed select').value=String(video.playbackRate);if(event!=='timeupdate')showControls(); });
   for (const event of ['waiting', 'seeking', 'loadstart']) listen(video, event, () => { root.querySelector('.player-loading').hidden = false; });
   for (const event of ['playing', 'canplay', 'seeked', 'error']) listen(video, event, () => { root.querySelector('.player-loading').hidden = true; });
   listen(video, 'error', () => onError(new Error('メディアを再生できません。形式や接続を確認するか、再接続してください。')));
@@ -101,6 +103,7 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
   const mediaSession=mountMediaSession(video,{title,kind,artwork:coverUrl,previous:()=>onNavigate(-1),next:()=>onNavigate(1),stop:()=>root.closest('.viewer-screen')?.close(),onError,document:doc});
   const pipButton=root.querySelector('.player-pip');pipButton.hidden=!mediaSession.supportsPip;pipButton.onclick=()=>mediaSession.pip().catch(()=>onError(new Error('PiPに切り替えられません。動画を読み込んでから再試行してください。')));
   const screen=root.closest('.viewer-screen');
+  if(screen)listen(screen,'viewer:presentation',()=>{if(!screen.isMinimized)mediaSession.exitPip();});
   const stopAudioMotion=audioMode?mountAudioMotion(root,video,{doc,screen}):null;
   async function leavePlayer(){
     seekInteraction.cancel();
@@ -108,7 +111,7 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
   }
   if(screen)screen.onReturn=leavePlayer;
   update(); root.focus();
-  return { video, surface:audioMode?root.querySelector('.audio-art'):video, setNavigation:(value,url)=>navigation?.set(value,url), setHeatmap(value) {
+  return { video, surface:audioMode?root.querySelector('.audio-art'):video, setArtwork:url=>mediaSession.setArtwork(url), setNavigation:(value,url)=>navigation?.set(value,url), setHeatmap(value) {
     if(disposed||audioMode)return;const geometry=heatmapGeometry(value);hasHeatmap=Boolean(geometry);heatmap.replaceChildren();heatmap.hidden=!hasHeatmap||!seekInteraction.active;if(!geometry)return;
     const label=doc.createElement('span');label.className='player-heatmap-label';label.textContent=`${value.scope==='self'?'自分の再生傾向':'よく再生されている箇所（匿名集計）'} · ${formatVideoTime(geometry.peakMs/1000)}`;
     const svg=doc.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 1000 40');svg.setAttribute('preserveAspectRatio','none');svg.setAttribute('aria-hidden','true');
@@ -121,5 +124,5 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
     if(select.dataset.levels!==key){select.replaceChildren(...values.map(value=>{const option=doc.createElement('option');option.value=value.value;option.textContent=value.text;return option;}));select.dataset.levels=key;}
     else for(const value of values){const option=[...select.options].find(o=>o.value===value.value);if(option)option.textContent=value.text;}
     select.value=selected;select.onchange=()=>{hold?.cancel();choose(select.value);};
-  }, dispose() { stopAudioMotion?.();stopModes?.();hold?.dispose();navigation?.dispose();seekInteraction.dispose();playbackPreferences={muted:video.muted,volume:video.volume,rate:video.playbackRate};disposed = true;if(screen?.onReturn===leavePlayer)screen.onReturn=null; mediaSession.dispose(); clearTimeout(timer);clearTimeout(clickTimer); for (const remove of listeners) remove(); video.pause(); video.removeAttribute('src'); video.load(); root.remove(); } };
+  }, dispose() { artObserver?.disconnect();stopAudioMotion?.();stopModes?.();hold?.dispose();navigation?.dispose();seekInteraction.dispose();playbackPreferences={muted:video.muted,volume:video.volume,rate:video.playbackRate};disposed = true;if(screen?.onReturn===leavePlayer)screen.onReturn=null; mediaSession.dispose(); clearTimeout(timer);clearTimeout(clickTimer); for (const remove of listeners) remove(); video.pause(); video.removeAttribute('src'); video.load(); root.remove(); } };
 }

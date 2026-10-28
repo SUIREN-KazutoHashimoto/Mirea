@@ -36,6 +36,10 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      - name: Install media runtime for synthetic player checks
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
       - uses: actions/setup-node@v4
         with:
           node-version: 24.19.0
@@ -47,7 +51,9 @@ jobs:
         if: always()
         with:
           name: mirea-management-ui
-          path: .local/ui-checks
+          path: |
+            .local/ui-checks
+            .local/player-ui-checks
           retention-days: 7
   container:
     if: github.event_name == 'push' || github.event_name == 'pull_request'

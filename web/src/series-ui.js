@@ -146,14 +146,14 @@ export function mountSeriesNavigation({node,body,item,api,esc,open,isCurrent,isA
     subscribe(fn){subscribers.add(fn);fn();return()=>subscribers.delete(fn);},
     bookState(state){book=state;render();},
     nextBook:()=>core.nextBook(),
-    navigate:direction=>core.navigate({direction,autoplay:true}),
+    navigate:direction=>core.navigate({direction,autoplay:Boolean(video&&!video.paused)}),
     cancel:()=>core.cancel(),
     bindVideo(element,{autoplay=false}={}){
       videoCleanup?.();video=element;
       const ended=async()=>{if(order?.modes.repeat==='one'&&core.state.enabled){const epoch=++loopEpoch;try{await beforeMove();if(epoch!==loopEpoch||!active()||order.modes.repeat!=='one'||!core.state.enabled)return;video.currentTime=0;await video.play();}catch{if(alive())core.notify('単体リピートを開始できません。再生ボタンで再開してください。');}return;}if(!core.state.context)pendingEnd=video;else core.videoEnded();};
       const cancel=()=>{loopEpoch++;pendingEnd=null;core.cancel();};
       const failure=()=>core.cancel('メディアのエラーにより連続再生を停止しました。');
-      videoCleanup=bindContinuationVideo(video,{autoplay,canAutoplay:()=>active() && core.state.enabled,onEnded:ended,onReset:cancel,onError:failure,
+      videoCleanup=bindContinuationVideo(video,{autoplay,canAutoplay:()=>active(),onEnded:ended,onReset:cancel,onError:failure,
         onBlocked:reason=>core.notify(reason==='policy'?'自動再生が制限されました。プレーヤーの再生ボタンを押してください。':'自動再生を停止しました。再生ボタンで開始してください。')});
     },
     dispose(){if(disposed)return;disposed=true;loopEpoch++;pendingEnd=null;core.dispose();videoCleanup?.();subscribers.clear();activeNavigations.delete(nativeState);document.removeEventListener('visibilitychange',visibility);window.removeEventListener('pagehide',suspend);}

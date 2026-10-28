@@ -40,7 +40,9 @@ export async function openNativePlayback(item,{restart=false,continuous=true,ana
   if(download){const cover=await downloadedThumbnail(item.id).catch(()=>null);if(cover){const bytes=new Uint8Array(await cover.arrayBuffer()),parts=[];for(let n=0;n<bytes.length;n+=8192)parts.push(String.fromCharCode(...bytes.subarray(n,n+8192)));artwork=btoa(parts.join(''));bytes.fill(0);}}
   if(!valid())throw new Error('再生準備を取り消しました。');
   let offlineSeries;
-  if(download&&isOfflineSession()){
+  // Carry the cached series even when starting online. Connectivity can change
+  // while the native Activity owns playback and the WebView is suspended.
+  if(download){
     const partition=offlinePartition(origin,session.user.id),catalog=await(await offlineCatalog()).load(partition).catch(()=>null);
     if(catalog){
       const rows=await listDownloads(),vault=await offlineVault(),playable=new Set();
