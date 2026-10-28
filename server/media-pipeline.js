@@ -93,7 +93,7 @@ export async function createMediaPipeline(app,context){
    for(const row of rows){
     if(active.has(row.id)||(counts.get(row.kind)??0)>=16)continue;
     const dependency=row.kind==='transcode'?'thumbnail':row.kind==='preview'?'transcode':null;
-    if(dependency){const previous=db.prepare('SELECT state FROM media_tasks WHERE asset_id=? AND kind=?').get(row.asset_id,dependency);if(!previous||['queued','running'].includes(previous.state))continue;if(row.kind==='preview'&&previous.state!=='complete'){db.prepare("UPDATE media_tasks SET state='failed',error=?,updated_at=? WHERE id=?").run('先に動画のトランスコードを再実行してください。',Date.now(),row.id);finish(row.asset_id);continue;}}
+    if(dependency){const previous=db.prepare('SELECT state FROM media_tasks WHERE asset_id=? AND kind=?').get(row.asset_id,dependency);if(!previous||['queued','running'].includes(previous.state))continue;if(row.kind==='preview'&&previous.state!=='complete'){db.prepare("UPDATE media_tasks SET state='failed',error=?,updated_at=? WHERE id=?").run('先に動画のトランスコードを再実行してください。',Date.now(),row.id);finish(row.asset_id).catch(error=>app.log.error({err:error},'Media task finalization failed'));continue;}}
     counts.set(row.kind,(counts.get(row.kind)??0)+1);const promise=jobPool.run(async()=>{
      if(closing)return;const current=task(row.id);if(!current||current.state!=='queued')return;
      db.prepare("UPDATE media_tasks SET state='running',updated_at=? WHERE id=?").run(Date.now(),row.id);

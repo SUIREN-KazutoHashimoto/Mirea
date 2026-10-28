@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,rm,stat,readFile,unlink} from 'node:fs/promises';
+import {mkdtemp,rm,stat,readFile,unlink,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createHash,generateKeyPairSync,sign} from 'node:crypto';
+import {createHash,generateKeyPairSync,sign,randomUUID} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
 import {setTimeout as delay} from 'node:timers/promises';
 import {createApp} from '../server/app.js';
@@ -52,6 +52,13 @@ test('acknowledged duplicate parts do not rewrite disk, and missing persisted pa
  const c=await fixture(t),bytes=makePdf(),r=await c.req('POST','/shelves/'+c.shelf+'/uploads',{title:'Book',files:[{filename:'book.pdf',mime:'application/pdf',size:bytes.length}]}),id=r.json().id;
  const put=()=>c.req('PUT',`/uploads/${id}/files/0/parts/0`,bytes,{'content-type':'application/octet-stream','x-chunk-sha256':hash(bytes)});assert.equal((await put()).statusCode,204);const path=join(c.dir,'uploads','transfers',id,'0-0'),stamp=(await stat(path)).mtimeMs;assert.equal((await put()).statusCode,204);assert.equal((await stat(path)).mtimeMs,stamp);
  await unlink(path);assert.equal((await put()).statusCode,204);assert.deepEqual(await readFile(path),bytes);
+});
+test('manual thumbnail regeneration is not trapped behind a full transcode execution window',async t=>{
+ let release,entered=false,closed=false;const held=new Promise(r=>release=r),c=await fixture(t,{videoTranscoder:{async convert(){entered=true;await held;throw Object.assign(Error('Stopped fixture'),{code:'SERVER_CLOSING'});},close(){closed=true;release();}}});
+ c.db.prepare("INSERT INTO user_access VALUES(?,'admin',0)").run(c.user.user.id);const settings=await c.req('PATCH','/admin/processing-settings',{maxConcurrentUploads:3,maxConcurrentJobs:1,maxUploadAssets:1000,currentPassword:'pipeline-fixture-password'});assert.equal(settings.statusCode,200,settings.body);
+ const raw=await makeMp4(join(c.dir,'manual.mp4'),{duration:.2}),add=async()=>{const id=randomUUID();await writeFile(join(c.dir,'uploads',id),raw);c.db.prepare("INSERT INTO items(id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at) VALUES(?,?,?,'manual.mp4','video/mp4',?,?,?)").run(id,c.shelf,id,raw.length,c.user.user.id,Date.now());return id;};
+ for(let n=0;n<22;n++)await add();const bulk=await c.req('POST','/admin/assets/regenerate-all',{kind:'transcode',acknowledgeCost:true});assert.equal(bulk.statusCode,202,bulk.body);await until(()=>entered);
+ try{const id=await add(),cover=await c.req('POST','/admin/assets/'+id+'/regenerate',{kind:'thumbnail',acknowledgeCost:true});assert.equal(cover.statusCode,202,cover.body);await until(()=>c.db.prepare('SELECT state FROM admin_jobs WHERE id=?').get(cover.json().job.id).state==='complete');assert.equal(c.db.prepare("SELECT COUNT(*) n FROM admin_jobs WHERE kind='transcode' AND state IN ('queued','running')").get().n,22);assert.equal(closed,false);}finally{release();}
 });
 test('a custom cover chosen during original thumbnail generation remains authoritative and keeps its uploaded bytes',async t=>{
  const media=createMediaProcessor();let release,entered=false;const held=new Promise(r=>release=r);

@@ -31,9 +31,13 @@ export async function registerAdminJobs(app,context) {
   // window in memory. Queued work is recovered from the database on restart.
   function pump(){
     if(closing)return;
-    for(const row of db.prepare("SELECT id FROM admin_jobs WHERE state='queued' AND kind IN ('thumbnail','preview','transcode') ORDER BY created_at,id").iterate()){
-      if(pending.size>=20)break;
-      if(!pending.has(row.id))schedule(row.id);
+    const counts=new Map();for(const id of pending.keys()){const kind=get(id)?.kind;counts.set(kind,(counts.get(kind)??0)+1);}
+    for(const kind of ['thumbnail','transcode','preview']){
+      if((counts.get(kind)??0)>=20)continue;
+      for(const row of db.prepare("SELECT id FROM admin_jobs WHERE state='queued' AND kind=? ORDER BY created_at,id LIMIT 40").all(kind)){
+        if((counts.get(kind)??0)>=20)break;
+        if(!pending.has(row.id)){counts.set(kind,(counts.get(kind)??0)+1);schedule(row.id);}
+      }
     }
   }
   function schedule(id){
@@ -131,8 +135,7 @@ export async function registerAdminJobs(app,context) {
     if(kind!=='thumbnail'&&!item.mime_type.startsWith('video/'))throw httpError(400,'プレビュー・配信画質の再生成は動画のみです。');
     if(db.prepare("SELECT 1 FROM admin_jobs WHERE asset_id=? AND state IN ('queued','running')").get(item.id))throw httpError(409,'このアセットは処理中です。');
     if(db.prepare("SELECT 1 FROM media_tasks WHERE asset_id=? AND state IN ('queued','running')").get(item.id))throw httpError(409,'アップロード後の後処理を実行中です。');
-    if(pending.size>=20)throw httpError(429,'再生成キューが混雑しています。');
-    const id=randomUUID(),now=Date.now();db.prepare("INSERT INTO admin_jobs(id,kind,asset_id,state,requested_by,created_at,updated_at) VALUES(?,?,?,'queued',?,?,?)").run(id,kind,item.id,req.user.id,now,now);a.audit(req,'media.regenerate',item.id,{jobId:id,kind});schedule(id);return safe(get(id));
+    const id=randomUUID(),now=Date.now();db.prepare("INSERT INTO admin_jobs(id,kind,asset_id,state,requested_by,created_at,updated_at) VALUES(?,?,?,'queued',?,?,?)").run(id,kind,item.id,req.user.id,now,now);a.audit(req,'media.regenerate',item.id,{jobId:id,kind});pump();return safe(get(id));
   }
   app.post('/api/v1/admin/assets/:id/regenerate',{...auth,config:{rateLimit:context.rateLimit===false?false:{max:20,timeWindow:'1 minute'}},schema:{body:retryBody({kind:{enum:['thumbnail','preview','transcode']}})}},async(req,reply)=>{
     return reply.code(202).send({job:enqueue(req.params.id,req.body.kind,req)});
