@@ -13,7 +13,7 @@ export function patchCollection(container,html){
   else if(signatures.get(card)!==signature){
    const button=card.querySelector('.card-open'),next=fresh.querySelector('.card-open'),art=button?.querySelector('.card-art'),nextArt=next?.querySelector('.card-art'),cover=art?.querySelector('img'),nextCover=nextArt?.querySelector('img');
    if(button&&next){
-    if(art&&nextArt&&cover?.dataset.localThumbnail===nextCover?.dataset.localThumbnail&&cover?.dataset.thumbnail===nextCover?.dataset.thumbnail)nextArt.replaceWith(art);
+    if(art&&nextArt&&cover?.dataset.localThumbnail===nextCover?.dataset.localThumbnail&&cover?.dataset.thumbnail===nextCover?.dataset.thumbnail){const count=art.querySelector('.series-count'),nextCount=nextArt.querySelector('.series-count');if(count&&nextCount)count.textContent=nextCount.textContent;if(cover&&nextCover)cover.alt=nextCover.alt;nextArt.replaceWith(art);}
     attributes(button,next);
     button.replaceChildren(...next.childNodes);
    }else card.replaceChildren(...fresh.childNodes);
