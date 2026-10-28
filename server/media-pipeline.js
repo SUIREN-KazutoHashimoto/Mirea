@@ -108,9 +108,10 @@ export async function createMediaPipeline(app,context){
    }
   }finally{pumping=false;}
  }
+ const stopAvailability=jobPool.onAvailable?.(()=>{try{pump();}catch(error){app.log.error({err:error},'Media queue replenishment failed');}});
  db.prepare("UPDATE media_tasks SET state='queued' WHERE state='running'").run();pump();
  const timer=setInterval(()=>reapSources().catch(error=>app.log.error({err:error},'Original retention cleanup failed')),60000);timer.unref();
- app.addHook('onClose',async()=>{closing=true;clearInterval(timer);for(const row of db.prepare("SELECT id FROM media_tasks WHERE state IN ('queued','running')").all())jobPool.cancel(row.id);await Promise.allSettled([...active.values()]);db.prepare("UPDATE media_tasks SET state='queued' WHERE state='running'").run();});
+ app.addHook('onClose',async()=>{closing=true;stopAvailability?.();clearInterval(timer);for(const row of db.prepare("SELECT id FROM media_tasks WHERE state IN ('queued','running')").all())jobPool.cancel(row.id);await Promise.allSettled([...active.values()]);db.prepare("UPDATE media_tasks SET state='queued' WHERE state='running'").run();});
  return {
   has:id=>Boolean(ingest(id)),pump,get busy(){return active.size>0;},
   async accept(upload,authorizeUpload){

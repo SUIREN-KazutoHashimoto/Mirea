@@ -7,6 +7,7 @@ import {openUploadDialog} from '../web/src/upload-ui.js';
 class Element {
  constructor(ast,parent=null){this.tag=ast.nodeName;this.parent=parent;this.attrs=new Map((ast.attrs??[]).map(a=>[a.name,a.value]));this.children=(ast.childNodes??[]).map(n=>new Element(n,this));this.dataset=Object.fromEntries([...this.attrs].filter(([k])=>k.startsWith('data-')).map(([k,v])=>[k.slice(5).replace(/-([a-z])/g,(_,c)=>c.toUpperCase()),v]));this.hidden=this.attrs.has('hidden');this.disabled=this.attrs.has('disabled');this.checked=this.attrs.has('checked');this.classList={add(){},remove(){}};this.text=ast.value??'';this.listeners=new Map();}
  get isConnected(){return this.parent?this.parent.isConnected:this.live===true;}
+ get className(){return this.attrs.get('class')??'';}set className(value){this.attrs.set('class',String(value));}
  closest(selector){for(let node=this;node;node=node.parent)if(node.matches(selector))return node;return null;}
  insertBefore(element,before){if(element.parent){const siblings=element.parent.children;siblings.splice(siblings.indexOf(element),1);}const index=before?this.children.indexOf(before):this.children.length;assert(index>=0);element.parent=this;this.children.splice(index,0,element);return element;}
  append(...elements){for(const element of elements)this.insertBefore(element,null);}
@@ -37,6 +38,15 @@ test('folder picker component creates nested series and sends one asset per file
  const files=['Album/Disc 1/1.png','Album/Disc 1/2.png','Album/Disc 2/song.mp3'].map(path=>{const f=file(path.split('/').at(-1));Object.defineProperty(f,'webkitRelativePath',{value:path});return f;});
  const input=ui.node.querySelector('form').elements.folder;input.files=files;await input.onchange();assert.equal(ui.node.querySelectorAll('[data-entry-title]').length,3);await ui.submit();
  assert.equal(created.length,3);assert.equal(created[1].parentId,'folder-1');assert.equal(created[2].parentId,'folder-1');assert(sent.every(j=>j.files.length===1));assert.equal(sent[0].options.seriesId,'folder-2');assert.equal(sent[2].options.seriesId,'folder-3');
+});
+
+test('a 616-file folder reaches submission with distinct generated titles and visible sidecar exclusions',async()=>{
+ const sent=[],ui=mount({api:async(_path,options)=>options?.method==='POST'?{series:{id:'series-'+options.body.title}}:{series:[],uploads:[]},upload:(_,files,title,_progress,options)=>{sent.push({name:files[0].name,title,seriesId:options.seriesId});return {promise:Promise.resolve()};}});
+ const names=Array.from({length:308},(_,i)=>['mp3','flac'].map(ext=>`New/Album ${Math.floor(i/20)}/Track ${i}.${ext}`)).flat();names.push('New/readme.log','New/Album 0/Track 0.cue');
+ const input=ui.node.querySelector('form').elements.folder;input.files=names.map(path=>{const f=file(path.split('/').at(-1));Object.defineProperty(f,'webkitRelativePath',{value:path});return f;});await input.onchange();
+ assert.equal(ui.node.querySelectorAll('[data-entry-title]').length,100);assert.match(ui.node.querySelector('.upload-scan-status').textContent,/616アセット.*対象外のファイル2件/);
+ ui.node.querySelector('.upload-show-more').listeners.get('click')[0]();assert.equal(ui.node.querySelectorAll('[data-entry-title]').length,200);
+ await ui.submit();assert.equal(sent.length,616);assert(sent.every(row=>row.name===row.title&&row.seriesId.startsWith('series-Album ')));assert.equal(ui.node.isConnected,false);
 });
 test('upload component retry freezes prior choices and never resends a completed asset',async()=>{
  const calls=[];let failure=true;const ui=mount({upload:(_,files)=>{calls.push(files[0].name);return {promise:failure&&files[0].name==='one.pdf'?Promise.reject(Error('network fixture')):Promise.resolve()};}});await ui.select([file('one.pdf'),file('two.pdf')]);await ui.submit();assert.equal(ui.node.isConnected,true);assert.equal(ui.node.querySelector('form').elements.file.disabled,true);assert.equal(ui.node.querySelector('[type="submit"]').textContent,'未完了だけ再試行');assert(ui.node.querySelector('.upload-entry-status').textContent.includes('network fixture'));failure=false;await ui.submit();assert.deepEqual(calls,['one.pdf','two.pdf','one.pdf']);assert.equal(ui.node.isConnected,false);

@@ -3,7 +3,7 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, stat, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { availableParallelism } from 'node:os';
+import { availableParallelism,totalmem } from 'node:os';
 import bundledFfprobe from '@derhuerst/ffprobe-static';
 import { ffmpegPath } from './media.js';
 import { httpError } from './security.js';
@@ -56,15 +56,20 @@ export function videoLadder(width,height) {
   });
 }
 
-export function encoderThreads(concurrency=5,cpus=availableParallelism()){return Math.max(1,Math.min(4,Math.floor(Math.max(1,cpus-2)/Math.max(1,concurrency))));}
-export function createVideoTranscoder({concurrency=()=>5}={}) {
+export function encoderThreads(concurrency=5,cpus=availableParallelism(),memory=process.constrainedMemory?.()||totalmem(),pixels=1920*1080,rank=0){
+ const jobs=Math.max(1,concurrency),budget=Math.max(1,cpus-2),cpu=Math.floor(budget/jobs)+(rank<budget%jobs?1:0),perThread=Math.max(32*1024**2,pixels*12),ram=Math.floor(Math.max(perThread,memory-512*1024**2)/jobs/perThread);
+ return Math.max(1,Math.min(16,cpu,ram));
+}
+export function createVideoTranscoder({active}={}) {
   let closed=false;
   const controllers=new Set();
-  async function run(args,{authorize,deadline,onProgress,folder,controller,duration}) {
+  const threadBudget=(controller,pixels)=>encoderThreads(Math.max(1,controllers.size,active?.()??0),availableParallelism(),process.constrainedMemory?.()||totalmem(),pixels,Math.max(0,[...controllers].indexOf(controller)));
+  async function run(args,{authorize,deadline,onProgress,folder,controller,duration,pixels}) {
     authorize();
     if (closed) throw closingError();
     if(!ffmpegPath())throw httpError(503,'動画変換用のFFmpegが見つかりません。');
-    const child=spawn(ffmpegPath(),['-hide_banner','-loglevel','error','-nostdin','-y','-threads','1','-filter_threads','1','-filter_complex_threads','1','-max_alloc','268435456',...args],{cwd:folder,windowsHide:true,stdio:['ignore','pipe','pipe'],signal:jobCancellationSignal(),killSignal:'SIGKILL'});
+    const threads=String(threadBudget(controller,pixels));
+    const child=spawn(ffmpegPath(),['-hide_banner','-loglevel','error','-nostdin','-y','-threads',threads,'-filter_threads',threads,'-filter_complex_threads','1','-max_alloc','268435456',...args],{cwd:folder,windowsHide:true,stdio:['ignore','pipe','pipe'],signal:jobCancellationSignal(),killSignal:'SIGKILL'});
     let failure,stderr='',progress='',checking=false;
     const kill=error=>{failure??=error;child.kill('SIGKILL');};
     const aborted=()=>kill(controller.signal.reason??closingError());
@@ -100,10 +105,10 @@ export function createVideoTranscoder({concurrency=()=>5}={}) {
       await mkdir(folder,{recursive:true,mode:0o700});
       for(const [index,tier] of ladder.entries()) {
         const mp4=join(folder,`${tier.quality}.mp4`);
-        const settings={authorize,deadline,controller,folder,duration:info.duration,onProgress:percent=>report({stage:'encode',quality:tier.quality,percent,completed:index,total:ladder.length})};
+        const settings={authorize,deadline,controller,folder,duration:info.duration,pixels:info.width*info.height,onProgress:percent=>report({stage:'encode',quality:tier.quality,percent,completed:index,total:ladder.length})};
         // Fixed 30fps, aligned 4-second keyframes in every rendition. Encode all
         // frames (never the 6-second preview). Silence is added only if no audio.
-        const threads=String(encoderThreads(concurrency()));
+        const threads=String(threadBudget(controller,info.width*info.height));
         const encodeArgs=['-protocol_whitelist','file,pipe','-format_whitelist',FORMATS,'-threads',threads,'-i',source,
           ...(!info.audio?['-f','lavfi','-i','anullsrc=channel_layout=stereo:sample_rate=48000']:[]),
           '-map',`0:${info.video.index}`,'-map',info.audio?`0:${info.audio.index}`:'1:a:0','-sn','-dn','-map_metadata','-1','-map_chapters','-1',
@@ -136,7 +141,7 @@ export function createVideoTranscoder({concurrency=()=>5}={}) {
         const names=[...playlist.matchAll(/URI="([^"]+)"|^([^#\s][^\r\n]*)/gm)].map(m=>m[1]||m[2]);
         if(!names.length)throw new Error('Empty HLS rendition');
         for(const name of names){if(!/^[0-9]+p-(?:init\.mp4|\d{5}\.m4s)$/.test(name)||(await stat(join(folder,name))).size<=0)throw new Error('Invalid HLS segment');}
-        await run(['-xerror','-protocol_whitelist','file,crypto,data','-i',join(folder,`${tier.quality}.m3u8`),'-map','0:v:0','-map','0:a:0','-threads','1','-f','null','-'],settings);
+        await run(['-xerror','-protocol_whitelist','file,crypto,data','-i',join(folder,`${tier.quality}.m3u8`),'-map','0:v:0','-map','0:a:0','-f','null','-'],settings);
         tier.size=size;tier.files=[`${tier.quality}.m3u8`,...names];
       }
       authorize();

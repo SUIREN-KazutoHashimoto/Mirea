@@ -63,8 +63,8 @@ test('duplicate warning is non-dismissible, escaped, offline-aware, and clears o
  assert.equal(libraryNameConflicts(catalog).length,1);renderNameIntegrity(node,{...catalog,items:[catalog.items[0]]},{esc});assert.equal(node.hidden,true);
  renderNameIntegrity(node,{...catalog,shelves:[{...shelf,role:'viewer'}]},{esc});assert.equal(node.hidden,true);
 });
-test('batch validation distinguishes folders but rejects same-title mixed file formats in one hierarchy',()=>{
- const files=['Same.pdf','Same.mp3'].map(name=>new File(['bytes'],name)),config={maxUploadBytes:100,maxImageBytes:100,maxBookPages:5};const jobs=planUploads(files);assert.match(validateUploadPlan(jobs,config),/同じ階層/);jobs[0].folderPath='A';jobs[1].folderPath='B';assert.equal(validateUploadPlan(jobs,config),'');
+test('initial titles retain filename distinctions; edited duplicate titles are rejected only within the same hierarchy',()=>{
+ const files=['Same.pdf','Same.mp3'].map(name=>new File(['bytes'],name)),config={maxUploadBytes:100,maxImageBytes:100,maxBookPages:5};const jobs=planUploads(files);assert.deepEqual(jobs.map(j=>j.title),['Same.pdf','Same.mp3']);assert.equal(validateUploadPlan(jobs,config),'');for(const job of jobs)job.title='Same';assert.match(validateUploadPlan(jobs,config),/同じ階層/);jobs[0].folderPath='A';jobs[1].folderPath='B';assert.equal(validateUploadPlan(jobs,config),'');
 });
 test('metadata renewal verifies the existing envelope and pin, permits expired valid metadata, preserves APK identity and never extends beyond seven days',()=>{
  const pair=generateKeyPairSync('ec',{namedCurve:'prime256v1'}),privateKey=pair.privateKey.export({type:'pkcs8',format:'pem'}),publicKey=pair.publicKey.export({type:'spki',format:'pem'}),issuedAt=1800000000000,payload={schemaVersion:1,packageName:'com.suiren.mirea',versionCode:33,versionName:'0.16.0beta',apkUrl:'https://example.test/app.apk',sha256:'a'.repeat(64),signerSha256:'b'.repeat(64),size:100,minSdk:29,issuedAt,expiresAt:issuedAt+86400000},old=signUpdateEnvelope(payload,privateKey,issuedAt),now=issuedAt+8*86400000;

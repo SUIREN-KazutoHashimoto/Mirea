@@ -8,6 +8,15 @@ const mimeByExtension={jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png',webp:'
 const supported=new Set([...Object.values(mimeByExtension),...VIDEO_TYPES,...AUDIO_TYPES]);
 export const isUploadImage=file=>images.has(file.type);
 const titleOf=file=>file.name.replace(/\.[^.]+$/,'').slice(0,200)||'無題';
+export const isSupportedUploadFile=file=>supported.has(mimeByExtension[file.name.split('.').pop().toLowerCase()]||file.type);
+const folderKey=job=>(job.folderPath??'').split('/').map(canonicalName).join('/');
+// Generated titles may collide after stripping different extensions. Preserve
+// filename distinctions before the user edits them; never rename saved assets.
+export function distinguishInitialTitles(jobs){
+ const groups=new Map();for(const job of jobs){const key=JSON.stringify([folderKey(job),canonicalName(job.title)]);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(job);}
+ for(const group of groups.values())if(group.length>1)for(const job of group){const name=job.files[0].name,ext=name.includes('.')?name.slice(name.lastIndexOf('.')):'';job.title=name.length<=200?name:name.slice(0,Math.max(0,200-ext.length))+ext;}
+ return jobs;
+}
 export function planUploads(incoming) {
   incoming=Array.from(incoming);if(incoming.length>MAX_UPLOAD_FILES)throw Error('一度に選択できるファイルは1000件までです。');
   const files=incoming.map(file=>{
@@ -20,15 +29,15 @@ export function planUploads(incoming) {
     if (isUploadImage(file)) { if(book)continue;book=true;jobs.push({key:'images',files:pages,title:titleOf(pages[0]),imageBook:true}); }
     else jobs.push({key:'file-'+jobs.length,files:[file],title:titleOf(file),imageBook:false});
   }
-  return jobs;
+  return distinguishInitialTitles(jobs);
 }
 export function validateUploadPlan(jobs,{maxUploadBytes,maxBookPages,maxImageBytes,maxEpubBytes=64*1024*1024,maxUploadAssets=1000}) {
   if(!jobs.length)return 'ファイルを選択してください。';
   if(jobs.reduce((n,job)=>n+job.files.length,0)>MAX_UPLOAD_FILES)return '一度に選択できるファイルは1000件までです。';
   if(jobs.length>Math.min(MAX_UPLOAD_FILES,maxUploadAssets))return `一度に選択できるアセットは${maxUploadAssets}件までです。`;
-  const identities=new Set(),names=new Set();
+  const identities=new Set(),names=new Map();
   for(const job of jobs) {
-    const name=JSON.stringify([job.folderPath??'',canonicalName(job.title)]);if(names.has(name))return '同じ階層に同じタイトルのアセットが選択されています。タイトルまたは追加先を変更してください。';names.add(name);
+    const name=JSON.stringify([folderKey(job),canonicalName(job.title)]);if(names.has(name)){const first=names.get(name);return `同じ階層でタイトル「${canonicalName(job.title)}」が重複しています。対象：${first.relativePath??first.files[0].name} ／ ${job.relativePath??job.files[0].name}。タイトルまたは追加先を変更してください。`;}names.set(name,job);
     const prefix=job.title||job.files[0]?.name||'アセット';
     if(!job.title.trim()||job.title.trim().length>200)return `${prefix}：タイトルを1〜200文字で入力してください。`;
     if(!job.files.length||job.files.some(f=>!supported.has(f.type)))return `${prefix}：対応していないファイル形式です。`;
