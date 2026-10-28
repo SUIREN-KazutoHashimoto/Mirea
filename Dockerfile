@@ -25,7 +25,7 @@ RUN gcc -std=c11 -O2 -Wall -Wextra -Werror -D_FORTIFY_SOURCE=2 -fstack-protector
 
 FROM node:24.19.0-bookworm-slim AS runtime
 ARG VCS_REF=unknown
-ARG VERSION=0.20.2-beta
+ARG VERSION=0.20.3-beta
 LABEL org.opencontainers.image.title="Mirea" \
       org.opencontainers.image.description="Shared video, audio and book library" \
       org.opencontainers.image.source="https://github.com/SUIREN-KazutoHashimoto/Mirea" \

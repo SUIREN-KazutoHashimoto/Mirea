@@ -112,13 +112,15 @@ export async function registerAdminJobs(app,context) {
     },id,get(id)?.kind).catch(error=>app.log.error({err:error},'Admin job cleanup failed'));
     pending.set(id,job);job.finally(()=>{pending.delete(id);pump();});
   }
+  const stopAvailability=context.jobPool.onAvailable?.(()=>{try{pump();}catch(error){app.log.error({err:error},'Admin queue replenishment failed');}});
   db.prepare("UPDATE admin_jobs SET state='queued' WHERE state='running' AND kind IN ('thumbnail','preview','transcode')").run();
   pump();
-  app.addHook('onClose',async()=>{closing=true;await Promise.allSettled([...pending.values()]);});
+  app.addHook('onClose',async()=>{closing=true;stopAvailability?.();await Promise.allSettled([...pending.values()]);});
   const auth={onRequest:async req=>a.requireAdmin(req)};
   app.get('/api/v1/admin/jobs',auth,async()=>({
+    currentSummary:db.prepare(`SELECT SUM(state='running') AS running,SUM(state='queued') AS queued FROM (SELECT state FROM admin_jobs WHERE state IN ('queued','running') UNION ALL SELECT state FROM media_tasks WHERE state IN ('queued','running') UNION ALL SELECT CASE state WHEN 'uploading' THEN 'running' ELSE 'queued' END FROM upload_sessions WHERE state='processing' AND NOT EXISTS(SELECT 1 FROM media_ingest WHERE asset_id=upload_sessions.id) OR state='uploading' AND expires_at>?)`).get(Date.now()),
     jobs:[...db.prepare("SELECT * FROM admin_jobs ORDER BY created_at DESC LIMIT 100").all(),...db.prepare('SELECT * FROM media_tasks ORDER BY created_at DESC LIMIT 100').all()].map(safe),
-    currentJobs:[...db.prepare("SELECT * FROM admin_jobs WHERE state IN ('queued','running') ORDER BY created_at,id LIMIT 100").all(),...db.prepare("SELECT * FROM media_tasks WHERE state IN ('queued','running') ORDER BY created_at,id LIMIT 100").all()].map(safe),
+    currentJobs:[...db.prepare("SELECT * FROM admin_jobs WHERE state IN ('queued','running') ORDER BY CASE state WHEN 'running' THEN 0 ELSE 1 END,created_at,id LIMIT 100").all(),...db.prepare("SELECT * FROM media_tasks WHERE state IN ('queued','running') ORDER BY CASE state WHEN 'running' THEN 0 ELSE 1 END,created_at,id LIMIT 100").all()].map(safe),
     currentUploads:db.prepare("SELECT * FROM upload_sessions WHERE state='processing' AND NOT EXISTS(SELECT 1 FROM media_ingest WHERE asset_id=upload_sessions.id) OR state='uploading' AND expires_at>? ORDER BY created_at,id LIMIT 100").all(Date.now()).map(uploadSafe),
     currentCount:db.prepare("SELECT (SELECT COUNT(*) FROM admin_jobs WHERE state IN ('queued','running'))+(SELECT COUNT(*) FROM media_tasks WHERE state IN ('queued','running'))+(SELECT COUNT(*) FROM upload_sessions WHERE state='processing' AND NOT EXISTS(SELECT 1 FROM media_ingest WHERE asset_id=upload_sessions.id) OR state='uploading' AND expires_at>?) AS n").get(Date.now()).n,
     history:{jobs:[...db.prepare("SELECT * FROM admin_jobs WHERE state IN ('complete','failed') ORDER BY updated_at DESC,id LIMIT 100").all(),...db.prepare("SELECT * FROM media_tasks WHERE state IN ('complete','failed') ORDER BY updated_at DESC,id LIMIT 100").all()].map(safe),uploads:db.prepare("SELECT * FROM upload_sessions WHERE state IN ('complete','failed','cancelled') ORDER BY created_at DESC,id LIMIT 100").all().map(uploadSafe)},

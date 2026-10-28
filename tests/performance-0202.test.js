@@ -15,7 +15,7 @@ test('continuous upload hints cannot starve a ready media job or break its execu
  try{const first=pool.run(()=>{started++;return held;},'first'),second=pool.run(()=>started++,'second');await delay(450);assert.equal(started,1,'first starts while chunk hints continue');assert.equal(pool.running,1);assert.equal(pool.queued,1);release();await Promise.all([first,second]);assert.equal(started,2);}finally{release();clearInterval(hints);}
 });
 test('encoder CPU allocation stays bounded under small hosts and configured job concurrency',()=>{
- assert.equal(encoderThreads(5,2),1);assert.equal(encoderThreads(5,12),2);assert.equal(encoderThreads(1,12),4);assert.equal(encoderThreads(16,12),1);for(let jobs=1;jobs<=20;jobs++)for(let cpus=1;cpus<=64;cpus++){const threads=encoderThreads(jobs,cpus);assert(threads>=1&&threads<=4);if(cpus>=jobs+2)assert(threads*jobs<=cpus-2);}
+ const memory=64*1024**3;assert.equal(encoderThreads(5,2,memory),1);assert.equal(encoderThreads(5,12,memory),2);assert.equal(encoderThreads(1,12,memory),10);assert.equal(encoderThreads(16,12,memory),1);for(let jobs=1;jobs<=20;jobs++)for(let cpus=1;cpus<=64;cpus++){const allocations=Array.from({length:jobs},(_,rank)=>encoderThreads(jobs,cpus,memory,1920*1080,rank));assert(allocations.every(n=>n>=1&&n<=16));if(cpus>=jobs+2)assert(allocations.reduce((a,b)=>a+b,0)<=cpus-2);}
 });
 test('in-place playback renewal remains session and asset scoped, bounded by session expiry and denied after revocation',async t=>{
  const dir=await mkdtemp(join(tmpdir(),'mirea-renew-0202-')),app=await createApp({dataDir:dir,rateLimit:false}),db=new DatabaseSync(join(dir,'mirea.sqlite'));t.after(async()=>{db.close();await app.close();await rm(dir,{recursive:true,force:true});});

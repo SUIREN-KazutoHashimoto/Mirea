@@ -1,4 +1,4 @@
-import {MAX_UPLOAD_FILES} from './upload-batch.js';
+import {MAX_UPLOAD_FILES,isSupportedUploadFile,distinguishInitialTitles} from './upload-batch.js';
 const fileOrder=new Intl.Collator('ja',{numeric:true});
 // Relative paths are labels only; none are sent as filesystem destinations.
 export function folderParts(path){
@@ -12,9 +12,10 @@ export function folderUploadJobs(files,plan){
   for(const [index,file] of Array.from(files).entries()){
     const path=file.relativePath||file.webkitRelativePath,parts=folderParts(path);
     if(parts.at(-1)!==file.name||paths.has(path))throw Error('重複または不正なファイルパスです。');paths.add(path);
+    if(!isSupportedUploadFile(file))continue;
     const [job]=plan([file]);jobs.push({...job,key:'folder-'+index,folderPath:parts.slice(0,-1).join('/'),relativePath:path});
   }
-  folderPaths(jobs);return jobs.sort((a,b)=>fileOrder.compare(a.relativePath,b.relativePath));
+  folderPaths(jobs);return distinguishInitialTitles(jobs.sort((a,b)=>fileOrder.compare(a.relativePath,b.relativePath)));
 }
 export function folderPaths(jobs){
   const paths=new Set();for(const job of jobs){const parts=folderParts(job.relativePath);for(let n=1;n<parts.length;n++)paths.add(parts.slice(0,n).join('/'));}
