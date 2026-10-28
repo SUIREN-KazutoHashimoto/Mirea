@@ -68,6 +68,7 @@ try{
  for(const [id,kind]of [[audioId,'audio'],[videoId,'video']]){
   await page.locator('.card-open[data-open="'+id+'"]').click();await page.waitForFunction(kind=>document.querySelector('.mirea-player '+kind)?.readyState>=2,kind);await page.locator('.player-play').click();await page.waitForFunction(kind=>!document.querySelector('.mirea-player '+kind)?.paused,kind);
   await page.locator('.player-background').click();
+  await page.locator('.dock-art').waitFor({state:'visible'});await page.waitForFunction(()=>!document.querySelector('#app')?.inert);
   await page.evaluate(id=>{window.performanceFixture={card:document.querySelector('[data-open="'+id+'"]').closest('.media-card'),button:document.querySelector('[data-open="'+id+'"]'),image:document.querySelector('[data-open="'+id+'"] img'),media:document.querySelector('.mirea-player audio,.mirea-player video'),source:document.querySelector('.mirea-player audio,.mirea-player video').currentSrc};window.performanceFixture.button.focus({preventScroll:true});window.scrollTo(0,80);window.performanceFixture.scroll=scrollY;window.performanceFixture.media.addEventListener('waiting',()=>{window.performanceFixture.waiting=(window.performanceFixture.waiting??0)+1;});},id);
   const before=await page.locator('.mirea-player '+kind).evaluate(m=>m.currentTime);await context.setOffline(true);
   // Trigger the actual catalog fallback while the hidden player keeps running.
