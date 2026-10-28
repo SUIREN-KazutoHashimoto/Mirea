@@ -1,7 +1,7 @@
 // Own synthetic media, temporary DB and a fresh sandboxed headless browser.
 // Never attach to an existing browser or a real user's server.
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,rm,writeFile,readFile} from 'node:fs/promises';
+import {mkdtemp,mkdir,rm,writeFile,readFile,readdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve,sep} from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -14,7 +14,6 @@ import {createApp} from '../server/app.js';
 import baseConfig from '../vite.config.js';
 import {makeMp4} from '../tests/fixtures.js';
 import {ffmpegPath} from '../server/media.js';
-import {createVideoTranscoder} from '../server/video-transcode.js';
 import sharp from 'sharp';
 
 const dataDir=await mkdtemp(join(tmpdir(),'mirea-player-ui-')),output=resolve('.local/player-ui-checks');await mkdir(output,{recursive:true});
@@ -91,9 +90,14 @@ try{
  await context.close();page=null;
  // A real HLS stream starts before the large ahead target is filled, survives
  // reachability changes, and renews authorization without resetting MSE.
- const longId=randomUUID(),input=join(dataDir,'buffer-input.mp4'),folder=join(dataDir,'videos',longId),converter=createVideoTranscoder();
+ const longId=randomUUID(),input=join(dataDir,'buffer-input.mp4'),folder=join(dataDir,'videos',longId);
  await makeMp4(input,{duration:95,width:320,height:180,audio:true});
- let ladder;try{ladder=await converter.convert(input,folder,{authorize(){},report(){}});}finally{converter.close();}
+ // Browser fixture generation is independent of the runner's FFprobe version.
+ // Full production conversion/probing is covered by API and container jobs.
+ await mkdir(folder,{recursive:true});const encode=promisify(execFile),mp4=join(folder,'180p.mp4');
+ await encode(ffmpegPath(),['-hide_banner','-loglevel','error','-nostdin','-y','-i',input,'-map','0:v:0','-map','0:a:0','-c:v','libx264','-preset','veryfast','-profile:v','high','-level:v','4.1','-pix_fmt','yuv420p','-threads','1','-r','30','-g','120','-keyint_min','120','-sc_threshold','0','-force_key_frames','expr:gte(t,n_forced*4)','-c:a','aac','-t','95','-movflags','+faststart',mp4],{windowsHide:true,timeout:30000});
+ await encode(ffmpegPath(),['-hide_banner','-loglevel','error','-nostdin','-y','-i',mp4,'-c','copy','-hls_time','4','-hls_playlist_type','vod','-hls_segment_type','fmp4','-hls_flags','independent_segments','-hls_fmp4_init_filename','180p-init.mp4','-hls_segment_filename',join(folder,'180p-%05d.m4s'),'-f','hls',join(folder,'180p.m3u8')],{windowsHide:true,timeout:30000});
+ const ladder={version:1,duration:95,codec:'H.264 + AAC',renditions:[{quality:'180p',width:320,height:180,bitrate:928000,size:(await readFile(mp4)).length,files:(await readdir(folder)).filter(name=>name!=='180p.mp4')}]};
  const canonical=await readFile(join(folder,ladder.renditions[0].quality+'.mp4'));await writeFile(join(dataDir,'uploads',longId),canonical);await writeFile(join(dataDir,'thumbnails',longId+'.webp'),cover);
  const fixtureDb=new DatabaseSync(join(dataDir,'mirea.sqlite'));try{fixtureDb.prepare("INSERT INTO items VALUES(?,?,?,'buffer.mp4','video/mp4',?,?,?,1,1)").run(longId,shelf,'先読み確認',canonical.length,owner.user.id,Date.now());fixtureDb.prepare('INSERT INTO video_assets VALUES(?,?,1)').run(longId,JSON.stringify(ladder));}finally{fixtureDb.close();}
  const streamContext=await browser.newContext({viewport:{width:390,height:844},serviceWorkers:'block'});let firstTicket=true,renewals=0;
