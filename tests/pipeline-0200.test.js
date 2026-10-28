@@ -9,6 +9,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {createApp} from '../server/app.js';
 import {createVideoTranscoder} from '../server/video-transcode.js';
 import {createJobLanes} from '../server/job-pool.js';
+import {jobCancellationSignal} from '../server/job-context.js';
 import {openDatabase} from '../server/database.js';
 import {makeMp4,makePdf} from './fixtures.js';
 import sharp from 'sharp';
@@ -52,6 +53,14 @@ test('acknowledged duplicate parts do not rewrite disk, and missing persisted pa
  const c=await fixture(t),bytes=makePdf(),r=await c.req('POST','/shelves/'+c.shelf+'/uploads',{title:'Book',files:[{filename:'book.pdf',mime:'application/pdf',size:bytes.length}]}),id=r.json().id;
  const put=()=>c.req('PUT',`/uploads/${id}/files/0/parts/0`,bytes,{'content-type':'application/octet-stream','x-chunk-sha256':hash(bytes)});assert.equal((await put()).statusCode,204);const path=join(c.dir,'uploads','transfers',id,'0-0'),stamp=(await stat(path)).mtimeMs;assert.equal((await put()).statusCode,204);assert.equal((await stat(path)).mtimeMs,stamp);
  await unlink(path);assert.equal((await put()).statusCode,204);assert.deepEqual(await readFile(path),bytes);
+});
+test('recursive deletion aborts running media even after SQLite has cascaded its task records',async t=>{
+ let entered=false,aborted=false;const c=await fixture(t,{videoTranscoder:{convert(){entered=true;return new Promise((_,reject)=>jobCancellationSignal().addEventListener('abort',()=>{aborted=true;reject(new DOMException('Cancelled','AbortError'));},{once:true}));},close(){}}});
+ const raw=await makeMp4(join(c.dir,'cancel.mp4'),{duration:.3}),id=await c.upload(raw);await until(()=>entered);
+ const series=(await c.req('POST','/shelves/'+c.shelf+'/series',{title:'Cancel'})).json().series;
+ const linked=await c.req('PUT','/series/'+series.id,{revision:series.revision,title:series.title,description:series.description,items:[{assetId:id,label:''}]});assert.equal(linked.statusCode,200,linked.body);
+ const preview=(await c.req('GET','/series/'+series.id+'/delete-preview')).json(),deleted=await c.req('DELETE','/series/'+series.id,{revision:linked.json().series.revision,deleteContents:true,previewHash:preview.previewHash});assert.equal(deleted.statusCode,204,deleted.body);assert.equal(aborted,true);
+ assert.equal(c.db.prepare('SELECT COUNT(*) n FROM media_tasks WHERE asset_id=?').get(id).n,0);await assert.rejects(stat(join(c.dir,'originals',id)),{code:'ENOENT'});await assert.rejects(stat(join(c.dir,'uploads','staging',id)),{code:'ENOENT'});
 });
 test('manual thumbnail regeneration is not trapped behind a full transcode execution window',async t=>{
  let release,entered=false,closed=false;const held=new Promise(r=>release=r),c=await fixture(t,{videoTranscoder:{async convert(){entered=true;await held;throw Object.assign(Error('Stopped fixture'),{code:'SERVER_CLOSING'});},close(){closed=true;release();}}});

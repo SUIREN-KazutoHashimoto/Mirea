@@ -24,7 +24,7 @@ export function mediaContentSource(db,item,{uploadDir,originalDir},{raw=false}={
 // parts. Each asset has ordered dependencies; different lanes run concurrently.
 export async function createMediaPipeline(app,context){
  const {db,media,videoTranscoder,audioTranscoder,jobPool,originalDir,uploadDir,thumbnailDir,previewDir,videoDir,stagingDir,adminAccess}=context;
- const active=new Map(),counts=new Map();let closing=false,pumping=false;
+ const active=new Map(),activeAssets=new Map(),counts=new Map();let closing=false,pumping=false;
  const ingest=id=>db.prepare('SELECT * FROM media_ingest WHERE asset_id=?').get(id);
  const task=id=>db.prepare('SELECT * FROM media_tasks WHERE id=?').get(id);
  const item=id=>db.prepare('SELECT * FROM items WHERE id=?').get(id);
@@ -100,7 +100,7 @@ export async function createMediaPipeline(app,context){
      try{await execute(row);if(task(row.id)?.state==='running')db.prepare("UPDATE media_tasks SET state='complete',error=NULL,progress_json=?,updated_at=? WHERE id=?").run(JSON.stringify({stage:'complete',percent:100}),Date.now(),row.id);}
      catch(error){if(task(row.id)?.state==='running')db.prepare('UPDATE media_tasks SET state=?,error=?,updated_at=? WHERE id=?').run(closing||error.code==='SERVER_CLOSING'?'queued':'failed',closing||error.code==='SERVER_CLOSING'?null:'後処理を完了できませんでした。原本は保持されています。',Date.now(),row.id);if(!closing&&error.code!=='SERVER_CLOSING')app.log.error({err:error,jobId:row.id},'Media pipeline failed');}
      finally{await finish(row.asset_id);}
-    },row.id,row.kind).finally(()=>{active.delete(row.id);counts.set(row.kind,counts.get(row.kind)-1);pump();});active.set(row.id,promise);
+    },row.id,row.kind).finally(()=>{active.delete(row.id);activeAssets.delete(row.id);counts.set(row.kind,counts.get(row.kind)-1);pump();});active.set(row.id,promise);activeAssets.set(row.id,row.asset_id);
    }
   }finally{pumping=false;}
  }
@@ -126,7 +126,7 @@ export async function createMediaPipeline(app,context){
   },
   async ensureThumbnail(asset){if(customThumbnail(db,thumbnailDir,asset.id))return ensureCustomThumbnail(db,thumbnailDir,media,asset.id);pump();const row=db.prepare("SELECT * FROM media_tasks WHERE asset_id=? AND kind='thumbnail'").get(asset.id);if(row&&active.has(row.id))await active.get(row.id);if(customThumbnail(db,thumbnailDir,asset.id))return ensureCustomThumbnail(db,thumbnailDir,media,asset.id);const result=row?task(row.id):null;if(result?.state==='failed')throw httpError(422,'サムネイル生成に失敗しました。管理画面から再生成できます。');return join(thumbnailDir,asset.id+'.jpg');},
   retry(id){if(!ingest(id))return false;db.prepare("UPDATE media_tasks SET state='queued',error=NULL,progress_json='{}' WHERE asset_id=? AND state IN ('failed','cancelled')").run(id);db.prepare("UPDATE upload_sessions SET state='processing',error=NULL WHERE id=?").run(id);pump();return true;},
-  async cancel(id){db.prepare("UPDATE media_tasks SET state='cancelled' WHERE asset_id=? AND state IN ('queued','running')").run(id);for(const row of db.prepare('SELECT id FROM media_tasks WHERE asset_id=?').all(id))jobPool.cancel(row.id);await Promise.allSettled(db.prepare('SELECT id FROM media_tasks WHERE asset_id=?').all(id).map(row=>active.get(row.id)).filter(Boolean));},
+  async cancel(id){const ids=new Set([...db.prepare('SELECT id FROM media_tasks WHERE asset_id=?').all(id).map(row=>row.id),...[...activeAssets].filter(([,assetId])=>assetId===id).map(([jobId])=>jobId)]);db.prepare("UPDATE media_tasks SET state='cancelled' WHERE asset_id=? AND state IN ('queued','running')").run(id);const promises=[...ids].map(jobId=>active.get(jobId)).filter(Boolean);for(const jobId of ids)jobPool.cancel(jobId);await Promise.allSettled(promises);},
   reapSources,
  };
 }

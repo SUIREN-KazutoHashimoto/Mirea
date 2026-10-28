@@ -272,6 +272,7 @@ export async function createApp(options = {}) {
   const videoPreviews = await registerVideoPreviews(app, { db, media, dataDir, uploadDir, authenticate, findItem,jobPool });
     const navigation = await registerVideoNavigation(app,{db,uploadDir,originalDir,videoDir,authenticate,findItem,membership,maintenance,rateLimit:options.rateLimit,jobPool,generateNavigation:options.generateNavigation});
   async function removeAssetFiles(item){await mediaPipeline.cancel(item.id);return Promise.allSettled([
+    removeItemDirectory(stagingDir,item.id),
     item.mime_type===IMAGE_BOOK_MIME?removeItemDirectory(booksDir,item.id):unlink(join(uploadDir,item.id)),
     ...(item.mime_type===EPUB_MIME?[removeItemDirectory(booksDir,item.id)]:[]),unlink(join(thumbnailDir,item.id+'.jpg')),unlink(join(thumbnailDir,item.id+'.webp')),
     videoPreviews.remove(item.id),removeItemDirectory(videoDir,item.id),unlink(join(originalDir,item.id))
@@ -389,15 +390,10 @@ export async function createApp(options = {}) {
   });
   app.delete('/api/v1/items/:id', auth, async (req, reply) => {
     const item = findItem(req.params.id, req.user.id, ['owner', 'editor']);
+    await uploads.cancelForDeletion([item.id]);
     // Remove access first, then remove the underlying file. Open streams may finish.
     db.prepare('DELETE FROM items WHERE id=?').run(req.params.id);
-    const results = await Promise.allSettled([
-      item.mime_type === IMAGE_BOOK_MIME ? removeItemDirectory(booksDir, item.id) : unlink(join(uploadDir, item.id)),
-      ...(item.mime_type===EPUB_MIME?[removeItemDirectory(booksDir,item.id)]:[]),
-      unlink(join(thumbnailDir, `${item.id}.jpg`)),unlink(join(thumbnailDir, `${item.id}.webp`)),
-      videoPreviews.remove(item.id)
-      ,removeItemDirectory(videoDir,item.id),unlink(join(originalDir,item.id))
-    ]);
+    const results = await removeAssetFiles(item);
     for (const result of results) if (result.status === 'rejected' && result.reason.code !== 'ENOENT') req.log.error({ err: result.reason }, 'Orphan file requires cleanup');
     return reply.code(204).send();
   });
