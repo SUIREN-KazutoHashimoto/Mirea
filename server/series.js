@@ -1,3 +1,4 @@
+import {orderSeriesItems} from './series-order.js';
 import {canonicalName} from './name-rules.js';
 import {assertAssetChanges,assertSeriesChanges} from './name-integrity.js';
 import {registerSeriesActions} from './series-actions.js';
@@ -10,7 +11,7 @@ const uuid={type:'string',pattern:'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 const revision={type:'integer',minimum:1,maximum:Number.MAX_SAFE_INTEGER-10000};
 const metadata={title:{type:'string',minLength:1,maxLength:200},description:{type:'string',maxLength:2000}};
 const object=(properties,required=Object.keys(properties))=>({type:'object',properties,required,additionalProperties:false});
-export const publicSeries=s=>({id:s.id,shelfId:s.shelf_id,title:s.title,description:s.description,revision:s.revision,createdAt:s.created_at,updatedAt:s.updated_at,parentId:s.parent_id??null});
+export const publicSeries=s=>({id:s.id,shelfId:s.shelf_id,title:s.title,description:s.description,revision:s.revision,createdAt:s.created_at,updatedAt:s.updated_at,parentId:s.parent_id??null,orderMode:s.order_mode??'name'});
 export function shelfSeries(db,shelfId){
   return db.prepare(`WITH RECURSIVE tree(root,id,shelf_id,depth) AS (
     SELECT id,id,shelf_id,0 FROM series WHERE shelf_id=?
@@ -84,7 +85,7 @@ export function registerSeries(app,{db,authenticate,membership,findItem,publicIt
     const result=detail(find(row.series_id,req.user.id),req.user.id);
     return {...result,currentIndex:result.items.findIndex(i=>i.id===item.id)};
   });
-  app.put('/api/v1/series/:id',{...auth,bodyLimit:256*1024,schema:{body:object({revision,...metadata,parentId:{anyOf:[uuid,{type:'null'}]},moveAssets:{type:'boolean'},children:{type:'array',maxItems:1000,uniqueItems:true,items:uuid},items:{type:'array',maxItems:1000,items:object({assetId:uuid,label:{type:'string',maxLength:80}},['assetId'])}},['revision','title','description','items'])}},async req=>{
+  app.put('/api/v1/series/:id',{...auth,bodyLimit:256*1024,schema:{body:object({revision,...metadata,orderMode:{enum:['name','manual']},parentId:{anyOf:[uuid,{type:'null'}]},moveAssets:{type:'boolean'},children:{type:'array',maxItems:1000,uniqueItems:true,items:uuid},items:{type:'array',maxItems:1000,items:object({assetId:uuid,label:{type:'string',maxLength:80}},['assetId'])}},['revision','title','description','items'])}},async req=>{
     const series=find(req.params.id,req.user.id,['owner','editor']),input=req.body,title=input.title.trim().normalize('NFC');
     if(!title)throw httpError(422,'シリーズ名を入力してください。');
     return transaction(db,()=>{
@@ -121,6 +122,7 @@ export function registerSeries(app,{db,authenticate,membership,findItem,publicIt
       const insert=db.prepare('INSERT INTO series_items(series_id,asset_id,position,label) VALUES(?,?,?,?)');
       input.items.forEach((entry,index)=>insert.run(series.id,entry.assetId,index+1,entry.label?.trim()??''));
       db.prepare('UPDATE series SET title=?,description=?,revision=?,updated_at=? WHERE id=?').run(title,input.description.trim(),input.revision+1,Date.now(),series.id);
+      db.prepare('UPDATE series SET order_mode=? WHERE id=?').run(input.orderMode??series.order_mode??'name',series.id);orderSeriesItems(db,series.id);
       return detail(find(series.id,req.user.id),req.user.id);
     });
   });

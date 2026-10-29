@@ -1,3 +1,4 @@
+import {orderSeriesItems} from './series-order.js';
 import {canonicalName,nameKey,duplicateNameGroups,libraryNameConflicts} from './name-rules.js';
 import {httpError} from './security.js';
 import {transaction} from './database.js';
@@ -47,6 +48,7 @@ export function registerNameIntegrity(app,{db,authenticate,membership,findItem,p
     if(item.title!==req.body.expectedTitle)throw httpError(409,'タイトルが更新されています。最新の内容を確認してください。');
     const title=canonicalName(req.body.title);if(!title)throw httpError(422,'タイトルを入力してください。');
     assertAssetChanges(db,item.shelf_id,[{id:item.id,title}]);db.prepare('UPDATE items SET title=? WHERE id=?').run(title,item.id);
+    const series=db.prepare('SELECT series_id FROM series_items WHERE asset_id=?').get(item.id);if(series&&orderSeriesItems(db,series.series_id))db.prepare('UPDATE series SET revision=revision+1,updated_at=? WHERE id=?').run(Date.now(),series.series_id);
     return {item:publicItem(db.prepare('SELECT * FROM items WHERE id=?').get(item.id))};
   }));
 }

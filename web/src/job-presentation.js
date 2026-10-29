@@ -2,7 +2,7 @@ const active=new Set(['queued','running','processing','uploading']);
 export function partitionJobs(rows){return {current:rows.filter(row=>!row.state||active.has(row.state)),history:rows.filter(row=>row.state&&!active.has(row.state))};}
 export function jobStateClass(state){return state==='complete'?'job-complete':state==='failed'?'job-failed':state==='cancelled'?'job-cancelled':'job-active';}
 export const JOB_STATES={queued:'待機中',running:'実行中',processing:'処理中',uploading:'受信中',complete:'完了',failed:'失敗',cancelled:'中止'};
-export const JOB_KINDS={thumbnail:'表紙',owner_thumbnail:'表紙（所有者）',preview:'動画プレビュー',transcode:'トランスコード',navigation:'チャプター・字幕',upload:'アップロード',processor:'メディア処理','validate-image':'画像検証',backup_metadata:'メタデータバックアップ',backup_full:'全体バックアップ'};
+export const JOB_KINDS={repair:'未完了の修復',thumbnail:'表紙',owner_thumbnail:'表紙（所有者）',preview:'動画プレビュー',transcode:'トランスコード',navigation:'チャプター・字幕',upload:'アップロード',processor:'メディア処理','validate-image':'画像検証',backup_metadata:'メタデータバックアップ',backup_full:'全体バックアップ'};
 export function jobLabel(row){return row.title||JOB_KINDS[row.kind]||'メディア処理';}
 export function jobKind(row){return row.upload?'アップロード':JOB_KINDS[row.kind]||'メディア処理';}
 export function filterJobRows(rows,{query='',state='all',sort='newest'}={}){

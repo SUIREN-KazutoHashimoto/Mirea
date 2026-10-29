@@ -39,6 +39,7 @@ import { registerAppUpdates } from './app-updates.js';
 import {createAdminAccess} from './admin-access.js';
 import {registerAdmin} from './admin.js';
 import {registerAdminJobs} from './admin-jobs.js';
+import {mediaProcessingState} from './media-recovery.js';
 import {createMaintenanceGate} from './maintenance-gate.js';
 import {registerAdminBackups} from './admin-backups.js';
 import {registerServerUpdates} from './server-updates.js';
@@ -92,8 +93,8 @@ export async function createApp(options = {}) {
   ensureThumbnail.inspect=()=>legacyThumbnail.inspect();
   const coverRevision=db.prepare('SELECT image_id,updated_at FROM thumbnail_overrides WHERE asset_id=?');
   const videoCoverRevision=db.prepare('SELECT updated_at FROM video_thumbnail_state WHERE asset_id=?');
-  const jobCoverRevision=db.prepare("SELECT MAX(updated_at) updated_at FROM admin_jobs WHERE asset_id=? AND kind IN ('thumbnail','owner_thumbnail') AND state='complete'");
-  const publicItem=i=>{const stamp=Math.max(videoCoverRevision.get(i.id)?.updated_at??0,jobCoverRevision.get(i.id)?.updated_at??0),generated=stamp?{updated_at:stamp}:null;const row=coverRevision.get(i.id),image=row?customThumbnailRevision(row):generated?customThumbnailRevision({image_id:i.id,updated_at:generated.updated_at}):null;const source=db.prepare('SELECT canonical_ready,source_mime,metadata_json FROM media_ingest WHERE asset_id=?').get(i.id);return {...basePublicItem(i),...(source?{...(!source.canonical_ready?{mimeType:source.source_mime}:{}),originalPlayback:!source.canonical_ready,downloadReady:Boolean(source.canonical_ready),mediaInfo:JSON.parse(source.metadata_json),processingTasks:db.prepare('SELECT kind,state FROM media_tasks WHERE asset_id=?').all(i.id)}:{}),...(image?{thumbnailUrl:'/api/v1/items/'+i.id+'/thumbnail?revision='+image}:{})};};
+  const jobCoverRevision=db.prepare("SELECT MAX(updated_at) updated_at FROM admin_jobs WHERE asset_id=? AND kind IN ('thumbnail','owner_thumbnail','repair') AND state='complete'");
+  const publicItem=i=>{const stamp=Math.max(videoCoverRevision.get(i.id)?.updated_at??0,jobCoverRevision.get(i.id)?.updated_at??0),generated=stamp?{updated_at:stamp}:null;const row=coverRevision.get(i.id),image=row?customThumbnailRevision(row):generated?customThumbnailRevision({image_id:i.id,updated_at:generated.updated_at}):null;const source=db.prepare('SELECT canonical_ready,source_mime,metadata_json FROM media_ingest WHERE asset_id=?').get(i.id);return {...basePublicItem(i),...(source?{...(!source.canonical_ready?{mimeType:source.source_mime}:{}),processingState:mediaProcessingState(db,i.id),originalPlayback:!source.canonical_ready,downloadReady:Boolean(source.canonical_ready),mediaInfo:JSON.parse(source.metadata_json),processingTasks:db.prepare('SELECT kind,state FROM media_tasks WHERE asset_id=?').all(i.id)}:{}),...(image?{thumbnailUrl:'/api/v1/items/'+i.id+'/thumbnail?revision='+image}:{})};};
   const maxUploadBytes = Number(options.maxUploadBytes ?? process.env.MAX_UPLOAD_BYTES ?? 2147483648);
   if (!Number.isSafeInteger(maxUploadBytes) || maxUploadBytes <= 0) throw new Error('Invalid MAX_UPLOAD_BYTES');
   const chunkSize = Number(options.chunkSize ?? process.env.UPLOAD_CHUNK_BYTES ?? 8 * 1024 * 1024);
