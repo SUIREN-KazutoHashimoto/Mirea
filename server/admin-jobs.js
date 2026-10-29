@@ -129,6 +129,9 @@ export async function registerAdminJobs(app,context) {
     pending.set(id,job);job.finally(()=>{pending.delete(id);pump();});
   }
   async function commitCanonical(item,metadata,id,authorize){
+    // Pre-pipeline libraries keep their only original in uploads/. Their new
+    // HLS/renditions are already published; never replace that retained source.
+    if(!db.prepare('SELECT 1 FROM media_ingest WHERE asset_id=?').get(item.id))return;
     const best=metadata.renditions.slice().sort((a,b)=>b.width*b.height-a.width*a.height||b.size-a.size)[0];
     if(!best||!/^\d{2,4}p$/.test(best.quality))throw Error('Invalid canonical rendition');
     await publishCanonical({source:join(videoDir,item.id,id,best.quality+'.mp4'),id:item.id,jobId:id,uploadDir,authorize});

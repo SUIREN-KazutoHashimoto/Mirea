@@ -186,7 +186,7 @@ export async function createApp(options = {}) {
   registerAppUpdates(app, { directory: updatesPath ? resolve(PROJECT_ROOT, updatesPath) : undefined,releaseVersion:options.remoteUpdates?packageInfo.version:undefined });
   let analytics;
   app.get('/api/v1/config', async () => ({ allowRegistration, ...processingSettings.value, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadProtocol:2, maxUploadFiles:1000, uploadSessionHours: 24, analytics,
-    version: packageInfo.version, transferQueue:true, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.21.1beta/mirea-0.21.1beta-android.apk' }));
+    version: packageInfo.version, transferQueue:true, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':`https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v${packageInfo.version.replace('-beta','beta')}/mirea-${packageInfo.version.replace('-beta','beta')}-android.apk` }));
   app.post('/api/v1/auth/register', { ...authLimits, schema: { body: object({ email, password, name: text(80),remember:{type:'boolean',default:true} },['email','password','name']) } }, async (req, reply) => {
     if (!allowRegistration) throw httpError(403, '新規登録は現在停止しています。');
     const normalizedEmail = req.body.email.trim().toLowerCase();
