@@ -83,7 +83,7 @@ const finishAppLaunch=showAppLaunch({native});
 const pwa=createPwaInstall({native,ensureWorker:ensureDownloadWorker});
 if(!native&&!import.meta.env.DEV)void pwa.prepare();
 let disposeAuthPwa;
-const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.22.0beta/mirea-0.22.0beta-android.apk';
+const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.22.1beta/mirea-0.22.1beta-android.apk';
 const currentApkUrl=()=>config.androidApkUrl?.startsWith('/api/v1/app-updates/')?absoluteUrl(config.androidApkUrl):config.androidApkUrl||defaultApkUrl;
 
 const root = document.querySelector('#app');
@@ -113,7 +113,7 @@ function icon(name, className = '') { return `<svg class="icon ${className}" vie
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const bytes = n => n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KB` : n < 1024 ** 3 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${(n / 1024 ** 3).toFixed(1)} GB`;
 const date = timestamp => new Intl.DateTimeFormat('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(timestamp);
-let config = { allowRegistration: true, maxUploadBytes: 2147483648, maxBookPages: 1000, maxImageBytes: 25 * 1024 * 1024 };
+let config = { allowRegistration: true, maxUploadBytes: 2147483648, maxBookPages: 1000, maxImageBytes: 100 * 1024 * 1024 };
 let shelves = [], items = [], activeShelf = null, filter = 'all', search = '', sort = loadCollectionSort(), loadGeneration = 0;
 let playlists=[],activePlaylist='',playlistDraft=null,catalogBulkBusy=false,catalogBulkController;
 let series=[],activeSeries='',seriesReturnView,historyMode=false,historyRows=[];

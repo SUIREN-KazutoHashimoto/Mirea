@@ -336,7 +336,7 @@ export async function createApp(options = {}) {
           fileSize += chunk.length;
           if (file.mime===EPUB_MIME && fileSize>MAX_EPUB_BYTES) return callback(httpError(413,'EPUBは64 MiB以下にしてください。'));
           if (receivedBytes > maxUploadBytes || (isImage && fileSize > MAX_IMAGE_BYTES)) {
-            return callback(httpError(413, isImage && fileSize > MAX_IMAGE_BYTES ? '画像は1枚25 MiB以下にしてください。' : 'アップロードの合計サイズ上限を超えています。'));
+            return callback(httpError(413, isImage && fileSize > MAX_IMAGE_BYTES ? '画像は1枚100 MiB以下にしてください。' : 'アップロードの合計サイズ上限を超えています。'));
           }
           if (head.length < 16) head = Buffer.concat([head, chunk.subarray(0, 16 - head.length)]);
           callback(null, chunk);
