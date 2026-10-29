@@ -38,11 +38,11 @@ export function validatePromotion({release,latestRelease,commit,metadata,develop
  for(const [run,branch] of [[developRun,'develop'],[tagRun,release.tag_name]]){
   assert(run?.event==='push'&&run.head_sha===commit&&run.head_branch===branch&&run.status==='completed'&&run.conclusion==='success','Formal develop and tag CI success required');
  }
- for(const name of ['web-and-api','container','android','publish-container'])assert(tagJobs.some(j=>j.name===name&&j.status==='completed'&&j.conclusion==='success'),'All named tag jobs must succeed: '+name);
+ for(const name of ['web-and-api','web-ui','container','android','publish-container'])assert(tagJobs.some(j=>j.name===name&&j.status==='completed'&&j.conclusion==='success'),'All named tag jobs must succeed: '+name);
  assert(metadata.schemaVersion===1&&metadata.version===version.packageVersion&&metadata.tag===release.tag_name&&metadata.commit===commit,'Release metadata identity mismatch');
  assert(metadata.image===registryImage+':'+version.imageTag&&metadata.platform==='linux/amd64','Unexpected image');
  assert(metadata.digestReference?.startsWith(registryImage+'@sha256:')&&/^sha256:[a-f0-9]{64}$/.test(metadata.digestReference.slice(registryImage.length+1)),'Invalid image digest');
- assert(/^sha256:[a-f0-9]{64}$/.test(metadata.imageId),'Invalid config digest');
+ assert(/^sha256:[a-f0-9]{64}$/.test(metadata.imageId),'Invalid tested Docker image identity');
  for(const flag of ['testedImagePromoted','readOnlyRoot','separateStorageVerified','containerRecreationAndEncryptionVerified'])assert(metadata[flag]===true,'Image verification missing: '+flag);
  assert(metadata.nonRoot==='1000:1000'&&metadata.dataPath==='/data'&&metadata.optionalMediaPath==='/media','Storage/runtime identity mismatch');
  return {tag:release.tag_name,version:version.packageVersion,channel:version.channel,commit,image:registryImage+':'+version.channel,digestReference:metadata.digestReference,imageId:metadata.imageId};
