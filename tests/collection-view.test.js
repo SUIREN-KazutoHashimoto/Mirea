@@ -37,5 +37,5 @@ test('layout CSS supports mobile 3-column/list and compact hides metadata withou
  const [css,main,audio,native]=await Promise.all(['../web/src/collection-view.css','../web/src/main.js','../web/src/audio-player.css','../android/app/src/main/java/com/suiren/mirea/playback/AudioBackdrop.java'].map(p=>readFile(new URL(p,import.meta.url),'utf8')));
  for(const marker of ['data-layout="grid3"','data-layout="list"','data-details="compact"','repeat(3,minmax(0,1fr))','.card-meta','.card-shelf','.card-progress'])assert(css.includes(marker),marker);
  for(const marker of ['mountCollectionView','parentId:selectedSeries?.id','isInSeries(series,item.series?.id,activeSeries)','current?.parentId','aria-disabled="true"','mountAssetHold'])assert(main.includes(marker),marker);
- assert(audio.includes('audio-drift 16s'));assert(audio.includes('prefers-reduced-motion:reduce'));assert(native.includes('/16000d'));assert(native.includes('areAnimatorsEnabled()'));assert(native.includes('getCallback()==null'));
+ assert(audio.includes('audio-drift 8s'));assert(audio.includes('prefers-reduced-motion:reduce'));assert(native.includes('/8000d'));assert(native.includes('areAnimatorsEnabled()'));assert(native.includes('getCallback()==null'));
 });

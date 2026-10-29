@@ -41,7 +41,7 @@ export async function generateNavigation(source,{signal,authorize=()=>{}}={}){
   const count=Math.max(1,Math.min(120,Math.ceil(durationMs/5000))),columns=Math.min(10,count),rows=Math.ceil(count/columns),intervalMs=durationMs/count;
   // Pad before sampling: even a sub-GOP clip with a single keyframe must
   // produce a complete sheet. Scene images are representative, not exact frames.
-  authorize();const {stdout:image}=await run(ffmpegPath(),['-v','error','-nostdin','-skip_frame','nokey',...limits,'-i',source,'-an','-sn','-vf',`scale=160:90:force_original_aspect_ratio=decrease,pad=160:90:(ow-iw)/2:(oh-ih)/2,tpad=stop_mode=clone:stop_duration=${durationMs/1000},fps=${count*1000/durationMs}:start_time=0,tile=${columns}x${rows}:nb_frames=${count}`,'-frames:v','1','-c:v','mjpeg','-threads','1','-q:v','5','-f','image2pipe','pipe:1'],{...execOptions(),encoding:'buffer',maxBuffer:4*MAX});
+  authorize();const {stdout:image}=await run(ffmpegPath(),['-v','error','-nostdin','-skip_frame','nokey',...limits,'-i',source,'-an','-sn','-vf',`scale=160:90:force_original_aspect_ratio=decrease,pad=160:90:(ow-iw)/2:(oh-ih)/2,tpad=stop_mode=clone:stop_duration=${durationMs/1000},fps=${count*1000/durationMs}:start_time=0,tile=${columns}x${rows}:nb_frames=${count}`,'-frames:v','1','-c:v','mjpeg','-pix_fmt','yuvj420p','-threads','1','-q:v','5','-f','image2pipe','pipe:1'],{...execOptions(),encoding:'buffer',maxBuffer:4*MAX});
   if(!image.length||image.length>4*MAX)throw Error('Invalid storyboard');authorize();
   return {durationMs,chapters,captions,image,storyboard:{count,columns,rows,width:160,height:90,intervalMs}};
 }
