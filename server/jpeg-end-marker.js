@@ -1,7 +1,7 @@
 import {constants} from 'node:fs';
 import {mkdtemp,open,copyFile,appendFile,rm} from 'node:fs/promises';
 import {join,dirname,resolve,sep} from 'node:path';
-import sharp from 'sharp';
+import {validateImagePixels} from './image-integrity.js';
 
 // Some viewers accept a JPEG whose pixels are complete but whose final EOI
 // marker is missing. Repair only a temporary copy, then require a full strict
@@ -18,7 +18,8 @@ export async function retryJpegEndMarker(source,error,metadata,options,work){
  const parent=dirname(resolve(source)),directory=await mkdtemp(join(parent,'.mirea-jpeg-eoi-')),temporary=join(directory,'image.jpg');
  try{
   await copyFile(source,temporary,constants.COPYFILE_EXCL);await appendFile(temporary,Buffer.from([0xff,0xd9]));
-  try{await sharp(temporary,options).stats();}catch{throw error;}
+  // Preserve the actual validation cause, including storage failures.
+  await validateImagePixels(temporary,options);
   return await work(temporary);
  }finally{
   if(dirname(resolve(directory))!==parent||!resolve(directory).startsWith(parent+sep+'.mirea-jpeg-eoi-'))throw Error('Unsafe JPEG scratch cleanup');

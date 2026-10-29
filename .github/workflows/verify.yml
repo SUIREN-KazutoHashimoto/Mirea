@@ -73,6 +73,8 @@ jobs:
       - run: curl --fail http://localhost:3000/
       - name: Verify video and audio conversion inside the read-only container
         run: docker compose run --rm --no-deps -T mirea /usr/local/bin/node --input-type=module < scripts/check-media-runtime.mjs
+      - name: Verify a 106-page high-resolution image book with bounded temporary storage
+        run: docker compose run --rm --no-deps -T mirea /usr/local/bin/node --input-type=module < scripts/check-image-book-runtime.mjs
       - name: Create isolated accounts, nested series, PDF, progress and encrypted download
         run: node scripts/check-container.mjs prepare
       - run: docker compose up -d --force-recreate --wait

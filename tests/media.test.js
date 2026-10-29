@@ -9,9 +9,32 @@ import sharp from 'sharp';
 import { createMediaProcessor, ffmpegPath } from '../server/media.js';
 import { makeMp4, withOutOfRangeEditList } from './fixtures.js';
 import {thumbnailWebp} from '../server/thumbnail-webp.js';
+import {mediaFailure,decoderFailureCode} from '../server/media-failure.js';
+import {createErrorDiagnostic} from '../server/error-diagnostics.js';
 
 const run = promisify(execFile);
 const options = { timeout: 30_000, maxBuffer: 1024 * 1024, windowsHide: true };
+test('native storage errors without errno are classified before image errors and never expose private decoder text',()=>{
+ const privatePath='/media/private-title/60.jpg';
+ for(const [message,code] of [['wbuffer_write: write failed\nsystem error: No space left on device','ENOSPC'],['Disk quota exceeded','EDQUOT'],['Read-only file system','EROFS']]){
+  assert.equal(decoderFailureCode(message),'ENOSPC'===code?'ENOSPC':code);
+  const failure=mediaFailure({error:message+' '+privatePath,image:{stage:'page-validation',phase:'decode',format:'jpeg',page:60,pages:106}},'validate-image');
+  assert.equal(failure.code,code);assert.equal(failure.statusCode,503);assert(!failure.message.includes(privatePath));
+  const diagnostic=createErrorDiagnostic(failure,{method:'POST',routeOptions:{url:'/api/v1/uploads/:id/complete'}},{status:503});
+  assert.equal(diagnostic.category,code==='EROFS'?'permission':'capacity');assert.equal(diagnostic.code,code);assert(!JSON.stringify(diagnostic).includes(privatePath));
+  assert.equal(failure.cause.message,message+' '+privatePath);
+ }
+});
+test('full scanline validation handles static formats and orientation while rejecting missing final scan data',async t=>{
+ const {directory,media}=await setup(t);
+ for(const format of ['jpeg','png','webp']){
+  const bytes=await sharp({create:{width:1200,height:1800,channels:4,background:{r:45,g:80,b:140,alpha:.5}}}).withMetadata({orientation:6})[format]().toBuffer();
+  const path=join(directory,'complete.'+format);await writeFile(path,bytes);
+  const info=await media.validateImage(path);assert.equal(info.width,1800);assert.equal(info.height,1200);assert.equal(info.size,bytes.length);assert.deepEqual(await readFile(path),bytes);
+  const broken=join(directory,'broken.'+format);await writeFile(broken,bytes.subarray(0,Math.floor(bytes.length*.8)));
+  await assert.rejects(media.validateImage(broken),e=>e.statusCode===422);
+ }
+});
 test('JPEG with only a missing EOI marker is strictly revalidated on a copy; missing pixels still fail and original bytes survive',async t=>{
  const {directory,media}=await setup(t),full=await sharp({create:{width:80,height:120,channels:3,background:'#4077b0'}}).withMetadata({orientation:6}).jpeg().toBuffer();
  assert.deepEqual([...full.subarray(-2)],[0xff,0xd9]);const bytes=full.subarray(0,full.length-2),source=join(directory,'without-end.jpg');await writeFile(source,bytes);

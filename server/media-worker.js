@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import sharp from 'sharp';
 import { stat } from 'node:fs/promises';
 import {retryJpegEndMarker} from './jpeg-end-marker.js';
+import {validateImagePixels} from './image-integrity.js';
 
 sharp.cache(false);
 sharp.concurrency(1);
@@ -27,7 +28,7 @@ try {
     if ((metadata.pages ?? 1) > 1) throw Object.assign(new Error('Animated images are unsupported'),{code:'IMAGE_ANIMATED_UNSUPPORTED'});
     // Fully decode for integrity checking, but preserve original page bytes and quality.
     image.phase = 'decode';
-    try { await sharp(source, imageOptions).stats(); }
+    try { await validateImagePixels(source, imageOptions); }
     catch(error) { await retryJpegEndMarker(source,error,metadata,imageOptions,async()=>{}); }
     const swap = [5, 6, 7, 8].includes(metadata.orientation);
     parentPort.postMessage({ width: swap ? metadata.height : metadata.width, height: swap ? metadata.width : metadata.height, size: (await stat(source)).size });
