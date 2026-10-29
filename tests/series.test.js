@@ -20,7 +20,7 @@ async function setup(t){
   c.pdf=c.asset('application/pdf','Volume 10');c.images=c.asset('application/vnd.mirea.image-book','Volume 2');c.video=c.asset('video/mp4','Episode 1');
   c.create=async(title='Mixed series',user=c.owner)=>(await c.req('POST',`/shelves/${c.shelf}/series`,user,{title,description:'A collection'})).json().series;
   c.read=(id,user=c.owner)=>c.req('GET',`/series/${id}`,user);
-  c.save=(series,items,user=c.owner,extra={})=>c.req('PUT',`/series/${series.id}`,user,{revision:series.revision,title:series.title,description:series.description,items:items.map(assetId=>({assetId,label:''})),...extra});
+  c.save=(series,items,user=c.owner,extra={})=>c.req('PUT',`/series/${series.id}`,user,{revision:series.revision,title:series.title,description:series.description,items:items.map(assetId=>({assetId,label:''})),orderMode:'manual',...extra});
   return c;
 }
 

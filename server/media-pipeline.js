@@ -8,6 +8,9 @@ import {attachUploadSeries} from './upload-series.js';
 import {moveStorage} from './storage-move.js';
 import {removeItemDirectory} from './media.js';
 import {probeVideo} from './video-transcode.js';
+import {selectVideoSource} from './media-source.js';
+import {videoMetadata} from './video-stream.js';
+import {regularMedia,assessAssetRecovery} from './media-recovery.js';
 import {probeAudio,audioThumbnail} from './audio-transcode.js';
 import {thumbnailWebp} from './thumbnail-webp.js';
 import {recordVideoThumbnail,recordVideoPreview} from './video-thumbnail.js';
@@ -31,7 +34,7 @@ export async function createMediaPipeline(app,context){
  const progressUpdate=db.prepare('UPDATE media_tasks SET progress_json=?,updated_at=? WHERE id=?');
  const reports=new Map();
  const report=(row,value)=>{const json=JSON.stringify(value),now=Date.now(),last=reports.get(row.id);if(last&&(json===last.json||value.stage===last.stage&&now-last.time<500))return;reports.set(row.id,{json,time:now,stage:value.stage});progressUpdate.run(json,now,row.id);};
- const authorize=id=>{const asset=item(id);if(!asset)throw httpError(404,'アセットは削除されています。');if(asset.uploaded_by&&(!adminAccess.enabled(asset.uploaded_by)||!db.prepare("SELECT 1 FROM memberships WHERE shelf_id=? AND user_id=? AND role IN ('owner','editor')").get(asset.shelf_id,asset.uploaded_by)))throw httpError(403,'アップロード者の権限が変更されました。');return asset;};
+ const authorize=id=>{const asset=item(id);if(!asset)throw httpError(404,'アセットは削除されています。');const repair=db.prepare("SELECT requested_by FROM admin_jobs WHERE asset_id=? AND kind='repair' AND state IN ('queued','running') ORDER BY created_at,id LIMIT 1").get(id);if(repair){if(!adminAccess.enabled(repair.requested_by)||!adminAccess.isAdmin(repair.requested_by))throw httpError(403,'修復を実行する管理権限が解除されました。');return asset;}if(asset.uploaded_by&&(!adminAccess.enabled(asset.uploaded_by)||!db.prepare("SELECT 1 FROM memberships WHERE shelf_id=? AND user_id=? AND role IN ('owner','editor')").get(asset.shelf_id,asset.uploaded_by)))throw httpError(403,'アップロード者の権限が変更されました。');return asset;};
  async function syncFile(path){const handle=await open(path,'r+');try{await handle.sync();}finally{await handle.close();}}
  async function syncDirectory(path){if(process.platform==='win32')return;const handle=await open(path,'r');try{await handle.sync();}finally{await handle.close();}}
  async function canonical(source,id,jobId){
@@ -54,10 +57,12 @@ export async function createMediaPipeline(app,context){
  async function execute(row){
   const source=ingest(row.asset_id);if(!source)return;const asset=authorize(row.asset_id),raw=join(originalDir,asset.id),work=join(stagingDir,asset.id,row.id);
   const check=()=>{if(task(row.id)?.state!=='running')throw httpError(409,'ジョブはキャンセルされています。');return authorize(asset.id);};await mkdir(work,{recursive:true,mode:0o700});
+  let newGeneration;
   try{
    if(row.kind==='thumbnail'){
     if(customThumbnail(db,thumbnailDir,asset.id)){
      await ensureCustomThumbnail(db,thumbnailDir,media,asset.id,{force:true,authorize:check});
+     db.prepare('UPDATE items SET thumbnail_ready=1 WHERE id=?').run(asset.id);
      if(source.source_mime.startsWith('video/')&&!db.prepare('SELECT 1 FROM video_thumbnail_state WHERE asset_id=?').get(asset.id)){const duration=JSON.parse(source.metadata_json).duration;recordVideoThumbnail(db,asset.id,duration<1?0:duration*(.4+Math.random()*.2));}
     }
     else{
@@ -72,11 +77,11 @@ export async function createMediaPipeline(app,context){
     const video=source.source_mime.startsWith('video/');
     const metadata=await(video?videoTranscoder:audioTranscoder).convert(raw,work,{authorize:check,report:value=>report(row,value),thumbnail:false});check();
     let path;
-    if(video){for(const name of metadata.renditions.flatMap(r=>[r.quality+'.mp4',...r.files]))await syncFile(join(work,name));await syncDirectory(work);await mkdir(join(videoDir,asset.id),{recursive:true,mode:0o700});const final=join(videoDir,asset.id,row.id);await removeItemDirectory(join(videoDir,asset.id),row.id);await moveStorage(work,final,{authorize:check});metadata.generation=row.id;metadata.originalFilename=source.source_filename;path=join(final,metadata.renditions[0].quality+'.mp4');}
+    if(video){for(const name of metadata.renditions.flatMap(r=>[r.quality+'.mp4',...r.files]))await syncFile(join(work,name));await syncDirectory(work);await mkdir(join(videoDir,asset.id),{recursive:true,mode:0o700});newGeneration=randomUUID();const final=join(videoDir,asset.id,newGeneration);await moveStorage(work,final,{authorize:check});metadata.generation=newGeneration;metadata.originalFilename=source.source_filename;path=join(final,metadata.renditions[0].quality+'.mp4');}
     else{metadata.originalFilename=source.source_filename;path=join(work,'audio.m4a');}
     await canonical(path,asset.id,row.id);check();
     transaction(db,()=>{
-     if(video){db.prepare('INSERT INTO video_assets VALUES(?,?,?) ON CONFLICT(item_id) DO UPDATE SET metadata_json=excluded.metadata_json,original_retained=excluded.original_retained').run(asset.id,JSON.stringify(metadata),source.retain_original);db.prepare('INSERT OR REPLACE INTO video_generations VALUES(?,?,?,?)').run(asset.id,row.id,JSON.stringify(metadata),Date.now());}
+     if(video){const previous=videoMetadata(db,asset.id);if(previous){db.prepare('INSERT OR IGNORE INTO video_generations VALUES(?,?,?,?)').run(asset.id,previous.generation??'base',JSON.stringify(previous),Date.now());db.prepare('INSERT OR IGNORE INTO playback_generations SELECT token_hash,? FROM playback_tickets WHERE item_id=?').run(previous.generation??'base',asset.id);}db.prepare('INSERT INTO video_assets VALUES(?,?,?) ON CONFLICT(item_id) DO UPDATE SET metadata_json=excluded.metadata_json,original_retained=excluded.original_retained').run(asset.id,JSON.stringify(metadata),source.retain_original);db.prepare('INSERT INTO video_generations VALUES(?,?,?,?)').run(asset.id,newGeneration,JSON.stringify(metadata),Date.now());}
      else db.prepare('INSERT INTO audio_assets VALUES(?,?,?) ON CONFLICT(item_id) DO UPDATE SET metadata_json=excluded.metadata_json,original_retained=excluded.original_retained').run(asset.id,JSON.stringify(metadata),source.retain_original);
      db.prepare('UPDATE items SET mime_type=?,filename=?,size=? WHERE id=?').run(video?'video/mp4':'audio/mp4',source.source_filename.replace(/\.[^.]+$/,'')+(video?'.mp4':'.m4a'),video?metadata.renditions[0].size:metadata.size,asset.id);
      db.prepare('UPDATE media_ingest SET canonical_ready=1 WHERE asset_id=?').run(asset.id);
@@ -86,10 +91,12 @@ export async function createMediaPipeline(app,context){
     await media.preview(join(uploadDir,asset.id),path,'video/mp4',{startSeconds:anchor});if(!(await stat(path)).size)throw Error('Empty generated preview');const preview=await probeVideo(path);if(preview.video.codec_name!=='h264'||preview.audio||preview.duration>10.5)throw Error('Invalid generated preview');check();
     await moveStorage(path,join(previewDir,asset.id+'.mp4'),{authorize:check});recordVideoPreview(db,asset.id,anchor);
    }
-  }finally{await removeItemDirectory(join(stagingDir,asset.id),row.id);}
+  }finally{if(newGeneration&&!db.prepare('SELECT 1 FROM video_generations WHERE item_id=? AND generation=?').get(asset.id,newGeneration))await removeItemDirectory(join(videoDir,asset.id),newGeneration);await removeItemDirectory(join(stagingDir,asset.id),row.id);}
  }
  const readyTasks=db.prepare(`SELECT t.* FROM media_tasks t LEFT JOIN media_tasks p ON p.asset_id=t.asset_id AND p.kind=CASE t.kind WHEN 'transcode' THEN 'thumbnail' WHEN 'preview' THEN 'transcode' END
-  WHERE t.kind=? AND t.state='queued' AND (t.kind='thumbnail' OR p.state NOT IN ('queued','running')) ORDER BY t.created_at,t.id LIMIT ?`);
+  WHERE t.kind=? AND t.state='queued' AND (t.kind='thumbnail' OR p.id IS NULL OR p.state NOT IN ('queued','running'))
+  AND (t.kind!='preview' OR NOT EXISTS(SELECT 1 FROM media_tasks cover WHERE cover.asset_id=t.asset_id AND cover.kind='thumbnail' AND cover.state IN ('queued','running')))
+  ORDER BY t.created_at,t.id LIMIT ?`);
  const failedPreviews=db.prepare("SELECT t.id,t.asset_id FROM media_tasks t JOIN media_tasks p ON p.asset_id=t.asset_id AND p.kind='transcode' WHERE t.kind='preview' AND t.state='queued' AND p.state IN ('failed','cancelled')");
  function pump(){
   if(closing||pumping)return;pumping=true;
@@ -130,6 +137,24 @@ export async function createMediaPipeline(app,context){
    pump();return item(upload.id);
   },
   async ensureThumbnail(asset){if(customThumbnail(db,thumbnailDir,asset.id))return ensureCustomThumbnail(db,thumbnailDir,media,asset.id);pump();const row=db.prepare("SELECT * FROM media_tasks WHERE asset_id=? AND kind='thumbnail'").get(asset.id);if(row&&active.has(row.id))await active.get(row.id);if(customThumbnail(db,thumbnailDir,asset.id))return ensureCustomThumbnail(db,thumbnailDir,media,asset.id);const result=row?task(row.id):null;if(result?.state==='failed')throw httpError(422,'サムネイル生成に失敗しました。管理画面から再生成できます。');return join(thumbnailDir,asset.id+'.jpg');},
+  async repair(id,jobId){
+   const asset=authorize(id),assessment=await assessAssetRecovery(context,asset,{ignoreJobId:jobId});if(assessment.busy)throw httpError(409,'このアセットは処理中です。');
+   if(!assessment.kinds.length)return [];
+   const video=asset.mime_type.startsWith('video/'),timed=video||asset.mime_type.startsWith('audio/');if(!timed)throw httpError(400,'本の表紙はサムネイル再生成で修復してください。');
+   let source=ingest(id);const raw=join(originalDir,id),needsRaw=!source||assessment.kinds.some(kind=>kind!=='preview');
+   if(needsRaw&&!await regularMedia(raw)){
+    const selected=video?await selectVideoSource({db,item:asset,uploadDir,originalDir,videoDir}):{path:join(uploadDir,id)};
+    if(!await regularMedia(selected.path))throw httpError(409,'利用できる原本・配信データがありません。元ファイルを再アップロードしてください。');
+    const temp=join(originalDir,id+'.'+jobId+'.recovery');try{await copyFile(selected.path,temp,constants.COPYFILE_EXCL);await syncFile(temp);authorize(id);await rename(temp,raw);await syncDirectory(originalDir);}finally{await unlink(temp).catch(error=>{if(error.code!=='ENOENT')throw error;});}
+    const info=await(video?probeVideo:probeAudio)(raw);authorize(id);const size=(await stat(raw)).size;
+    if(source){db.prepare('UPDATE media_ingest SET source_mime=?,source_size=?,source_removed=0,metadata_json=? WHERE asset_id=?').run(video?'video/mp4':'audio/mp4',size,JSON.stringify({duration:info.duration,width:info.width,height:info.height,videoCodec:info.video?.codec_name,audioCodec:info.audio?.codec_name}),id);source=ingest(id);}
+   }
+   if(!source){const info=await(video?probeVideo:probeAudio)(raw);authorize(id);const retained=db.prepare('SELECT original_retained FROM '+(video?'video_assets':'audio_assets')+' WHERE item_id=?').get(id);db.prepare('INSERT INTO media_ingest(asset_id,source_mime,source_filename,source_size,retain_original,canonical_ready,metadata_json,created_at) VALUES(?,?,?,?,?,?,?,?)').run(id,video?'video/mp4':'audio/mp4',asset.filename,(await stat(raw)).size,retained?.original_retained??1,assessment.kinds.includes('transcode')?0:1,JSON.stringify({duration:info.duration,width:info.width,height:info.height,videoCodec:info.video?.codec_name,audioCodec:info.audio?.codec_name}),Date.now());source=ingest(id);}
+   transaction(db,()=>{authorize(id);if(assessment.kinds.includes('transcode'))db.prepare('UPDATE media_ingest SET canonical_ready=0 WHERE asset_id=?').run(id);
+    for(const kind of ['thumbnail','transcode',...(video?['preview']:[])]){const current=db.prepare('SELECT id FROM media_tasks WHERE asset_id=? AND kind=?').get(id,kind),needed=assessment.kinds.includes(kind),now=Date.now();if(current){if(needed)db.prepare("UPDATE media_tasks SET state='queued',error=NULL,progress_json='{}',updated_at=? WHERE id=?").run(now,current.id);}else db.prepare('INSERT INTO media_tasks(id,asset_id,kind,state,progress_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)').run(randomUUID(),id,kind,needed?'queued':'complete',JSON.stringify({stage:needed?'queued':'complete',percent:needed?0:100,recovered:true}),now,now);}
+    db.prepare("UPDATE upload_sessions SET state='processing',error=NULL WHERE id=? AND state!='cancelled'").run(id);
+   });pump();return assessment.kinds;
+  },
   retry(id){if(!ingest(id))return false;db.prepare("UPDATE media_tasks SET state='queued',error=NULL,progress_json='{}' WHERE asset_id=? AND state IN ('failed','cancelled')").run(id);db.prepare("UPDATE upload_sessions SET state='processing',error=NULL WHERE id=?").run(id);pump();return true;},
   async cancel(id){const ids=new Set([...db.prepare('SELECT id FROM media_tasks WHERE asset_id=?').all(id).map(row=>row.id),...[...activeAssets].filter(([,assetId])=>assetId===id).map(([jobId])=>jobId)]);db.prepare("UPDATE media_tasks SET state='cancelled' WHERE asset_id=? AND state IN ('queued','running')").run(id);const promises=[...ids].map(jobId=>active.get(jobId)).filter(Boolean);for(const jobId of ids)jobPool.cancel(jobId);await Promise.allSettled(promises);},
   reapSources,

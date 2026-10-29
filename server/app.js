@@ -39,6 +39,8 @@ import { registerAppUpdates } from './app-updates.js';
 import {createAdminAccess} from './admin-access.js';
 import {registerAdmin} from './admin.js';
 import {registerAdminJobs} from './admin-jobs.js';
+import {mediaProcessingState} from './media-recovery.js';
+import {playbackSource} from './playback-source.js';
 import {createMaintenanceGate} from './maintenance-gate.js';
 import {registerAdminBackups} from './admin-backups.js';
 import {registerServerUpdates} from './server-updates.js';
@@ -50,7 +52,7 @@ import {registerRememberSessions,issueRememberCookie,clearRememberCookie} from '
 
 import {thumbnailWebp} from './thumbnail-webp.js';
 import {createJobLanes} from './job-pool.js';
-import {createMediaPipeline,mediaContentSource} from './media-pipeline.js';
+import {createMediaPipeline} from './media-pipeline.js';
 import {registerPrivateShelves} from './private-shelves.js';
 import {createProcessingSettings,registerProcessingSettings} from './processing-settings.js';
 import {registerHistoryRemoval} from './history.js';
@@ -92,8 +94,8 @@ export async function createApp(options = {}) {
   ensureThumbnail.inspect=()=>legacyThumbnail.inspect();
   const coverRevision=db.prepare('SELECT image_id,updated_at FROM thumbnail_overrides WHERE asset_id=?');
   const videoCoverRevision=db.prepare('SELECT updated_at FROM video_thumbnail_state WHERE asset_id=?');
-  const jobCoverRevision=db.prepare("SELECT MAX(updated_at) updated_at FROM admin_jobs WHERE asset_id=? AND kind IN ('thumbnail','owner_thumbnail') AND state='complete'");
-  const publicItem=i=>{const stamp=Math.max(videoCoverRevision.get(i.id)?.updated_at??0,jobCoverRevision.get(i.id)?.updated_at??0),generated=stamp?{updated_at:stamp}:null;const row=coverRevision.get(i.id),image=row?customThumbnailRevision(row):generated?customThumbnailRevision({image_id:i.id,updated_at:generated.updated_at}):null;const source=db.prepare('SELECT canonical_ready,source_mime,metadata_json FROM media_ingest WHERE asset_id=?').get(i.id);return {...basePublicItem(i),...(source?{...(!source.canonical_ready?{mimeType:source.source_mime}:{}),originalPlayback:!source.canonical_ready,downloadReady:Boolean(source.canonical_ready),mediaInfo:JSON.parse(source.metadata_json),processingTasks:db.prepare('SELECT kind,state FROM media_tasks WHERE asset_id=?').all(i.id)}:{}),...(image?{thumbnailUrl:'/api/v1/items/'+i.id+'/thumbnail?revision='+image}:{})};};
+  const jobCoverRevision=db.prepare("SELECT MAX(updated_at) updated_at FROM admin_jobs WHERE asset_id=? AND kind IN ('thumbnail','owner_thumbnail','repair') AND state='complete'");
+  const publicItem=i=>{const stamp=Math.max(videoCoverRevision.get(i.id)?.updated_at??0,jobCoverRevision.get(i.id)?.updated_at??0),generated=stamp?{updated_at:stamp}:null;const row=coverRevision.get(i.id),image=row?customThumbnailRevision(row):generated?customThumbnailRevision({image_id:i.id,updated_at:generated.updated_at}):null;const source=db.prepare('SELECT canonical_ready,source_mime,metadata_json FROM media_ingest WHERE asset_id=?').get(i.id);return {...basePublicItem(i),...(source?{...(!source.canonical_ready?{mimeType:source.source_mime}:{}),processingState:mediaProcessingState(db,i.id,source.canonical_ready),originalPlayback:!source.canonical_ready,downloadReady:Boolean(source.canonical_ready),mediaInfo:JSON.parse(source.metadata_json),processingTasks:db.prepare('SELECT kind,state FROM media_tasks WHERE asset_id=?').all(i.id)}:{}),...(image?{thumbnailUrl:'/api/v1/items/'+i.id+'/thumbnail?revision='+image}:{})};};
   const maxUploadBytes = Number(options.maxUploadBytes ?? process.env.MAX_UPLOAD_BYTES ?? 2147483648);
   if (!Number.isSafeInteger(maxUploadBytes) || maxUploadBytes <= 0) throw new Error('Invalid MAX_UPLOAD_BYTES');
   const chunkSize = Number(options.chunkSize ?? process.env.UPLOAD_CHUNK_BYTES ?? 8 * 1024 * 1024);
@@ -184,7 +186,7 @@ export async function createApp(options = {}) {
   registerAppUpdates(app, { directory: updatesPath ? resolve(PROJECT_ROOT, updatesPath) : undefined,releaseVersion:options.remoteUpdates?packageInfo.version:undefined });
   let analytics;
   app.get('/api/v1/config', async () => ({ allowRegistration, ...processingSettings.value, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadProtocol:2, maxUploadFiles:1000, uploadSessionHours: 24, analytics,
-    version: packageInfo.version, transferQueue:true, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.21.1beta/mirea-0.21.1beta-android.apk' }));
+    version: packageInfo.version, transferQueue:true, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':`https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v${packageInfo.version.replace('-beta','beta')}/mirea-${packageInfo.version.replace('-beta','beta')}-android.apk` }));
   app.post('/api/v1/auth/register', { ...authLimits, schema: { body: object({ email, password, name: text(80),remember:{type:'boolean',default:true} },['email','password','name']) } }, async (req, reply) => {
     if (!allowRegistration) throw httpError(403, '新規登録は現在停止しています。');
     const normalizedEmail = req.body.email.trim().toLowerCase();
@@ -442,19 +444,18 @@ export async function createApp(options = {}) {
     const existing=previous&&db.prepare(`SELECT t.*,g.generation FROM playback_tickets t LEFT JOIN playback_generations g ON g.token_hash=t.token_hash
       WHERE t.token_hash=? AND t.session_id=? AND t.item_id=? AND t.expires_at>?`).get(hashToken(previous),req.session.id,item.id,Date.now());
     if(previous&&!existing)throw httpError(409,'再生URLを更新できません。プレイヤーから開き直してください。');
-    const source=mediaContentSource(db,item,storage,{raw:existing?.generation==='source'});
+    const {source,metadata}=playbackSource(db,item,storage,existing?.generation);
     if(existing?.generation==='source')await access(source.path).catch(()=>{throw httpError(409,'再生中の原本が見つかりません。開き直してください。');});
     const token = previous??newToken();
     const expiresAt = Math.min(Date.now() + (source.original?7*3600000:TICKET_MS), req.session.expires_at);
     if(existing)db.prepare('UPDATE playback_tickets SET expires_at=? WHERE token_hash=?').run(expiresAt,hashToken(token));
     else db.prepare('INSERT INTO playback_tickets VALUES (?, ?, ?, ?)').run(hashToken(token), req.session.id, req.params.id, expiresAt);
-    const metadata=source.original?null:videoMetadata(db,item.id,existing?.generation);
     if(!existing&&(source.original||metadata))db.prepare('INSERT INTO playback_generations VALUES(?,?)').run(hashToken(token),source.original?'source':metadata.generation??'base');
     return { url: `/api/v1/items/${req.params.id}/content?ticket=${token}`, expiresAt,size:source.size,mimeType:source.mimeType,original:source.original,
       ...(metadata?{hlsUrl:`/api/v1/items/${item.id}/hls/master.m3u8?ticket=${token}`,renditions:metadata.renditions.map(({quality,width,height,size})=>({quality,width,height,size}))}:{}) };
   });
   app.route({ method: ['GET', 'HEAD'], url: '/api/v1/items/:id/content', handler: async (req, reply) => {
-    let userId,raw=false;
+    let userId,generation;
     if (req.headers.authorization&&!req.query.ticket) {
       authenticate(req);
       userId = req.user.id;
@@ -464,11 +465,11 @@ export async function createApp(options = {}) {
         WHERE t.token_hash=? AND t.item_id=? AND t.expires_at>? AND s.expires_at>?`).get(hashToken(token), req.params.id, Date.now(), Date.now());
       if (!ticket) throw httpError(401, '閲覧用URLの期限が切れています。もう一度開いてください。');
       userId = ticket.user_id;
-      raw=db.prepare('SELECT generation FROM playback_generations WHERE token_hash=?').get(hashToken(token))?.generation==='source';
+      generation=db.prepare('SELECT generation FROM playback_generations WHERE token_hash=?').get(hashToken(token))?.generation;
     }
     const item = findItem(req.params.id, userId);
     if (item.mime_type === IMAGE_BOOK_MIME) throw httpError(400, '画像の本はページビューアで開いてください。');
-    const source=mediaContentSource(db,item,storage,{raw});
+    const {source}=playbackSource(db,item,storage,generation);
     await access(source.path).catch(() => { throw httpError(404, 'ファイルが見つかりません。'); });
     // Membership is checked again after I/O so revocations cannot race this response.
     findItem(req.params.id, userId);
