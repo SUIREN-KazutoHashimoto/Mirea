@@ -128,10 +128,11 @@ export async function registerResumableUploads(app, context) {
           await removeItemDirectory(transferDir,id);
         }else await publishStagedUpload(context, upload, () => authorizeJob(upload));
       } catch (error) {
-        if(error.code==='SERVER_CLOSING'||get(id)?.state==='cancelled')return; // durable processing state is recovered on startup
+        const current=get(id);
+        if(error.code==='SERVER_CLOSING'||!current||current.state==='cancelled')return; // durable processing state is recovered on startup
         const status=Number.isInteger(error.statusCode)&&error.statusCode>=400&&error.statusCode<=599?error.statusCode:500;
         const diagnostic=createErrorDiagnostic(error,{method:'POST',routeOptions:{url:'/api/v1/shelves/:id/uploads'}},{status,serverVersion:packageInfo.version});
-        const processing={...JSON.parse(get(id).processing_json),stage:'failed',diagnostic};
+        const processing={...JSON.parse(current.processing_json),stage:'failed',diagnostic};
         db.prepare("UPDATE upload_sessions SET state='failed',error=?,processing_json=? WHERE id=? AND state='processing'").run(
           uploadErrorMessage(error), JSON.stringify(processing), id);
         app.log.error({ err: error, uploadId: id, errorId:diagnostic.errorId }, 'Upload processing failed');
