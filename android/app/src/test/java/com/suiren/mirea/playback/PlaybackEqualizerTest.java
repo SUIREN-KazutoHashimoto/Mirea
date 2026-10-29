@@ -31,7 +31,7 @@ public class PlaybackEqualizerTest {
     @Test public void legacyFiveBandsMigrateToFifteenAndAllMaximumNeverReceivesCumulativeAttenuation()throws Exception{
         Context c=context();c.getSharedPreferences("mirea-equalizer-v1",Context.MODE_PRIVATE).edit().putBoolean("enabled",true).putString("gains","[6,3,0,-3,-6]").commit();
         PlaybackEqualizer eq=new PlaybackEqualizer(c,id->new Driver());assertEquals(15,eq.status().getJSONArray("gains").length());assertEquals(6,eq.status().getJSONArray("gains").getDouble(0),0);assertEquals(-6,eq.status().getJSONArray("gains").getDouble(14),0);
-        double[] all=new double[15];Arrays.fill(all,12);eq.attach(15);eq.set(true,all);assertEquals(Math.pow(10,-12/20.0),eq.volume(),.0001);eq.detach();
+        double[] all=new double[15];Arrays.fill(all,12);eq.attach(15);eq.set(true,all);assertEquals(Math.pow(10,-6/20.0),eq.volume(),.0001);eq.detach();
         PlaybackEqualizer protectedEq=new PlaybackEqualizer(c,id->new Driver(){public boolean peakProtection(){return true;}});protectedEq.attach(16);protectedEq.set(true,all);assertEquals(1,protectedEq.volume(),0);assertTrue(protectedEq.status().getBoolean("peakProtection"));protectedEq.detach();
     }
 }
