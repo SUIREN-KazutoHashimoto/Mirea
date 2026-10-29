@@ -4,7 +4,7 @@ const digest = async bytes => hex(await crypto.subtle.digest('SHA-256', bytes));
 const abortError = () => new Error('アップロードをキャンセルしました。');
 const transient = status => !status || [408, 409, 425, 429].includes(status) || status >= 500;
 
-export function createResumableUpload({ endpoint, token, shelfUnlock='',userId, unauthorized, isCurrent=()=>true }, shelfId, files, title, onProgress, {retainOriginal=true,seriesId=null,protocolVersion=1,monitorProcessing=true}={}) {
+export function createResumableUpload({ endpoint, token, shelfUnlock='',userId, unauthorized, isCurrent=()=>true }, shelfId, files, title, onProgress, {retainOriginal=true,seriesId=null,protocolVersion=1,monitorProcessing=true,clientTransferId}={}) {
   const controller = new AbortController();
   const { signal } = controller;
   const xhrs=new Set(),inflight=new Map();
@@ -86,11 +86,11 @@ export function createResumableUpload({ endpoint, token, shelfUnlock='',userId, 
       catch (error) { if (![404, 410].includes(error.status)) throw error; save(null); }
       if (state && ['failed', 'cancelled'].includes(state.state)) { state = null; save(null); }
     } else save(null);
-    if (!state) {
+    if (!state || clientTransferId&&state.state!=='complete') {
       // Do not automatically retry creation: a lost response must not allocate
       // several server sessions. Individual parts and completion are idempotent.
       for(;;){try{state = await request(`/shelves/${shelfId}/uploads`, 'POST', {
-        title, retainOriginal, ...(protocolVersion>=2?{resume:true}:{}), ...(seriesId?{seriesId}:{}), files: files.map(file => ({ filename: file.name, mime: file.type, size: file.size }))
+        title, retainOriginal, ...(clientTransferId?{clientTransferId}:{}), ...(protocolVersion>=2?{resume:true}:{}), ...(seriesId?{seriesId}:{}), files: files.map(file => ({ filename: file.name, mime: file.type, size: file.size }))
       });
       break;}catch(error){if(error.status!==429)throw error;onProgress(0,{stage:'waiting-slot'});await sleep(2000);}}
       save({ id: state.id, expiresAt: state.expiresAt });

@@ -29,6 +29,11 @@ public class PlaybackLifecycleTest {
         ReflectionHelpers.setField(service,"item",new JSONObject().put("id","aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").put("kind","audio"));
         return player;
     }
+    @Test public void equalizerEditsExposeSettingsWithoutReplacingSeekingOrPausingTheDecoder()throws Exception{
+        ServiceController<PlaybackService> c=Robolectric.buildService(PlaybackService.class).create();PlaybackService s=c.get();
+        try{MediaPlayer player=seed(s,"equalizer.m4a");s.play();long before=s.position();s.equalizer(true,new double[]{6,3,0,-1,-2});JSONObject settings=s.status().getJSONObject("equalizer");assertTrue(settings.getBoolean("enabled"));assertEquals(6,settings.getJSONArray("gains").getDouble(0),0);assertSame(player,ReflectionHelpers.getField(s,"player"));assertTrue(s.playing());assertEquals(before,s.position());JSONObject analytics=ReflectionHelpers.callInstanceMethod(s,"snapshot");assertFalse(analytics.has("equalizer"));s.equalizer(false,new double[]{6,3,0,-1,-2});assertFalse(s.status().getJSONObject("equalizer").getBoolean("enabled"));assertTrue(s.playing());}
+        finally{c.destroy();s.stopped.get(5,TimeUnit.SECONDS);}
+    }
     @Test public void decoderFailureRetainsResumePositionDurationRateAndPauseIntent()throws Exception{
         ServiceController<PlaybackService> controller=Robolectric.buildService(PlaybackService.class).create();PlaybackService s=controller.get();
         try{MediaPlayer p=seed(s,"recover.m4a");s.speed(1.5f);s.play();s.pause();

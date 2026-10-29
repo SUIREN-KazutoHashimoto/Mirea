@@ -3,7 +3,7 @@ import {ensureVideoThumbnailAnchor,recordVideoThumbnail,recordVideoPreview} from
 import {customThumbnail,ensureCustomThumbnail} from './custom-thumbnails.js';
 import {moveStorage} from './storage-move.js';
 import {randomUUID} from 'node:crypto';
-import {mkdir,rename,stat,unlink,open} from 'node:fs/promises';
+import {mkdir,rename,stat,lstat,unlink,open} from 'node:fs/promises';
 import {join} from 'node:path';
 import {httpError} from './security.js';
 import {transaction} from './database.js';
@@ -11,7 +11,9 @@ import {IMAGE_BOOK_MIME,imageExtension,removeItemDirectory} from './media.js';
 import {EPUB_MIME} from './ebook-types.js';
 import {videoMetadata} from './video-stream.js';
 import {selectVideoSource} from './media-source.js';
-import {isTimedMime} from './audio-types.js';
+import {isTimedMime,isAudio} from './audio-types.js';
+import {audioThumbnail} from './audio-transcode.js';
+import {canRegenerateThumbnail} from './owner-media.js';
 
 // Owner explicitly approved password-free individual AND bulk reruns. Only
 // these media job actions change; destructive/privilege/backup/update APIs keep
@@ -21,6 +23,7 @@ const retryBody=(properties={})=>({type:'object',additionalProperties:false,prop
 export async function registerAdminJobs(app,context) {
   const {db,adminAccess:a,media,videoTranscoder,uploadDir,booksDir,thumbnailDir,previewDir,videoDir,originalDir,dataDir,uploads,maintenance}=context;
   const root=join(dataDir,'admin-work');await mkdir(root,{recursive:true,mode:0o700});
+  db.exec('CREATE INDEX IF NOT EXISTS asset_thumbnail_jobs ON admin_jobs(asset_id,kind,state,updated_at DESC)');
   let closing=false;const pending=new Map();
   const get=id=>db.prepare('SELECT * FROM admin_jobs WHERE id=?').get(id);
   const assetLabel=db.prepare('SELECT i.title,s.name AS shelf FROM items i JOIN shelves s ON s.id=i.shelf_id WHERE i.id=?');
@@ -32,7 +35,7 @@ export async function registerAdminJobs(app,context) {
   function pump(){
     if(closing)return;
     const counts=new Map();for(const id of pending.keys()){const kind=get(id)?.kind;counts.set(kind,(counts.get(kind)??0)+1);}
-    for(const kind of ['thumbnail','transcode','preview']){
+    for(const kind of ['thumbnail','owner_thumbnail','transcode','preview']){
       if((counts.get(kind)??0)>=20)continue;
       for(const row of db.prepare("SELECT id FROM admin_jobs WHERE state='queued' AND kind=? ORDER BY created_at,id LIMIT 40").all(kind)){
         if((counts.get(kind)??0)>=20)break;
@@ -43,9 +46,9 @@ export async function registerAdminJobs(app,context) {
   function schedule(id){
     if(pending.has(id)||closing)return;
     const job=context.jobPool.run(async()=>{
-      const row=get(id);if(!row||row.state!=='queued')return;
+      const stored=get(id);if(!stored||stored.state!=='queued')return;const ownerJob=stored.kind==='owner_thumbnail',row={...stored,kind:ownerJob?'thumbnail':stored.kind};
       const item=db.prepare('SELECT * FROM items WHERE id=?').get(row.asset_id);
-      const authorize=()=>{if(!db.prepare('SELECT 1 FROM items WHERE id=?').get(row.asset_id)||!a.isAdmin(row.requested_by))throw httpError(403,'アセットが削除されたか、実行者の管理権限が解除されました。');};
+      const authorize=()=>{const current=db.prepare('SELECT * FROM items WHERE id=?').get(row.asset_id);if(!current||!a.enabled(row.requested_by)||(ownerJob?!canRegenerateThumbnail(db,current,row.requested_by):!a.isAdmin(row.requested_by)))throw httpError(403,'アセットが削除されたか、実行に必要な権限が解除されました。');};
       db.prepare("UPDATE admin_jobs SET state='running',updated_at=? WHERE id=?").run(Date.now(),id);
       const work=join(root,id);
       const generationReferenced=()=>Boolean(row.asset_id&&(videoMetadata(db,row.asset_id)?.generation===id||db.prepare('SELECT 1 FROM video_generations WHERE item_id=? AND generation=?').get(row.asset_id,id)));
@@ -88,11 +91,11 @@ export async function registerAdminJobs(app,context) {
           await ensureCustomThumbnail(db,thumbnailDir,media,item.id,{force:true,authorize});
         }else{
           const first=item.mime_type===IMAGE_BOOK_MIME?db.prepare('SELECT mime_type FROM image_pages WHERE item_id=? AND page_number=1').get(item.id):null;
-          const source=first?join(booksDir,item.id,'1.'+imageExtension(first.mime_type)):join(uploadDir,item.id);
+          let source=first?join(booksDir,item.id,'1.'+imageExtension(first.mime_type)):join(uploadDir,item.id);if(isAudio(item.mime_type)){const raw=join(originalDir,item.id),info=await lstat(raw).catch(error=>{if(error.code!=='ENOENT')throw error;return null;});if(info?.isFile()&&!info.isSymbolicLink())source=raw;}
           const temporary=join(work,row.kind==='preview'?'preview.mp4':'thumbnail.jpg');
           let chosen,startSeconds;
           if(row.kind==='preview'){startSeconds=await ensureVideoThumbnailAnchor({db,item,media,uploadDir,thumbnailDir,authorize});await media.preview(source,temporary,item.mime_type,{startSeconds});}
-          else chosen=await media.thumbnail(source,item.mime_type,temporary,item.mime_type===EPUB_MIME?join(work,'book.json'):undefined);
+          else chosen=isAudio(item.mime_type)?await audioThumbnail(source,temporary):await media.thumbnail(source,item.mime_type,temporary,item.mime_type===EPUB_MIME?join(work,'book.json'):undefined);
           if(!(await stat(temporary)).size)throw new Error('Empty generated media');
           if(row.kind==='thumbnail')await media.validateImage(temporary);
           authorize();await rename(temporary,join(row.kind==='preview'?previewDir:thumbnailDir,item.id+(row.kind==='preview'?'.mp4':'.jpg')));
@@ -109,14 +112,27 @@ export async function registerAdminJobs(app,context) {
         await removeItemDirectory(root,id);
         if(row.kind==='transcode'&&!published&&row.asset_id&&!generationReferenced())await removeItemDirectory(join(videoDir,row.asset_id),id);
       }
-    },id,get(id)?.kind).catch(error=>app.log.error({err:error},'Admin job cleanup failed'));
+    },id,get(id)?.kind==='owner_thumbnail'?'thumbnail':get(id)?.kind).catch(error=>app.log.error({err:error},'Admin job cleanup failed'));
     pending.set(id,job);job.finally(()=>{pending.delete(id);pump();});
   }
   const stopAvailability=context.jobPool.onAvailable?.(()=>{try{pump();}catch(error){app.log.error({err:error},'Admin queue replenishment failed');}});
-  db.prepare("UPDATE admin_jobs SET state='queued' WHERE state='running' AND kind IN ('thumbnail','preview','transcode')").run();
+  db.prepare("UPDATE admin_jobs SET state='queued' WHERE state='running' AND kind IN ('thumbnail','owner_thumbnail','preview','transcode')").run();
   pump();
   app.addHook('onClose',async()=>{closing=true;stopAvailability?.();await Promise.allSettled([...pending.values()]);});
   const auth={onRequest:async req=>a.requireAdmin(req)};
+  const ownerAuth={onRequest:async req=>context.authenticate(req)};
+  const ownItem=req=>context.findItem(req.params.id,req.user.id);
+  app.get('/api/v1/items/:id/thumbnail-job',ownerAuth,async req=>{
+    const item=ownItem(req),allowed=canRegenerateThumbnail(db,item,req.user.id);
+    const row=allowed?db.prepare("SELECT * FROM admin_jobs WHERE asset_id=? AND kind='owner_thumbnail' AND requested_by=? ORDER BY created_at DESC,id LIMIT 1").get(item.id,req.user.id):null;
+    return {allowed,job:row?safe(row):null};
+  });
+  app.post('/api/v1/items/:id/thumbnail-job',{...ownerAuth,config:{rateLimit:context.rateLimit===false?false:{max:10,timeWindow:'1 minute'}},schema:{body:retryBody()}},async(req,reply)=>{
+    const item=ownItem(req);if(!canRegenerateThumbnail(db,item,req.user.id))throw httpError(403,'自分が追加したアセット、または所有する本棚のアセットのみ再生成できます。');
+    if(maintenance.locked)throw httpError(409,'保守処理中です。');
+    if(db.prepare("SELECT 1 FROM admin_jobs WHERE asset_id=? AND state IN ('queued','running')").get(item.id)||db.prepare("SELECT 1 FROM media_tasks WHERE asset_id=? AND state IN ('queued','running')").get(item.id))throw httpError(409,'このアセットの後処理を実行中です。完了後に再生成してください。');
+    const id=randomUUID(),now=Date.now();db.prepare("INSERT INTO admin_jobs(id,kind,asset_id,state,requested_by,created_at,updated_at) VALUES(?,'owner_thumbnail',?,'queued',?,?,?)").run(id,item.id,req.user.id,now,now);a.audit(req,'media.thumbnail.owner',item.id,{jobId:id});pump();return reply.code(202).send({job:safe(get(id))});
+  });
   app.get('/api/v1/admin/jobs',auth,async()=>({
     currentSummary:db.prepare(`SELECT SUM(state='running') AS running,SUM(state='queued') AS queued FROM (SELECT state FROM admin_jobs WHERE state IN ('queued','running') UNION ALL SELECT state FROM media_tasks WHERE state IN ('queued','running') UNION ALL SELECT CASE state WHEN 'uploading' THEN 'running' ELSE 'queued' END FROM upload_sessions WHERE state='processing' AND NOT EXISTS(SELECT 1 FROM media_ingest WHERE asset_id=upload_sessions.id) OR state='uploading' AND expires_at>?)`).get(Date.now()),
     jobs:[...db.prepare("SELECT * FROM admin_jobs ORDER BY created_at DESC LIMIT 100").all(),...db.prepare('SELECT * FROM media_tasks ORDER BY created_at DESC LIMIT 100').all()].map(safe),

@@ -1,4 +1,5 @@
 import {transaction} from './database.js';
+import {registerTransferQueue,linkQueuedUpload} from './transfer-queue.js';
 import {assertUploadName} from './name-integrity.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdir, rename, unlink, open, writeFile,stat } from 'node:fs/promises';
@@ -28,6 +29,7 @@ export async function registerResumableUploads(app, context) {
   let closing = false, sweeping=false;
   const auth = { onRequest: async req => authenticate(req) };
   const get = id => db.prepare('SELECT * FROM upload_sessions WHERE id=?').get(id);
+  registerTransferQueue(app,context);
   // Failed sources remain retryable, but are not running work. Use the same
   // admission rule for new transfers, multipart and both retry entry points.
   const activeCount=userId=>db.prepare("SELECT COUNT(*) AS n FROM upload_sessions WHERE user_id=? AND (state='processing' OR (state='uploading' AND expires_at>?))").get(userId,Date.now()).n;
@@ -168,6 +170,7 @@ export async function registerResumableUploads(app, context) {
         retainOriginal: { type: 'boolean', default: true },
         resume:{type:'boolean',default:false},
         seriesId:{anyOf:[{type:'string',format:'uuid'},{type:'null'}]},
+        clientTransferId:{type:'string',format:'uuid'},
         files: { type: 'array', minItems: 1, maxItems: MAX_BOOK_PAGES, items: {
           type: 'object', additionalProperties: false, required: ['filename', 'mime', 'size'],
           properties: { filename: { type: 'string', minLength: 1, maxLength: 255 }, mime: { enum: MIME_TYPES }, size: { type: 'integer', minimum: 1, maximum: maxUploadBytes } }
@@ -188,7 +191,7 @@ export async function registerResumableUploads(app, context) {
       const canonicalFiles=files.map(file=>({...file,filename:file.filename.replaceAll('\\','/').split('/').pop()||'file'}));
       const candidates=db.prepare("SELECT * FROM upload_sessions WHERE shelf_id=? AND user_id=? AND title=? AND COALESCE(target_series_id,'')=? AND (state='processing' OR state='uploading' AND expires_at>?)").all(req.params.id,req.user.id,title,req.body.seriesId??'',Date.now()).filter(row=>JSON.stringify(JSON.parse(row.files_json).map(({filename,mime,size})=>({filename,mime,size})))===JSON.stringify(canonicalFiles.map(({filename,mime,size})=>({filename,mime,size})))&&Boolean(row.retain_original)===Boolean(req.body.retainOriginal&&isTimedMime(files[0].mime)));
       if(candidates.length>1)throw httpError(409,'同じ送信候補が複数あります。転送状況で整理してから再試行してください。');
-      if(candidates.length===1)return reply.code(200).send(status(candidates[0]));
+      if(candidates.length===1){transaction(db,()=>linkQueuedUpload(db,req.body.clientTransferId,candidates[0]));return reply.code(200).send(status(candidates[0]));}
     }
     context.jobPool.prioritizeTransfers?.();
     requireSlot(req.user.id);
@@ -200,7 +203,7 @@ export async function registerResumableUploads(app, context) {
       db.prepare(`INSERT INTO upload_sessions(id,shelf_id,user_id,session_id,title,files_json,chunk_size,state,created_at,expires_at,retain_original)
         VALUES(?,?,?,?,?,?,?,'uploading',?,?,?)`).run(id, req.params.id, req.user.id, req.session.id, title,
         JSON.stringify(files.map(file => ({ ...file, filename: file.filename.replaceAll('\\', '/').split('/').pop() || 'file' }))), chunkSize, now, now + UPLOAD_TTL_MS, req.body.retainOriginal && isTimedMime(files[0].mime)?1:0);
-      db.prepare('UPDATE upload_sessions SET target_series_id=?,series_requested=? WHERE id=?').run(req.body.seriesId??null,req.body.seriesId?1:0,id);});
+      db.prepare('UPDATE upload_sessions SET target_series_id=?,series_requested=? WHERE id=?').run(req.body.seriesId??null,req.body.seriesId?1:0,id);linkQueuedUpload(db,req.body.clientTransferId,get(id));});
       await mkdir(join(transferDir, id), { mode: 0o700 });
       authenticate(req);
       membership(req.params.id, req.user.id, ['owner', 'editor']);
@@ -209,6 +212,20 @@ export async function registerResumableUploads(app, context) {
   });
   app.get('/api/v1/uploads/:id', auth, async req => status(owned(req)));
   app.get('/api/v1/uploads/:id/status',auth,async req=>status(owned(req),false));
+  app.get('/api/v1/transfers/uploads',{...auth,schema:{querystring:{type:'object',additionalProperties:false,properties:{cursor:{type:'string',pattern:'^[01]:[0-9]{1,16}:[0-9a-f-]{36}$',maxLength:56}}}}},async req=>{
+    const cursor=req.query.cursor?.split(':'),rank=cursor?Number(cursor[0]):-1,before=cursor?Number(cursor[1]):0,after=cursor?.[2]??'';
+    if(!Number.isSafeInteger(before))throw httpError(400,'転送一覧の続き位置が不正です。');
+    const rows=db.prepare(`SELECT u.*,q.id AS client_transfer_id,CASE WHEN u.state IN ('uploading','processing') THEN 0 ELSE 1 END AS queue_rank FROM upload_sessions u LEFT JOIN upload_queue q ON q.upload_id=u.id JOIN memberships m ON m.shelf_id=u.shelf_id AND m.user_id=u.user_id
+      WHERE u.user_id=? AND m.role IN ('owner','editor') AND u.state IN ('complete','failed','cancelled') AND (u.state!='uploading' OR u.expires_at>?)
+      AND (?<0 OR (CASE WHEN u.state IN ('uploading','processing') THEN 0 ELSE 1 END)>? OR (CASE WHEN u.state IN ('uploading','processing') THEN 0 ELSE 1 END)=? AND (u.created_at<? OR u.created_at=? AND u.id<?))
+      ORDER BY queue_rank,u.created_at DESC,u.id DESC LIMIT 101`).all(req.user.id,Date.now(),rank,rank,rank,before,before,after);
+    const queue=cursor?[]:db.prepare(`SELECT q.*,u.state,u.processing_json,u.error,(SELECT COALESCE(SUM(size),0) FROM upload_parts p WHERE p.upload_id=q.upload_id) AS received_bytes FROM upload_queue q JOIN memberships m ON m.shelf_id=q.shelf_id AND m.user_id=q.user_id LEFT JOIN upload_sessions u ON u.id=q.upload_id WHERE q.user_id=? AND m.role IN ('owner','editor') AND (q.upload_id IS NULL AND q.expires_at>? OR u.state IN ('uploading','processing') AND (u.state!='uploading' OR u.expires_at>?)) ORDER BY q.created_at,q.id`).all(req.user.id,Date.now(),Date.now()).map(row=>({id:row.upload_id,clientTransferId:row.id,title:row.title,shelfId:row.shelf_id,seriesId:row.series_id,state:row.state??'queued',createdAt:row.created_at,totalBytes:row.total_bytes,receivedBytes:row.state==='processing'?row.total_bytes:row.received_bytes,processing:JSON.parse(row.processing_json??'{}'),...(row.error?{error:row.error}:{})}));
+    if(!cursor)for(const row of db.prepare("SELECT u.* FROM upload_sessions u JOIN memberships m ON m.shelf_id=u.shelf_id AND m.user_id=u.user_id WHERE u.user_id=? AND m.role IN ('owner','editor') AND (u.state='processing' OR u.state='uploading' AND u.expires_at>?) AND NOT EXISTS(SELECT 1 FROM upload_queue q WHERE q.upload_id=u.id)").all(req.user.id,Date.now())){const value=status(row,false),totalBytes=JSON.parse(row.files_json).reduce((n,f)=>n+f.size,0);queue.push({...value,createdAt:row.created_at,totalBytes,receivedBytes:row.state==='processing'?totalBytes:value.receivedBytes});}
+    return {queue,uploads:rows.slice(0,100).map(row=>{
+      const totalBytes=JSON.parse(row.files_json).reduce((n,f)=>n+f.size,0),value=status(row,false);
+      return {...value,clientTransferId:row.client_transfer_id,createdAt:row.created_at,totalBytes,receivedBytes:row.state==='uploading'||row.state==='cancelled'?value.receivedBytes:totalBytes};
+    }),nextCursor:rows.length>100?`${rows[99].queue_rank}:${rows[99].created_at}:${rows[99].id}`:null};
+  });
   app.get('/api/v1/uploads', auth, async req => ({uploads:db.prepare("SELECT u.* FROM upload_sessions u JOIN memberships m ON m.shelf_id=u.shelf_id AND m.user_id=u.user_id WHERE u.user_id=? AND m.role IN ('owner','editor') AND (u.state IN ('processing','failed') OR u.state='uploading' AND u.expires_at>?) ORDER BY u.created_at DESC LIMIT 100").all(req.user.id,Date.now()).map(row=>status(row,false)),activeCount:activeCount(req.user.id)}));
 
   app.post('/api/v1/uploads/status',{...auth,bodyLimit:64*1024,schema:{body:{type:'object',additionalProperties:false,required:['ids'],properties:{ids:{type:'array',minItems:1,maxItems:1000,uniqueItems:true,items:{type:'string',format:'uuid'}}}}}},async req=>{

@@ -79,7 +79,7 @@ export function openDatabase(filename) {
         UPDATE schema_version SET version = 2;
       `));
     } finally { db.exec('PRAGMA foreign_keys = ON'); }
-  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,21].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
+  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,21,22].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
   if (version < 10) {
     // v10 adds EPUB while retaining v9's nullable uploader attribution.
     // Account deletion removes attribution, not another member's shared assets.
@@ -437,6 +437,17 @@ export function openDatabase(filename) {
     CREATE TABLE IF NOT EXISTS shelf_biometric_keys(id TEXT NOT NULL,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,public_key TEXT NOT NULL,password_hash TEXT NOT NULL,PRIMARY KEY(id,user_id));
     CREATE TABLE IF NOT EXISTS shelf_challenges(challenge TEXT PRIMARY KEY,session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,shelf_id TEXT NOT NULL REFERENCES shelves(id) ON DELETE CASCADE,key_id TEXT NOT NULL,expires_at INTEGER NOT NULL);
     UPDATE schema_version SET version=21;
+  `));
+  if(version<22)transaction(db,()=>db.exec(`
+    CREATE TABLE IF NOT EXISTS upload_queue(
+      id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      shelf_id TEXT NOT NULL REFERENCES shelves(id) ON DELETE CASCADE,
+      series_id TEXT REFERENCES series(id) ON DELETE SET NULL,title TEXT NOT NULL,mime_type TEXT NOT NULL,
+      total_bytes INTEGER NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,
+      upload_id TEXT UNIQUE REFERENCES upload_sessions(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS upload_queue_user ON upload_queue(user_id,expires_at);
+    UPDATE schema_version SET version=22;
   `));
   if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Database foreign key validation failed');
   return db;

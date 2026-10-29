@@ -24,6 +24,7 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
     private FrameLayout root;
     private SurfaceView video;
     private PlaybackScreen screen;
+    private EqualizerPanel equalizerPanel;
     private PlaybackService surfaceService;
     private Surface boundSurface;
     private PlaybackPresentation.Orientation orientation;
@@ -71,6 +72,7 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
             case "options":options();break;
             case "quality":qualities();break;
             case "speed":speeds();break;
+            case "equalizer":equalizer();break;
             case "chapters":chapters();break;
             case "precise":if(!screen.preciseSeek())Toast.makeText(this,"場面画像がまだありません。準備後に再度お試しください。",Toast.LENGTH_LONG).show();break;
             case "captions":captions();break;
@@ -100,9 +102,12 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
         PlaybackService s=service();JSONObject state=s==null?new JSONObject():s.status();ArrayList<String> names=new ArrayList<>(),actions=new ArrayList<>();
         if(s!=null&&s.video()){if(canPip()){names.add("ピクチャーインピクチャー（PiP）");actions.add("pip");}if(!state.optBoolean("download")){names.add("画質を選択");actions.add("quality");names.add("Wi-Fi／モバイル通信の画質設定");actions.add("network-quality");}names.add("精密シーク（場面画像から選ぶ）");actions.add("precise");names.add("チャプター"+(state.optString("chapter").isEmpty()?"":"："+state.optString("chapter")));actions.add("chapters");names.add("字幕の言語・オン／オフ");actions.add("captions");names.add("字幕の文字サイズ");actions.add("caption-size");names.add("ズームをリセット");actions.add("zoom-reset");}
         names.add("リピート："+(state.optString("repeat").equals("one")?"単体":state.optString("repeat").equals("series")?"シリーズ":"オフ"));actions.add("repeat");if(state.optBoolean("hasSeries")){names.add("シリーズシャッフル："+(state.optBoolean("shuffle")?"オン":"オフ"));actions.add("shuffle");}
-        names.add("再生速度");actions.add("speed");names.add(state.optBoolean("muted")?"消音を解除":"消音にする");actions.add("mute");names.add("連続再生："+(state.optBoolean("continuous")?"オン":"オフ"));actions.add("continuous");
+        names.add("イコライザー");actions.add("equalizer");names.add("再生速度");actions.add("speed");names.add(state.optBoolean("muted")?"消音を解除":"消音にする");actions.add("mute");names.add("連続再生："+(state.optBoolean("continuous")?"オン":"オフ"));actions.add("continuous");
         names.add("前の作品");actions.add("previous");names.add("次の作品");actions.add("next");names.add("バックグラウンドで再生");actions.add("background");names.add("ライブラリへ戻る（再生を継続）");actions.add("library");names.add("再接続");actions.add("reconnect");names.add("再生を終了");actions.add("close");
         show(new AlertDialog.Builder(this).setTitle("再生オプション").setItems(names.toArray(new String[0]),(d,index)->act(actions.get(index))).setNegativeButton("閉じる",null).create());
+    }
+    private void equalizer(){
+        PlaybackService s=service();if(s==null)return;equalizerPanel=new EqualizerPanel(this,s.status().optJSONObject("equalizer"),(enabled,gains)->{PlaybackService current=service();if(current==null)return new JSONObject();current.equalizer(enabled,gains);return current.status().optJSONObject("equalizer");});show(new AlertDialog.Builder(this).setTitle("イコライザー").setView(equalizerPanel).setNegativeButton("閉じる",null).create());
     }
     private void repeats(){PlaybackService s=service();if(s==null)return;boolean series=s.status().optBoolean("hasSeries");String[] names=series?new String[]{"オフ","単体リピート","シリーズリピート（動画・音声）"}:new String[]{"オフ","単体リピート"};String[] values={"off","one","series"};int selected=Arrays.asList(values).indexOf(s.status().optString("repeat","off"));show(new AlertDialog.Builder(this).setTitle("リピート").setSingleChoiceItems(names,Math.max(0,selected),(d,n)->{if(service()!=null)service().repeat(values[n]);d.dismiss();}).setNegativeButton("閉じる",null).create());}
     private void qualities(){PlaybackService s=service();if(s==null||!s.video()||s.status().optBoolean("download"))return;try{
@@ -119,7 +124,7 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
     private void show(Dialog d){dialogs.add(d);d.setOnDismissListener(value->{dialogs.remove(d);chrome.interact(SystemClock.elapsedRealtime());if(!destroyed)render();});d.show();}
     private void render(){
         if(destroyed||screen==null)return;PlaybackService s=service();if(s==null){try{boolean starting=SystemClock.elapsedRealtime()-createdAt<2000;screen.bind(new JSONObject().put("video",true).put("buffering",starting).put("error",starting?"":"再生を終了しました。ライブラリから開いてください。"),null);}catch(JSONException ignored){}return;}
-        boolean inPip=isInPictureInPictureMode();s.visibility(visible&&!inPip,inPip);JSONObject state=s.status();boolean isVideo=s.video();
+        boolean inPip=isInPictureInPictureMode();s.visibility(visible&&!inPip,inPip);JSONObject state=s.status();boolean isVideo=s.video();if(equalizerPanel!=null){if(equalizerPanel.isAttachedToWindow())equalizerPanel.status(state.optJSONObject("equalizer"));else equalizerPanel=null;}
         JSONObject current=state.optJSONObject("item");String id=current==null?"":current.optString("id");if(!shownAsset.equals(id)){shownAsset=id;screen.resetZoom();zoom=1;panX=panY=0;applyZoom();}screen.navigation(s.navigation,s.storyboard);
         video.setVisibility(isVideo?View.VISIBLE:View.GONE);screen.bind(state,s.artwork);screen.setPip(inPip);screen.setMotionForeground(visible&&!inPip);
         AccessibilityManager accessibility=getSystemService(AccessibilityManager.class);boolean assisted=accessibility!=null&&accessibility.isTouchExplorationEnabled();boolean busy=scrubbing||!dialogs.isEmpty()||state.optBoolean("buffering")||!state.optString("error").isEmpty();
