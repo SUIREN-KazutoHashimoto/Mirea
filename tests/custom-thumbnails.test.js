@@ -7,8 +7,22 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import sharp from 'sharp';
 import {createApp} from '../server/app.js';
-import {ensureCustomThumbnail,customThumbnailRevision} from '../server/custom-thumbnails.js';
+import {ensureCustomThumbnail,customThumbnailRevision,validThumbnailBase64} from '../server/custom-thumbnails.js';
 import {createMediaProcessor} from '../server/media.js';
+test('thumbnail base64 validation handles the full permitted size without a recursive regex and rejects invalid padding',()=>{
+ for(const size of [1,2,3,1024,5*1024*1024]){
+  const value=Buffer.alloc(size,187).toString('base64');assert.equal(validThumbnailBase64(value),true);
+  assert.equal(validThumbnailBase64(value.slice(0,Math.floor(value.length/2))+'!'+value.slice(Math.floor(value.length/2)+1)),false);
+ }
+ for(const value of ['',null,{},'AAA','A===','====','AA=A','A=AA','AA==AAAA','AAAA\n','AAAA====','ＡAAA'])assert.equal(validThumbnailBase64(value),false);
+});
+test('multi-MiB custom covers can be uploaded and regenerated without a RangeError, preserving original bytes',async t=>{
+ const c=await setup(t),original=await sharp({create:{width:1280,height:1280,channels:3,background:'#3a6080'}}).png({compressionLevel:0}).toBuffer();assert(original.length>4*1024*1024&&original.length<5*1024*1024);
+ const response=await c.req('POST','/thumbnails/custom',c.owner,{assetIds:[c.one],image:{mime:'image/png',base64:original.toString('base64')}});assert.equal(response.statusCode,200,response.body);
+ const selected=c.db.prepare('SELECT image_id FROM thumbnail_overrides WHERE asset_id=?').get(c.one),base=join(c.dataDir,'thumbnails','custom',selected.image_id);
+ assert.deepEqual(await readFile(base+'.input'),original);await unlink(base+'.jpg');await unlink(base+'.webp');await ensureCustomThumbnail(c.db,join(c.dataDir,'thumbnails'),createMediaProcessor(),c.one,{force:true});
+ assert.deepEqual(await readFile(base+'.input'),original);const metadata=await sharp(base+'.webp').metadata();assert.equal(metadata.format,'webp');assert.equal(metadata.width,1024);assert.equal(metadata.height,1024);
+});
 
 async function setup(t){
  const dataDir=await mkdtemp(join(tmpdir(),'mirea-custom-cover-')),app=await createApp({dataDir,rateLimit:false}),db=new DatabaseSync(join(dataDir,'mirea.sqlite'));db.exec('PRAGMA foreign_keys=ON');
