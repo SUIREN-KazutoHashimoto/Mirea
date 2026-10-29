@@ -83,7 +83,7 @@ const finishAppLaunch=showAppLaunch({native});
 const pwa=createPwaInstall({native,ensureWorker:ensureDownloadWorker});
 if(!native&&!import.meta.env.DEV)void pwa.prepare();
 let disposeAuthPwa;
-const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.22.2beta/mirea-0.22.2beta-android.apk';
+const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.22.3beta/mirea-0.22.3beta-android.apk';
 const currentApkUrl=()=>config.androidApkUrl?.startsWith('/api/v1/app-updates/')?absoluteUrl(config.androidApkUrl):config.androidApkUrl||defaultApkUrl;
 
 const root = document.querySelector('#app');
@@ -1031,8 +1031,8 @@ window.addEventListener('mirea:analytics-status',event=>{
 });
 
 function processingLabel(value={}){
-  const names={probe:'メディアを解析中',encode:'メディアを変換中',validate:'配信データを検証中',thumbnail:'サムネイルを生成中',publish:'保存中',complete:'完了'};
-  return (names[value.stage]??'処理待ち')+(value.quality?' · '+value.quality:'')+(Number.isFinite(value.percent)?' · '+value.percent+'%':'');
+  const names={probe:'メディアを解析中',encode:'メディアを変換中',validate:'配信データを検証中','image-validation':'ページ画像を検証中',thumbnail:'サムネイルを生成中',publish:'保存中',complete:'完了'};
+  return (names[value.stage]??'処理待ち')+(value.page?` · ${value.page} / ${value.pages}ページ`:'')+(value.quality?' · '+value.quality:'')+(Number.isFinite(value.percent)?' · '+value.percent+'%':'');
 }
 function openUploadJobs(){
   const node=dialog('アップロード処理','<div class="modal-body"><p>変換はサーバーで継続します。失敗した動画の原本は自動削除しません。再試行するか、不要なら原本ごと取り消してください。</p><div class="upload-jobs" role="status">読み込み中…</div></div>');

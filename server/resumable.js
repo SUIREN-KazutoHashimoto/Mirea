@@ -14,6 +14,9 @@ import { publishStagedUpload } from './upload-publish.js';
 import { VIDEO_TYPES } from './video-types.js';
 import { AUDIO_TYPES, isTimedMime } from './audio-types.js';
 import {uploadErrorMessage} from './upload-errors.js';
+import {createErrorDiagnostic} from './error-diagnostics.js';
+import {normalizeDiagnostic} from './error-diagnostic-schema.js';
+import packageInfo from '../package.json' with {type:'json'};
 
 const UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
 const MIME_TYPES = ['application/pdf', EPUB_MIME, ...VIDEO_TYPES, ...AUDIO_TYPES, ...IMAGE_TYPES];
@@ -53,10 +56,13 @@ export async function registerResumableUploads(app, context) {
   function status(upload,detail=true) {
     const parts = detail?db.prepare('SELECT file_index,part_index,size,sha256 FROM upload_parts WHERE upload_id=? ORDER BY file_index,part_index').all(upload.id):[];
     const item = db.prepare('SELECT * FROM items WHERE id=?').get(upload.id);
+    const processing=JSON.parse(upload.processing_json),diagnostic=upload.state==='failed'?normalizeDiagnostic(processing.diagnostic):null;
+    const page=diagnostic?.image?.page,file=page?JSON.parse(upload.files_json)[page-1]:null;
     return {
       id: upload.id, shelfId:upload.shelf_id, maxParallelParts:4, protocolVersion:2, state: upload.state, chunkSize: upload.chunk_size, expiresAt: upload.expires_at,
       seriesId:upload.target_series_id,seriesWarning:upload.series_warning,
-      title: upload.title, retainOriginal: Boolean(upload.retain_original), processing: JSON.parse(upload.processing_json),
+      title: upload.title, retainOriginal: Boolean(upload.retain_original), processing,
+      ...(diagnostic?{diagnostic}:{}),...(file?{failedFile:{page,filename:file.filename}}:{}),
       sourceRetained: upload.state === 'failed' && isTimedMime(JSON.parse(upload.files_json)[0].mime),
       receivedBytes: detail?parts.reduce((sum,part)=>sum+part.size,0):db.prepare('SELECT COALESCE(SUM(size),0) n FROM upload_parts WHERE upload_id=?').get(upload.id).n,
       files: detail?JSON.parse(upload.files_json).map((file, index) => {
@@ -122,10 +128,14 @@ export async function registerResumableUploads(app, context) {
           await removeItemDirectory(transferDir,id);
         }else await publishStagedUpload(context, upload, () => authorizeJob(upload));
       } catch (error) {
-        if(error.code==='SERVER_CLOSING'||get(id)?.state==='cancelled')return; // durable processing state is recovered on startup
-        db.prepare("UPDATE upload_sessions SET state='failed',error=? WHERE id=? AND state='processing'").run(
-          uploadErrorMessage(error), id);
-        app.log.error({ err: error, uploadId: id }, 'Upload processing failed');
+        const current=get(id);
+        if(error.code==='SERVER_CLOSING'||!current||current.state==='cancelled')return; // durable processing state is recovered on startup
+        const status=Number.isInteger(error.statusCode)&&error.statusCode>=400&&error.statusCode<=599?error.statusCode:500;
+        const diagnostic=createErrorDiagnostic(error,{method:'POST',routeOptions:{url:'/api/v1/shelves/:id/uploads'}},{status,serverVersion:packageInfo.version});
+        const processing={...JSON.parse(current.processing_json),stage:'failed',diagnostic};
+        db.prepare("UPDATE upload_sessions SET state='failed',error=?,processing_json=? WHERE id=? AND state='processing'").run(
+          uploadErrorMessage(error), JSON.stringify(processing), id);
+        app.log.error({ err: error, uploadId: id, errorId:diagnostic.errorId }, 'Upload processing failed');
       } finally {
         // A failed timed-media job remains retryable indefinitely. Never sweep its source
         // just because the 24-hour *transfer* deadline elapsed.

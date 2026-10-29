@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash,randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtemp, readdir, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile, readFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -14,6 +14,25 @@ import {uploadErrorMessage} from '../server/upload-errors.js';
 
 const pdf = makePdf();
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+
+test('a failed page is identified with a private filename for its owner and persistent, redacted decoder diagnostics',async t=>{
+ const ctx=await setup(t),jpeg=await sharp({create:{width:80,height:120,channels:3,background:'#406090'}}).jpeg().toBuffer(),bad=jpeg.subarray(0,jpeg.length-16),secret='private-owner@example.test',files=[jpeg,bad,jpeg].map((bytes,index)=>({filename:secret+'-'+(index+1)+'.jpg',mime:'image/jpeg',size:bytes.length}));
+ const upload=await ctx.start(files);await ctx.send(upload,[jpeg,bad,jpeg]);assert.equal((await ctx.request('POST','/uploads/'+upload.id+'/complete',ctx.owner)).statusCode,202);
+ const failed=await ctx.wait(upload.id,'failed');assert.match(failed.error,/2 \/ 3ページ目/);assert.deepEqual(failed.failedFile,{page:2,filename:files[1].filename});
+ const d=failed.diagnostic;assert.equal(d.code,'IMAGE_TRUNCATED');assert.equal(d.operation,'upload');assert.equal(d.image.stage,'page-validation');assert.equal(d.image.phase,'decode');assert.equal(d.image.format,'jpeg');assert.equal(d.image.page,2);assert.equal(d.image.pages,3);assert(d.trace.some(f=>f.source==='server/media.js'));assert(d.causes.some(c=>c.trace.some(f=>f.source==='server/media-worker.js')));
+ for(const value of [secret,upload.id,ctx.owner.user.id,ctx.dataDir,files[1].filename,'premature end'])assert(!JSON.stringify(d).includes(value),value);
+ const remote=(await ctx.request('GET','/transfers/uploads',ctx.owner)).json().uploads.find(row=>row.id===upload.id);assert.deepEqual(remote.diagnostic,d);assert.deepEqual(remote.failedFile,failed.failedFile);
+ const batched=(await ctx.request('POST','/uploads/status',ctx.owner,{ids:[upload.id]})).json().uploads[0];assert.equal(batched.diagnostic.errorId,d.errorId);
+ const noEnd=jpeg.subarray(0,jpeg.length-2),recovered=await ctx.start([{filename:'complete-pixels.jpg',mime:'image/jpeg',size:noEnd.length},{filename:'second.jpg',mime:'image/jpeg',size:jpeg.length}]);await ctx.send(recovered,[noEnd,jpeg]);await ctx.request('POST','/uploads/'+recovered.id+'/complete',ctx.owner);const complete=await ctx.wait(recovered.id);assert.equal(complete.item.pageCount,2);assert.equal(complete.diagnostic,undefined);assert.deepEqual(await readFile(join(ctx.dataDir,'uploads','books',recovered.id,'1.jpg')),noEnd);
+ await ctx.app.close();ctx.app=await createApp(ctx.options);assert.equal((await ctx.request('GET','/uploads/'+upload.id,ctx.owner)).json().diagnostic.errorId,d.errorId);
+ const other=await ctx.register('other-reader');assert.equal((await ctx.request('GET','/uploads/'+upload.id,other)).statusCode,404);assert.deepEqual((await ctx.request('POST','/uploads/status',other,{ids:[upload.id]})).json().uploads,[]);assert.equal((await ctx.request('GET','/uploads/'+upload.id)).statusCode,401);
+});
+
+test('image-book thumbnail source failures identify the first page and storage rather than blaming JPEG corruption',async t=>{
+ const media=createMediaProcessor(),ctx=await setup(t,{mediaProcessor:{...media,async thumbnail(source,...args){await unlink(source);return media.thumbnail(source,...args);}}}),jpeg=await sharp({create:{width:24,height:40,channels:3,background:'#649044'}}).jpeg().toBuffer();
+ const upload=await ctx.start([{filename:'cover.jpg',mime:'image/jpeg',size:jpeg.length}]);await ctx.send(upload,[jpeg]);await ctx.request('POST','/uploads/'+upload.id+'/complete',ctx.owner);const failed=await ctx.wait(upload.id,'failed');
+ assert.match(failed.error,/表紙生成/);assert.equal(failed.diagnostic.code,'ENOENT');assert.equal(failed.diagnostic.category,'storage');assert.equal(failed.diagnostic.image.stage,'thumbnail');assert.equal(failed.diagnostic.image.phase,'read');assert.deepEqual(failed.failedFile,{page:1,filename:'cover.jpg'});
+});
 
 test('high-resolution image pages below 100 MiB publish in all supported formats and keep their originals',async t=>{
  const ctx=await setup(t,{maxUploadBytes:100*1024*1024,chunkSize:1024*1024});

@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {relative,isAbsolute} from 'node:path';
 import {PROJECT_ROOT} from './runtime.js';
-import {DIAGNOSTIC_CODES,DIAGNOSTIC_SOURCES,normalizeDiagnostic} from './error-diagnostic-schema.js';
+import {DIAGNOSTIC_CODES,DIAGNOSTIC_SOURCES,MEDIA_DIAGNOSTIC_CODES,normalizeDiagnostic} from './error-diagnostic-schema.js';
 const get=(error,key)=>{try{return error?.[key];}catch{return undefined;}};
 function classify(error,status){
   const code=get(error,'code');
@@ -39,7 +39,7 @@ function describe(error,status,includeTrace){
   const code=get(error,'code');return {category:classify(error,status),code:DIAGNOSTIC_CODES.has(code)?code:status<500?'HTTP_ERROR':'INTERNAL_ERROR',type:get(error,'name'),syscall:get(error,'syscall'),permission:get(error,'permission'),sqliteCode:get(error,'errcode'),trace:includeTrace?trace(error):[]};
 }
 export function createErrorDiagnostic(error,request,{status,serverVersion,now=Date.now()}={}){
-  const includeTrace=status>=500,causes=[],seen=new Set([error]);let next=get(error,'cause');
+  const includeTrace=status>=500||MEDIA_DIAGNOSTIC_CODES.has(get(error,'code')),causes=[],seen=new Set([error]);let next=get(error,'cause');
   while(next&&typeof next==='object'&&!seen.has(next)&&causes.length<2){seen.add(next);causes.push(describe(next,status,includeTrace));next=get(next,'cause');}
-  return normalizeDiagnostic({schemaVersion:1,errorId:randomUUID(),occurredAt:new Date(now).toISOString(),status,serverVersion,operation:operation(request),...describe(error,status,includeTrace),causes});
+  return normalizeDiagnostic({schemaVersion:1,errorId:randomUUID(),occurredAt:new Date(now).toISOString(),status,serverVersion,operation:operation(request),...describe(error,status,includeTrace),image:get(error,'image'),causes});
 }

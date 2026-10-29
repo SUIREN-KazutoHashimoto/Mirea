@@ -1,4 +1,6 @@
 import {progressPercent,keyedRenderer,displayTime} from './management-ui.js';
+import {recordDiagnostic,openErrorDiagnostics} from './error-diagnostics.js';
+import {normalizeDiagnostic} from '../../server/error-diagnostic-schema.js';
 const entries=new Map(),notices=new Map();let serial=0,changeQueued=false;
 const changed=()=>{if(changeQueued)return;changeQueued=true;queueMicrotask(()=>{changeQueued=false;globalThis.window?.dispatchEvent(new Event('mirea:transferchange'));});};
 export const transferRows=()=>[...entries.values()];
@@ -25,8 +27,9 @@ export function stopTransfers(){for(const row of entries.values())if(active(row.
 export function serverUploadTransfer(value){
   const state=value.state==='uploading'?'running':value.state==='cancelled'?'paused':value.state;
   const percent=value.state==='processing'||value.state==='complete'?100:progressPercent(value.totalBytes?value.receivedBytes/value.totalBytes*100:0);
-  const stage={probe:'メディア解析',encode:'変換',validate:'検証',thumbnail:'表紙生成',publish:'保存'}[value.processing?.stage]??'後処理';
-  return {id:value.clientTransferId?'upload-'+value.clientTransferId:'server-upload-'+value.id,clientTransferId:value.clientTransferId,serverId:value.id,direction:'upload',title:value.title,state,percent,createdAt:value.createdAt,remote:true,sourceState:value.state,totalBytes:value.totalBytes,receivedBytes:value.receivedBytes,message:value.error||(value.state==='processing'?'送信完了 · '+stage+'中':value.state==='complete'?'アップロード・後処理が完了':value.state==='queued'?'送信待ち':value.state==='cancelled'?'中止しました':'受信 '+formatBytes(value.receivedBytes)+' / '+formatBytes(value.totalBytes))};
+  const stage={probe:'メディア解析',encode:'変換',validate:'検証','image-validation':'ページ検証',thumbnail:'表紙生成',publish:'保存'}[value.processing?.stage]??'後処理';
+  const page=value.processing?.page?` · ${value.processing.page} / ${value.processing.pages}ページ`:'';
+  return {id:value.clientTransferId?'upload-'+value.clientTransferId:'server-upload-'+value.id,clientTransferId:value.clientTransferId,serverId:value.id,direction:'upload',title:value.title,state,percent,createdAt:value.createdAt,remote:true,sourceState:value.state,totalBytes:value.totalBytes,receivedBytes:value.receivedBytes,diagnostic:value.state==='failed'?normalizeDiagnostic(value.diagnostic??value.processing?.diagnostic):null,failedFile:value.failedFile,message:value.error||(value.state==='processing'?'送信完了 · '+stage+'中'+page:value.state==='complete'?'アップロード・後処理が完了':value.state==='queued'?'送信待ち':value.state==='cancelled'?'中止しました':'受信 '+formatBytes(value.receivedBytes)+' / '+formatBytes(value.totalBytes))};
 }
 function formatBytes(value){return (Math.max(0,Number(value)||0)/1024**2).toFixed(1)+' MiB';}
 export function mergeTransferRows(local,remote){
@@ -47,7 +50,7 @@ export function openTransferCenter({dialog,esc,onDownloads,api,isCurrent=()=>tru
   }});
   const showMore=doc.createElement('button');showMore.className='button secondary transfer-show-more';showMore.type='button';showMore.textContent='次の100件を表示';list.after(showMore);showMore.onclick=()=>{rowLimit+=100;render();};
   function render(){if(!current())return;const rows=mergeTransferRows(transferRows(),[...remote.values()]),summary=transferSummary(rows),matching=filterTransfers(rows,{view,direction,query}),visible=matching.slice(0,rowLimit);showMore.hidden=matching.length<=rowLimit;lastRows=new Map(rows.map(row=>[row.id,row]));node.querySelector('.transfer-active-count').textContent=summary.active;node.querySelector('.transfer-attention-count').textContent=summary.attention;node.querySelector('.transfer-complete-count').textContent=summary.complete;node.querySelectorAll('[data-transfer-view]').forEach(b=>b.setAttribute('aria-current',String(b.dataset.transferView===view)));renderRows(visible);node.querySelector('.transfer-empty').hidden=visible.length>0;node.querySelector('.transfer-empty').textContent=rows.length?'条件に一致する転送はありません。別の状態・種類を選んでください。':'転送はまだありません。';node.querySelector('.transfer-result-count').textContent=visible.length+' / '+matching.length+'件を表示 · 全'+rows.length+'件';}
-  function remoteDetails(id){const row=lastRows.get(id);if(!row)return;dialog('転送の詳細',`<div class="modal-body"><h3>${esc(row.title)}</h3><p>${esc(row.message)}</p><p>${formatBytes(row.receivedBytes)} / ${formatBytes(row.totalBytes)}</p><p>${displayTime(row.createdAt)}</p></div>`);}
+  function remoteDetails(id){const row=lastRows.get(id);if(!row)return;const detail=dialog('転送の詳細',`<div class="modal-body"><h3>${esc(row.title)}</h3><p>${esc(row.message)}</p>${row.failedFile?`<p>対象：${esc(row.failedFile.filename)}（${row.failedFile.page}ページ目）</p>`:''}<p>${formatBytes(row.receivedBytes)} / ${formatBytes(row.totalBytes)}</p><p>${displayTime(row.createdAt)}</p>${row.diagnostic?'<button type="button" class="button secondary transfer-error-detail">エラーの詳細を見る</button>':''}</div>`);detail.querySelector('.transfer-error-detail')?.addEventListener('click',()=>{recordDiagnostic(row.diagnostic);openErrorDiagnostics(dialog);});}
   function loadRemote(){if(!api||!current())return Promise.resolve();if(inFlight)return inFlight;
     inFlight=(async()=>{const fresh=new Map();let cursor;for(let page=0;page<pageCount;page++){
       const value=await api('/transfers/uploads'+(cursor?'?cursor='+encodeURIComponent(cursor):''),{signal:controller.signal});if(!current())return;

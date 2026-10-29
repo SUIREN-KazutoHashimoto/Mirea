@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import sharp from 'sharp';
 import { stat } from 'node:fs/promises';
+import {retryJpegEndMarker} from './jpeg-end-marker.js';
 
 sharp.cache(false);
 sharp.concurrency(1);
@@ -13,23 +14,32 @@ const { source, destination, mode } = workerData;
 // Image uploads are limited by encoded file size, not dimensions (owner-approved
 // policy). Preserve strict decoding and the separate worker/time/concurrency limits.
 const imageOptions = { limitInputPixels: false, failOn: 'warning' };
+const image = { stage: mode === 'validate-image' ? 'page-validation' : 'thumbnail', phase: 'read' };
 try {
   if (mode === 'epub-thumbnail') {
     const { compileEpub } = await import('./epub.js');
     parentPort.postMessage(await compileEpub(source,destination,workerData.bundlePath));
   } else if (mode === 'validate-image') {
+    await stat(source);image.phase = 'metadata';
     const metadata = await sharp(source, imageOptions).metadata();
-    if (!['jpeg', 'png', 'webp'].includes(metadata.format) || (metadata.pages ?? 1) > 1) {
-      throw new Error('JPEG・PNG・WebPの静止画像を選択してください。');
-    }
+    Object.assign(image,{format:metadata.format,width:metadata.width,height:metadata.height});
+    if (!['jpeg', 'png', 'webp'].includes(metadata.format)) throw Object.assign(new Error('Unsupported static image format'),{code:'IMAGE_FORMAT_UNSUPPORTED'});
+    if ((metadata.pages ?? 1) > 1) throw Object.assign(new Error('Animated images are unsupported'),{code:'IMAGE_ANIMATED_UNSUPPORTED'});
     // Fully decode for integrity checking, but preserve original page bytes and quality.
-    await sharp(source, imageOptions).stats();
+    image.phase = 'decode';
+    try { await sharp(source, imageOptions).stats(); }
+    catch(error) { await retryJpegEndMarker(source,error,metadata,imageOptions,async()=>{}); }
     const swap = [5, 6, 7, 8].includes(metadata.orientation);
     parentPort.postMessage({ width: swap ? metadata.height : metadata.width, height: swap ? metadata.width : metadata.height, size: (await stat(source)).size });
   } else if (mode === 'image-thumbnail') {
-    await sharp(source, imageOptions).rotate().flatten({ background: '#ffffff' })
+    await stat(source);image.phase = 'metadata';
+    const metadata = await sharp(source, imageOptions).metadata();
+    Object.assign(image,{format:metadata.format,width:metadata.width,height:metadata.height,phase:'render'});
+    const render=path=>sharp(path, imageOptions).rotate().flatten({ background: '#ffffff' })
       .resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true })
       .jpeg({ quality: 82 }).toFile(destination);
+    try { await render(source); }
+    catch(error) { await retryJpegEndMarker(source,error,metadata,imageOptions,render); }
     parentPort.postMessage({ pageCount: 1 });
   } else if (mode === 'pdf-thumbnail') {
     const { createCanvas, DOMMatrix, ImageData, Path2D } = await import('@napi-rs/canvas');
@@ -59,5 +69,5 @@ try {
     } finally { await document.destroy(); }
   } else throw new Error('Unsupported media operation');
 } catch (error) {
-  parentPort.postMessage({ error: error.message });
+  parentPort.postMessage({ error: error.message, code: error.code, stack: error.stack, ...(mode==='validate-image'||mode==='image-thumbnail'?{image}:{}) });
 }

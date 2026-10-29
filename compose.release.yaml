@@ -2,7 +2,7 @@
 # The host defaults to loopback. Use a trusted HTTPS proxy for browsers/Android.
 services:
   mirea:
-    image: ghcr.io/suiren-kazutohashimoto/mirea:0.22.2beta
+    image: ghcr.io/suiren-kazutohashimoto/mirea:0.22.3beta
     user: "1000:1000"
     ports:
       - target: 3000

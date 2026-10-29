@@ -24,15 +24,17 @@ export function diagnosticText(value){const safe=normalizeDiagnostic(value);retu
 const el=(tag,text,className)=>{const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(className)node.className=className;return node;};
 const button=(label,action)=>{const node=el('button',label,'button secondary');node.type='button';node.onclick=action;return node;};
 export function openErrorDiagnostics(dialog){
+  const existing=document.querySelector('dialog.diagnostic-modal[open]');if(existing){existing.focus();return existing;}
   const node=dialog('エラーの詳細','<div class="modal-body diagnostic-body"></div>','diagnostic-modal'),body=node.querySelector('.diagnostic-body');
   const render=()=>{
     body.replaceChildren(el('p','この画面のエラーを最大20件表示します。個人情報や値・保存先などを除いた診断情報を、必要なときだけコピーできます。','muted'));
-    const privacy=el('details',undefined,'diagnostic-privacy');privacy.append(el('summary','診断情報の取り扱い'),el('p','アセット名・メール・保存先・URL・認証情報・例外の原文は含みません。自動送信や永続保存はせず、アカウント／接続先の変更・画面の再読み込みで消去します。'));body.append(privacy);
+    const privacy=el('details',undefined,'diagnostic-privacy');privacy.append(el('summary','診断情報の取り扱い'),el('p','共有用の詳細にはアセット名・ファイル名・メール・保存先・URL・認証情報・例外の原文を含みません。この画面の一覧はアカウント／接続先の変更・再読み込みで消去します。後処理の安全な診断情報はサーバーの転送履歴に保存され、本人の転送画面から再表示できます。外部へ自動送信しません。'));body.append(privacy);
     if(!recent.length){body.append(el('p','表示できるエラーはありません。'));return;}
     for(const report of recent){
       const card=el('details',undefined,'diagnostic-card');card.open=report===recent[0];
       card.append(el('summary',DIAGNOSTIC_OPERATIONS[report.operation]+' · '+report.code));
-      card.append(el('p',DIAGNOSTIC_CATEGORIES[report.category]));
+      card.append(el('p',report.image?({IMAGE_TRUNCATED:'画像の途中または末尾のデータを読み込めませんでした。',IMAGE_PROFILE_INVALID:'画像に含まれる色設定を読み込めませんでした。'}[report.code]??'このページの画像処理に失敗しました。転送の詳細で対象ファイルを確認できます。'):DIAGNOSTIC_CATEGORIES[report.category]));
+      if(report.image){const image=report.image;card.append(el('p',[(image.page?`${image.page} / ${image.pages??'?'}ページ目`:''),image.stage==='thumbnail'?'表紙生成':image.stage==='page-validation'?'ページ検証':'',image.phase?({read:'ファイル読み込み',metadata:'画像情報の読み込み',decode:'画像データの検証',render:'表紙の描画'}[image.phase]):'',image.format?.toUpperCase(),image.width&&image.height?`${image.width} × ${image.height}`:''].filter(Boolean).join(' · ')));}
       const pre=el('pre',diagnosticText(report));pre.tabIndex=0;card.append(pre);
       const status=el('p','','diagnostic-copy-status');status.setAttribute('role','status');
       card.append(button('安全な詳細をコピー',async()=>{try{await navigator.clipboard.writeText(diagnosticText(report));status.textContent='コピーしました。';}catch{const range=document.createRange();range.selectNodeContents(pre);const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);status.textContent='コピーできないため内容を選択しました。端末のコピー操作を使ってください。';}}),status);body.append(card);
