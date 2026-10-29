@@ -1,4 +1,5 @@
 import {mountAudioMotion} from './audio-motion.js';
+import {mountEqualizer} from './equalizer.js';
 import {applyCoverPalette} from './cover-palette.js';
 import { mountMediaSession } from './media-session.js';
 import { mountVideoHold } from './video-hold.js';
@@ -38,6 +39,8 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
   const updateModes=()=>{const state=playback?.modeState??{};modeSelect.value=state.repeat??'off';modeSelect.querySelector('[value="series"]').disabled=!state.hasSeries;shuffleButton.disabled=!state.hasSeries;shuffleButton.setAttribute('aria-pressed',String(state.shuffle===true));shuffleButton.textContent=state.shuffle?'シャッフル：オン':'シャッフル：オフ';};
   modeSelect.onchange=()=>playback?.setModes({repeat:modeSelect.value});shuffleButton.onclick=()=>playback?.setModes({shuffle:!playback?.modeState.shuffle});const stopModes=playback?.subscribe(updateModes);updateModes();
   const video = root.querySelector('video,audio'), seek = root.querySelector('.player-seek'), volume = root.querySelector('.player-volume'), center = root.querySelector('.player-center');
+  const stopEqualizer=mountEqualizer(root,video,{doc});
+  root.dispatchEvent(new CustomEvent('viewer:player-ready',{bubbles:true}));
   video.controls = false;video.muted=playbackPreferences.muted;video.volume=playbackPreferences.volume;video.playbackRate=playbackPreferences.rate;
   const listeners = []; let disposed = false, timer, clickTimer, scrubbing = false, hasHeatmap = false,navigation;
   const listen = (target, event, fn, options) => { target.addEventListener(event, fn, options); listeners.push(() => target.removeEventListener(event, fn, options)); };
@@ -89,6 +92,7 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
   listen(video,'dblclick',event=>{if(event.pointerType==='touch'||event.pointerType==='pen')return;clearTimeout(clickTimer);event.preventDefault();fullscreen();});
   listen(root, 'pointermove', showControls); listen(root, 'pointerdown', showControls); listen(root, 'focusin', showControls);
   listen(root, 'keydown', event => {
+    if(event.target.closest?.('.equalizer-dialog'))return;
     const focused=event.target===seek;if (!focused&&(['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'].includes(event.target.tagName)||event.target.isContentEditable)) return;
     const intent=playerKey(event,{paused:video.paused,seekFocused:focused});if(!intent)return;event.preventDefault();const [action,value]=intent;
     if(action==='play')play();else if(action==='seek'||action==='frame')seekVideo(video,video.currentTime+value/(action==='frame'?30:1));
@@ -124,5 +128,5 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
     if(select.dataset.levels!==key){select.replaceChildren(...values.map(value=>{const option=doc.createElement('option');option.value=value.value;option.textContent=value.text;return option;}));select.dataset.levels=key;}
     else for(const value of values){const option=[...select.options].find(o=>o.value===value.value);if(option)option.textContent=value.text;}
     select.value=selected;select.onchange=()=>{hold?.cancel();choose(select.value);};
-  }, dispose() { artObserver?.disconnect();stopAudioMotion?.();stopModes?.();hold?.dispose();navigation?.dispose();seekInteraction.dispose();playbackPreferences={muted:video.muted,volume:video.volume,rate:video.playbackRate};disposed = true;if(screen?.onReturn===leavePlayer)screen.onReturn=null; mediaSession.dispose(); clearTimeout(timer);clearTimeout(clickTimer); for (const remove of listeners) remove(); video.pause(); video.removeAttribute('src'); video.load(); root.remove(); } };
+  }, dispose() { stopEqualizer();artObserver?.disconnect();stopAudioMotion?.();stopModes?.();hold?.dispose();navigation?.dispose();seekInteraction.dispose();playbackPreferences={muted:video.muted,volume:video.volume,rate:video.playbackRate};disposed = true;if(screen?.onReturn===leavePlayer)screen.onReturn=null; mediaSession.dispose(); clearTimeout(timer);clearTimeout(clickTimer); for (const remove of listeners) remove(); video.pause(); video.removeAttribute('src'); video.load(); root.remove(); } };
 }

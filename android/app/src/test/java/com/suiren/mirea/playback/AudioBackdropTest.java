@@ -1,7 +1,18 @@
 package com.suiren.mirea.playback;
-import android.graphics.*;import org.junit.Test;import org.junit.runner.RunWith;import org.robolectric.*;import org.robolectric.annotation.*;import static org.junit.Assert.*;
+import android.graphics.*;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.robolectric.RobolectricTestRunner;
+import org.robolectric.annotation.*;
+import org.robolectric.util.ReflectionHelpers;
+import java.io.*;
+import static org.junit.Assert.*;
+
 @RunWith(RobolectricTestRunner.class) @Config(sdk=35) @GraphicsMode(GraphicsMode.Mode.NATIVE)
 public class AudioBackdropTest {
- @Test public void staticLightUsesCoverColorsAndStaysDarkBehindWhiteControls(){Bitmap cover=Bitmap.createBitmap(32,32,Bitmap.Config.ARGB_8888);cover.eraseColor(Color.MAGENTA);AudioBackdrop one=new AudioBackdrop(cover,"asset"),two=new AudioBackdrop(cover,"asset");assertArrayEquals(one.colors,two.colors);assertEquals(Color.MAGENTA,one.colors[0]);Bitmap out=Bitmap.createBitmap(100,200,Bitmap.Config.ARGB_8888);one.setBounds(0,0,100,200);one.draw(new Canvas(out));for(int y=0;y<200;y+=20)for(int x=0;x<100;x+=10){int c=out.getPixel(x,y);assertTrue(Color.red(c)<165);assertTrue(Color.green(c)<165);assertTrue(Color.blue(c)<180);}assertEquals(3,AudioBackdrop.palette(null,"asset").length);}
- @Test public void motionIsScheduledAtLowRateAndStopsWithoutLeavingCallbacks(){AudioBackdrop glow=new AudioBackdrop(null,"asset");final Runnable[] pending={null};final long[] at={0};glow.setCallback(new android.graphics.drawable.Drawable.Callback(){public void invalidateDrawable(android.graphics.drawable.Drawable d){}public void scheduleDrawable(android.graphics.drawable.Drawable d,Runnable r,long when){pending[0]=r;at[0]=when;}public void unscheduleDrawable(android.graphics.drawable.Drawable d,Runnable r){if(pending[0]==r)pending[0]=null;}});glow.start();assertTrue(glow.isRunning());assertNotNull(pending[0]);assertTrue(at[0]>=android.os.SystemClock.uptimeMillis()+70);glow.stop();assertFalse(glow.isRunning());assertNull(pending[0]);glow.start();assertTrue(glow.isRunning());glow.stop();}
+    @Test public void cachedLightFieldsProduceVisibleMotionAcrossTheBackground()throws Exception{
+        AudioBackdrop flow=new AudioBackdrop(null,"fixture");flow.setBounds(0,0,360,800);Bitmap first=Bitmap.createBitmap(360,800,Bitmap.Config.ARGB_8888),next=Bitmap.createBitmap(360,800,Bitmap.Config.ARGB_8888);flow.draw(new Canvas(first));ReflectionHelpers.setField(flow,"elapsed",2000L);flow.draw(new Canvas(next));int moving=0,samples=0;
+        for(int y=10;y<800;y+=12)for(int x=10;x<360;x+=12){int a=first.getPixel(x,y),b=next.getPixel(x,y);if(Math.abs(Color.red(a)-Color.red(b))+Math.abs(Color.green(a)-Color.green(b))+Math.abs(Color.blue(a)-Color.blue(b))>18)moving++;samples++;}assertTrue("motion must affect a substantial visible area",moving>samples/3);
+        File dir=new File("build/reports/player-ui");assertTrue(dir.isDirectory()||dir.mkdirs());try(FileOutputStream out=new FileOutputStream(new File(dir,"audio-flow-before.png"))){first.compress(Bitmap.CompressFormat.PNG,100,out);}try(FileOutputStream out=new FileOutputStream(new File(dir,"audio-flow-after.png"))){next.compress(Bitmap.CompressFormat.PNG,100,out);}first.recycle();next.recycle();assertFalse(flow.isRunning());
+    }
 }

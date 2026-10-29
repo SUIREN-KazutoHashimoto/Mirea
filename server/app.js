@@ -92,7 +92,8 @@ export async function createApp(options = {}) {
   ensureThumbnail.inspect=()=>legacyThumbnail.inspect();
   const coverRevision=db.prepare('SELECT image_id,updated_at FROM thumbnail_overrides WHERE asset_id=?');
   const videoCoverRevision=db.prepare('SELECT updated_at FROM video_thumbnail_state WHERE asset_id=?');
-  const publicItem=i=>{const generated=videoCoverRevision.get(i.id);const row=coverRevision.get(i.id),image=row?customThumbnailRevision(row):generated?customThumbnailRevision({image_id:i.id,updated_at:generated.updated_at}):null;const source=db.prepare('SELECT canonical_ready,source_mime,metadata_json FROM media_ingest WHERE asset_id=?').get(i.id);return {...basePublicItem(i),...(source?{...(!source.canonical_ready?{mimeType:source.source_mime}:{}),originalPlayback:!source.canonical_ready,downloadReady:Boolean(source.canonical_ready),mediaInfo:JSON.parse(source.metadata_json),processingTasks:db.prepare('SELECT kind,state FROM media_tasks WHERE asset_id=?').all(i.id)}:{}),...(image?{thumbnailUrl:'/api/v1/items/'+i.id+'/thumbnail?revision='+image}:{})};};
+  const jobCoverRevision=db.prepare("SELECT MAX(updated_at) updated_at FROM admin_jobs WHERE asset_id=? AND kind IN ('thumbnail','owner_thumbnail') AND state='complete'");
+  const publicItem=i=>{const stamp=Math.max(videoCoverRevision.get(i.id)?.updated_at??0,jobCoverRevision.get(i.id)?.updated_at??0),generated=stamp?{updated_at:stamp}:null;const row=coverRevision.get(i.id),image=row?customThumbnailRevision(row):generated?customThumbnailRevision({image_id:i.id,updated_at:generated.updated_at}):null;const source=db.prepare('SELECT canonical_ready,source_mime,metadata_json FROM media_ingest WHERE asset_id=?').get(i.id);return {...basePublicItem(i),...(source?{...(!source.canonical_ready?{mimeType:source.source_mime}:{}),originalPlayback:!source.canonical_ready,downloadReady:Boolean(source.canonical_ready),mediaInfo:JSON.parse(source.metadata_json),processingTasks:db.prepare('SELECT kind,state FROM media_tasks WHERE asset_id=?').all(i.id)}:{}),...(image?{thumbnailUrl:'/api/v1/items/'+i.id+'/thumbnail?revision='+image}:{})};};
   const maxUploadBytes = Number(options.maxUploadBytes ?? process.env.MAX_UPLOAD_BYTES ?? 2147483648);
   if (!Number.isSafeInteger(maxUploadBytes) || maxUploadBytes <= 0) throw new Error('Invalid MAX_UPLOAD_BYTES');
   const chunkSize = Number(options.chunkSize ?? process.env.UPLOAD_CHUNK_BYTES ?? 8 * 1024 * 1024);
@@ -183,7 +184,7 @@ export async function createApp(options = {}) {
   registerAppUpdates(app, { directory: updatesPath ? resolve(PROJECT_ROOT, updatesPath) : undefined,releaseVersion:options.remoteUpdates?packageInfo.version:undefined });
   let analytics;
   app.get('/api/v1/config', async () => ({ allowRegistration, ...processingSettings.value, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadProtocol:2, maxUploadFiles:1000, uploadSessionHours: 24, analytics,
-    version: packageInfo.version, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.20.3beta/mirea-0.20.3beta-android.apk' }));
+    version: packageInfo.version, transferQueue:true, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.21.0beta/mirea-0.21.0beta-android.apk' }));
   app.post('/api/v1/auth/register', { ...authLimits, schema: { body: object({ email, password, name: text(80),remember:{type:'boolean',default:true} },['email','password','name']) } }, async (req, reply) => {
     if (!allowRegistration) throw httpError(403, '新規登録は現在停止しています。');
     const normalizedEmail = req.body.email.trim().toLowerCase();
@@ -278,7 +279,7 @@ export async function createApp(options = {}) {
     videoPreviews.remove(item.id),removeItemDirectory(videoDir,item.id),unlink(join(originalDir,item.id))
   ]);}
   registerShelfManagement(app,{db,authenticate,membership,maintenance,removeFiles:removeAssetFiles,cleanupUploads:uploads.cleanupUploads,adminAccess,rateLimit:options.rateLimit});
-  const adminJobs=await registerAdminJobs(app,{db,adminAccess,media,videoTranscoder,uploadDir,booksDir,thumbnailDir,previewDir,videoDir,originalDir,dataDir,uploads,maintenance,videoPreviews,ensureThumbnail,jobPool,mediaPipeline,rateLimit:options.rateLimit});
+  const adminJobs=await registerAdminJobs(app,{db,authenticate,findItem,adminAccess,media,videoTranscoder,uploadDir,booksDir,thumbnailDir,previewDir,videoDir,originalDir,dataDir,uploads,maintenance,videoPreviews,ensureThumbnail,jobPool,mediaPipeline,rateLimit:options.rateLimit});
   registerAdmin(app,{db,adminAccess,uploads,rateLimit:options.rateLimit});
   maintenance.setBusy(()=>uploads.busy||mediaPipeline.busy||adminJobs.busy||videoPreviews.busy||navigation.busy||media.busy);
   await registerAdminCleanup(app,{db,dataDir,mediaDir,adminAccess,maintenance,options});

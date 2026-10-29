@@ -7,12 +7,13 @@ import android.animation.ValueAnimator;
 import android.os.SystemClock;
 import java.util.*;
 
-/** Cover sampled once. Slow, low-amplitude light motion only while foreground audio plays. */
+/** Sample once; animate cached light fields only while foreground audio plays. */
 final class AudioBackdrop extends Drawable implements Animatable {
     final int[] colors;private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
     private boolean running;private long started,elapsed;
-    private final Runnable frame=new Runnable(){public void run(){if(!running)return;if(!ValueAnimator.areAnimatorsEnabled()){stop();return;}invalidateSelf();scheduleSelf(this,SystemClock.uptimeMillis()+80);}};
-    @Override public void start(){if(running||!ValueAnimator.areAnimatorsEnabled()||getCallback()==null)return;running=true;started=SystemClock.elapsedRealtime();scheduleSelf(frame,SystemClock.uptimeMillis()+80);}
+    private Shader base;private final RadialGradient[] lights=new RadialGradient[3];private final Matrix[] transforms={new Matrix(),new Matrix(),new Matrix()};
+    private final Runnable frame=new Runnable(){public void run(){if(!running)return;if(!ValueAnimator.areAnimatorsEnabled()){stop();return;}invalidateSelf();scheduleSelf(this,SystemClock.uptimeMillis()+40);}};
+    @Override public void start(){if(running||!ValueAnimator.areAnimatorsEnabled()||getCallback()==null)return;running=true;started=SystemClock.elapsedRealtime();scheduleSelf(frame,SystemClock.uptimeMillis()+40);}
     @Override public void stop(){if(running)elapsed+=SystemClock.elapsedRealtime()-started;running=false;unscheduleSelf(frame);}
     @Override public boolean isRunning(){return running;}
     AudioBackdrop(Bitmap image,String seed){colors=palette(image,seed);}
@@ -23,6 +24,8 @@ final class AudioBackdrop extends Drawable implements Animatable {
     }
     private static int chroma(int c){return Math.max(Color.red(c),Math.max(Color.green(c),Color.blue(c)))-Math.min(Color.red(c),Math.min(Color.green(c),Color.blue(c)));}
     private static double distance(int a,int b){return Math.sqrt(Math.pow(Color.red(a)-Color.red(b),2)+Math.pow(Color.green(a)-Color.green(b),2)+Math.pow(Color.blue(a)-Color.blue(b),2));}
-    @Override public void draw(Canvas canvas){Rect bounds=getBounds();float w=bounds.width(),h=bounds.height();if(w<=0||h<=0)return;paint.setShader(new LinearGradient(0,0,w,h,new int[]{0xff23375b,0xff111b31,0xff080e1b},new float[]{0,.5f,1},Shader.TileMode.CLAMP));canvas.drawRect(bounds,paint);float[][] points={{.05f,.18f},{.95f,.48f},{.35f,.95f}};double phase=(elapsed+(running?SystemClock.elapsedRealtime()-started:0))*Math.PI*2/16000d;for(int i=0;i<3;i++){int c=colors[i]&0xffffff;paint.setShader(new RadialGradient(w*(points[i][0]+.09f*(float)Math.sin(phase+i*2)),h*(points[i][1]+.065f*(float)Math.cos(phase+i*2)),Math.max(w,h)*.7f,new int[]{0x4d000000|c,c},new float[]{0,1},Shader.TileMode.CLAMP));canvas.drawRect(bounds,paint);}paint.setShader(null);}
+    @Override protected void onBoundsChange(Rect bounds){super.onBoundsChange(bounds);float w=bounds.width(),h=bounds.height();if(w<=0||h<=0)return;base=new LinearGradient(0,0,w,h,new int[]{0xff23375b,0xff111b31,0xff080e1b},new float[]{0,.5f,1},Shader.TileMode.CLAMP);for(int i=0;i<3;i++){int c=colors[i]&0xffffff;lights[i]=new RadialGradient(0,0,Math.max(w,h)*.56f,new int[]{0x99000000|c,0x35000000|c,c},new float[]{0,.5f,1},Shader.TileMode.CLAMP);}}
+    static float[] position(int i,double phase){float[] x={.18f,.82f,.42f},y={.2f,.5f,.84f};return new float[]{x[i]+.24f*(float)Math.sin(phase+i*2.1),y[i]+.18f*(float)Math.cos(phase*1.17+i*1.9)};}
+    @Override public void draw(Canvas canvas){Rect bounds=getBounds();float w=bounds.width(),h=bounds.height();if(w<=0||h<=0||base==null)return;paint.setShader(base);canvas.drawRect(bounds,paint);double phase=(elapsed+(running?SystemClock.elapsedRealtime()-started:0))*Math.PI*2/8000d;for(int i=0;i<3;i++){float[] point=position(i,phase);float scale=1+.14f*(float)Math.sin(phase*.8+i);transforms[i].setScale(scale,scale);transforms[i].postTranslate(bounds.left+w*point[0],bounds.top+h*point[1]);lights[i].setLocalMatrix(transforms[i]);paint.setShader(lights[i]);canvas.drawRect(bounds,paint);}paint.setShader(null);}
     @Override public void setAlpha(int alpha){}@Override public void setColorFilter(ColorFilter filter){}@Override public int getOpacity(){return PixelFormat.OPAQUE;}
 }

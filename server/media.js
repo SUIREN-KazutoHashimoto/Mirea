@@ -138,7 +138,7 @@ export function createMediaProcessor({thumbnailLimit=()=>2,previewLimit=()=>1}={
           await convertVideo(source, destination, mime, [
             '-map', '0:v:0', '-frames:v', '1', '-an', '-threads', '1',
             '-vf', 'setpts=PTS-STARTPTS,scale=w=\'min(1024,iw)\':h=\'min(1024,ih)\':force_original_aspect_ratio=decrease',
-            '-c:v', 'mjpeg', '-f', 'image2'
+            '-c:v', 'mjpeg', '-pix_fmt', 'yuvj420p', '-f', 'image2'
           ], 'サムネイル',Infinity,seek);
           return { pageCount: 1,seekSeconds:seek };
         }

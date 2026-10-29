@@ -40,7 +40,7 @@ export async function probeAudio(source) {
 export async function audioThumbnail(source,destination){
   const info=await probeAudio(source);let artwork=false;
   if(info.cover){
-    try{await exec(ffmpegPath(),['-hide_banner','-loglevel','error','-nostdin','-y','-max_alloc','268435456',...INPUT,'-i',source,'-map',`0:${info.cover.index}`,'-frames:v','1','-an','-threads','1','-vf',"scale=w='min(1024,iw)':h='min(1024,ih)':force_original_aspect_ratio=decrease",'-c:v','mjpeg','-f','image2',destination],{timeout:30000,maxBuffer:1024*1024,signal:jobCancellationSignal(),windowsHide:true,killSignal:'SIGKILL'});artwork=true;}
+    try{await exec(ffmpegPath(),['-hide_banner','-loglevel','error','-nostdin','-y','-max_alloc','268435456',...INPUT,'-i',source,'-map',`0:${info.cover.index}`,'-frames:v','1','-an','-threads','1','-vf',"scale=w='min(1024,iw)':h='min(1024,ih)':force_original_aspect_ratio=decrease",'-c:v','mjpeg','-pix_fmt','yuvj420p','-f','image2',destination],{timeout:30000,maxBuffer:1024*1024,signal:jobCancellationSignal(),windowsHide:true,killSignal:'SIGKILL'});artwork=true;}
     catch(error){if(jobCancellationSignal()?.aborted)throw error;}
   }
   if(!artwork)await audioPlaceholder(destination);return {pageCount:1,artwork};
@@ -96,7 +96,7 @@ export function createAudioTranscoder() {
       let artwork=false;
       if(info.cover){
         try{await run([...INPUT,'-i',source,'-map',`0:${info.cover.index}`,'-frames:v','1','-an',
-          '-vf','scale=600:600:force_original_aspect_ratio=decrease','-c:v','mjpeg','-f','image2',thumbnail],{...settings,deadline:Math.min(deadline,Date.now()+30000),output:thumbnail});artwork=true;}
+          '-vf','scale=600:600:force_original_aspect_ratio=decrease','-c:v','mjpeg','-pix_fmt','yuvj420p','-f','image2',thumbnail],{...settings,deadline:Math.min(deadline,Date.now()+30000),output:thumbnail});artwork=true;}
         catch(error){authorize();if(closed || error.code==='SERVER_CLOSING')throw closingError();/* Unusable art does not discard valid audio. */}
       }
       if(!artwork)await audioPlaceholder(thumbnail);

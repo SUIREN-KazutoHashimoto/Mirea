@@ -58,7 +58,7 @@ test('out-of-range MP4 edits retry only empty results and generate real image/vi
   await writeFile(source, original);
   await assert.rejects(run(ffmpegPath(), [
     '-hide_banner', '-loglevel', 'error', '-abort_on', 'empty_output', '-i', source,
-    '-map', '0:v:0', '-frames:v', '1', '-f', 'image2pipe', 'pipe:1'
+    '-map', '0:v:0', '-frames:v', '1', '-pix_fmt', 'yuvj420p', '-f', 'image2pipe', 'pipe:1'
   ], options), error => /Output file is empty/.test(error.stderr));
   const thumbnail = join(directory, 'thumbnail.jpg'), preview = join(directory, 'preview.mp4');
   await media.thumbnail(source, 'video/mp4', thumbnail);

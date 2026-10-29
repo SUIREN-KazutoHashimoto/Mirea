@@ -40,7 +40,7 @@ test('legacy task fallback obeys configured three slots, advances on completion 
 test('explicit cancellation aborts processing too, identity changes stop starts, and a failed batch admission does not discard later queued assets',async()=>{
  const jobs=planUploads(Array.from({length:5},(_,i)=>file(i+'.pdf'))),pending=[],actions=[];
  const batch=createUploadBatch(jobs,{start:job=>{const d=deferred();pending.push(d);const processing=pending.length===1;return {processing,promise:d.promise,detach(){actions.push('detach');d.reject(Error('detached'));},abort(){actions.push('abort');d.reject(Error('aborted'));}};}});
- await tick();batch.cancel();const result=await batch.promise;assert.deepEqual(actions,['abort','abort','abort']);assert.equal(pending.length,3);assert.equal(result.cancelled,true);assert.equal(result.rows[0].state,'cancelled');assert.equal(result.rows[3].state,'queued');
+ await tick();batch.cancel();const result=await batch.promise;assert.deepEqual(actions,['abort','abort','abort']);assert.equal(pending.length,3);assert.equal(result.cancelled,true);assert(result.rows.every(row=>row.state==='cancelled'));
  let started=0;const full=await createUploadBatch(jobs,{concurrency:1,start:()=>{started++;return {promise:Promise.reject(Object.assign(Error('busy'),{status:429}))};}}).promise;assert.equal(started,5);assert.equal(full.halted,false);assert(full.rows.every(row=>row.state==='failed'));
  let valid=true;const late=await createUploadBatch(jobs,{isCurrent:()=>valid,changed:rows=>{if(rows[0].state==='uploading')valid=false;},start:()=>assert.fail('changed account must never start')}).promise;assert.equal(late.cancelled,true);
 });

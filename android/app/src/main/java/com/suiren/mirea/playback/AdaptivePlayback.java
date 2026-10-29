@@ -17,7 +17,7 @@ import org.json.*;
 /** Bounded ahead buffering for authenticated HLS and progressive media. No disk cache. */
 @androidx.annotation.OptIn(markerClass=androidx.media3.common.util.UnstableApi.class)
 final class AdaptivePlayback {
-    interface Events {void ready();void buffering(boolean value);void ended();void failed();void changed();void seeked();}
+    interface Events {void ready();void buffering(boolean value);void ended();void failed();void changed();void seeked();default void audioSession(int id){}}
     final ExoPlayer player;
     private final JSONArray qualities;
     private final DefaultTrackSelector selector;
@@ -35,6 +35,7 @@ final class AdaptivePlayback {
             public void onPlayerError(PlaybackException error){events.failed();}
             public void onVideoSizeChanged(VideoSize size){events.changed();}
             public void onTracksChanged(Tracks tracks){events.changed();}
+            public void onAudioSessionIdChanged(int id){events.audioSession(id);}
             public void onPositionDiscontinuity(Player.PositionInfo a,Player.PositionInfo b,int reason){if(reason==Player.DISCONTINUITY_REASON_SEEK)events.seeked();}
         });
         if(generation!=null){
