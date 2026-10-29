@@ -5,6 +5,16 @@ import { isUpdateBusy, subscribeUpdateBusy } from './update-busy.js';
 const updater = native ? registerPlugin('MireaUpdater') : null;
 const listeners = new Set();
 let initialized, busyQueue = Promise.resolve(), lastStatus = {}, readyNotice;
+let startupDialog,promptedServer;
+export function configureStartupUpdates(dialog){
+  if(!updater)return;
+  window.addEventListener('mirea:server-version',event=>{
+    const info=event.detail,key=getEndpoint()+'|'+info.version;if(!info.known||!info.update&&!info.majorMismatch||promptedServer===key)return;promptedServer=key;
+    // Do not interrupt an open player or confirmation. The startup request is
+    // shown after the current event settles, before opening library content.
+    queueMicrotask(()=>{startupDialog?.close();startupDialog=dialog(info.majorMismatch?'アプリの更新が必要です':'アプリを更新しますか？',`<div class="modal-body"><p>${info.majorMismatch?'サーバーとアプリのメジャーバージョンが異なるため、このサーバーのコンテンツには接続できません。更新状態を確認してください。':'新しいアプリが利用できます。更新を確認して適用できます。'}</p><div class="update-container"></div></div>`);const dispose=mountAppUpdates(startupDialog.querySelector('.update-container'),{onClose:()=>startupDialog.close()});startupDialog.addEventListener('close',dispose,{once:true});check(true,false).catch(()=>{});});
+  });
+}
 function publish(status) {
   if (!status) return;
   lastStatus = status;

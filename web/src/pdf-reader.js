@@ -15,7 +15,8 @@ export async function openPdf(container, item, onError, tracker, progress, downl
   const previous = container.querySelector('.previous');
   const next = container.querySelector('.next');
   const zoom = chrome.zoom;
-  let pdf, task, current = Math.max(1,Math.min(item.pageCount,progress?.initial?.page??1)), displayedPage=current, ready=false, disposed = false, generation = 0;
+  let pdf, activeRaster, prefetched, current = Math.max(1,Math.min(item.pageCount,progress?.initial?.page??1)), displayedPage=current, ready=false, disposed = false, generation = 0;
+  const rendering=new Set();
   const updateNext=()=>{
     const continues=ready && current===pdf?.numPages && seriesNavigation?.canContinue;
     next.disabled=!ready || (current===pdf?.numPages && !continues);
@@ -37,36 +38,40 @@ export async function openPdf(container, item, onError, tracker, progress, downl
     disableStream: true,
     disableAutoFetch: true
   });
+  const layoutKey=number=>[number,stage.clientWidth,stage.clientHeight,zoom.value,window.devicePixelRatio].join('|');
+  async function raster(number,job){
+    const page=await pdf.getPage(number);if(disposed||job.cancelled)return null;
+    const base=page.getViewport({scale:1}),dpr=Math.min(window.devicePixelRatio||1,2),scale=Math.min(bookScale(base.width,base.height,stage.clientWidth,stage.clientHeight,zoom.value),Math.sqrt(16_000_000/(base.width*base.height*dpr*dpr))),viewport=page.getViewport({scale}),buffer=document.createElement('canvas');
+    buffer.width=Math.floor(viewport.width*dpr);buffer.height=Math.floor(viewport.height*dpr);
+    const renderingTask=page.render({canvasContext:buffer.getContext('2d'),viewport,transform:dpr===1?null:[dpr,0,0,dpr,0,0]});job.task=renderingTask;rendering.add(renderingTask);
+    try{await renderingTask.promise;if(job.cancelled||disposed){buffer.width=buffer.height=0;return null;}return job.result={buffer,viewport,scale};}catch(error){buffer.width=buffer.height=0;if(error.name==='RenderingCancelledException')return null;throw error;}finally{job.task=null;rendering.delete(renderingTask);}
+  }
+  function requestPage(number){const job={key:layoutKey(number),cancelled:false,cancel(){this.cancelled=true;this.task?.cancel();if(this.result){this.result.buffer.width=this.result.buffer.height=0;this.result=null;}}};job.promise=raster(number,job);job.promise.catch(()=>{});return job;}
   async function render() {
     if (!pdf || disposed) return;
     progress?.capture();
     anchor=anchor??bookPosition(stage,displayedPage,zoom.value);
     ready=false;
-    canvas.hidden=true;
     publishPage();
     tracker?.loading();
     const revision = ++generation;
-    if (task) { task.cancel(); await task.promise.catch(() => {}); }
-    const page = await pdf.getPage(current);
-    if (disposed || revision !== generation) return;
-    const base = page.getViewport({ scale: 1 });
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const scale = Math.min(bookScale(base.width,base.height,stage.clientWidth,stage.clientHeight,zoom.value),Math.sqrt(16_000_000/(base.width*base.height*dpr*dpr)));
+    activeRaster?.cancel();const key=layoutKey(current),job=prefetched?.key===key?prefetched:requestPage(current);if(prefetched&&prefetched!==job)prefetched.cancel();prefetched=null;activeRaster=job;
+    const result=await job.promise;if(!result||disposed||revision!==generation){job.cancel();return;}job.result=null;activeRaster=null;
+    const {buffer,viewport,scale}=result;
     stage.style.touchAction=zoom.value==='fit'?'pan-y pinch-zoom':'pan-x pan-y pinch-zoom';
-    const viewport = page.getViewport({ scale });
-    canvas.width = Math.floor(viewport.width * dpr);
-    canvas.height = Math.floor(viewport.height * dpr);
+    canvas.width = buffer.width;
+    canvas.height = buffer.height;
     canvas.style.width = `${viewport.width}px`;
     canvas.style.height = `${viewport.height}px`;
     input.value = current;
     previous.disabled = current === 1;
     updateNext();
-    task = page.render({ canvasContext: canvas.getContext('2d'), viewport, transform: dpr === 1 ? null : [dpr, 0, 0, dpr, 0, 0] });
     try {
-      await task.promise;
+      canvas.getContext('2d').drawImage(buffer,0,0);buffer.width=buffer.height=0;
       if (!disposed && revision === generation) {
         canvas.hidden=false;restoreBookPosition(stage,anchor);anchor=null;displayedPage=current;ready=true;
         tracker?.ready(current,canvas,stage,scale);progress?.capture();publishPage();
+        if(current<pdf.numPages)prefetched=requestPage(current+1);
       }
     } catch (error) { if (error.name !== 'RenderingCancelledException' && !disposed) onError(error); }
   }
@@ -97,6 +102,6 @@ export async function openPdf(container, item, onError, tracker, progress, downl
     container.querySelector('.page-total').textContent = `/ ${pdf.numPages}`;
     redraw();stage.focus();
   }).catch(error => { if (!disposed) onError(error); });
-  const cleanup=() => { disposed = true; unsubscribeSeries?.();generation++; task?.cancel(); observer.disconnect(); clearTimeout(resizeTimer); clearTimeout(scrollTimer); stage.removeEventListener('scroll',scroll); chrome.dispose();load.destroy(); };
+  const cleanup=() => { disposed = true; unsubscribeSeries?.();generation++;activeRaster?.cancel();prefetched?.cancel();for(const render of rendering)render.cancel();prefetched=null;observer.disconnect(); clearTimeout(resizeTimer); clearTimeout(scrollTimer); stage.removeEventListener('scroll',scroll); chrome.dispose();load.destroy(); };
   cleanup.restart=()=>{zoom.value='fit';go(1);};return cleanup;
 }

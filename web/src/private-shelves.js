@@ -24,7 +24,7 @@ async function checkPrivateShelf(shelf,{force=false}={}){
   const node=dialog('プライベート本棚を開く','<form class="modal-body private-shelf-auth"><p>本人のMireaパスワードで確認してください。</p><label>パスワード<input name="password" type="password" autocomplete="current-password" required maxlength="128"></label><p class="form-error" role="alert" hidden></p><div class="dialog-actions"><button type="button" class="button secondary private-biometric" hidden>生体認証で開く</button><button class="button primary" type="submit">開く</button></div><p class="muted private-biometric-help" hidden>生体認証を利用するには、一度パスワードで開いて端末を登録してください。</p></form>');
   const form=node.querySelector('form'),error=node.querySelector('.form-error'),bio=node.querySelector('.private-biometric');
   function finish(grant){if(!current())throw Error('アカウントが変更されました。');grants.delete(shelf.id);grants.set(shelf.id,grant);while(grants.size>20)grants.delete(grants.keys().next().value);done=true;node.close();resolve();}
-  async function action(work){if(busy)return;busy=true;error.hidden=true;form.querySelectorAll('button').forEach(b=>b.disabled=true);try{await work();}catch(e){error.textContent=e.message;error.hidden=false;}finally{busy=false;form.querySelectorAll('button').forEach(b=>b.disabled=false);}}
+  async function action(work){if(busy)return;busy=true;error.hidden=true;form.querySelectorAll('button').forEach(b=>b.disabled=true);try{await work();}catch(e){error.textContent=e.message;error.hidden=false;form.elements.password.focus();}finally{busy=false;form.querySelectorAll('button').forEach(b=>b.disabled=false);}}
   form.onsubmit=e=>{e.preventDefault();action(async()=>{
    const password=form.elements.password.value;form.elements.password.value='';let grant;
    if(isOffline()){
@@ -45,6 +45,11 @@ async function checkPrivateShelf(shelf,{force=false}={}){
    const key=await crypto.subtle.importKey('spki',bytes(saved.publicKey),{name:'ECDSA',namedCurve:'P-256'},false,['verify']);if(!await crypto.subtle.verify({name:'ECDSA',hash:'SHA-256'},key,ecdsaRaw(bytes(result.signature)),new TextEncoder().encode(challenge)))throw Error('端末の生体認証鍵が変更されています。パスワードで登録し直してください。');
    const grant=isOffline()?{token:'',expiresAt:Date.now()+24*3600000}:await api('/shelves/'+shelf.id+'/biometric/unlock',{method:'POST',body:{challenge,signature:result.signature}});finish(grant);
   });
-  node.addEventListener('close',()=>{if(!done)reject(new Error('本人確認をキャンセルしました。'));},{once:true});form.elements.password.focus();
+  node.addEventListener('close',()=>{if(!done)reject(new Error('本人確認をキャンセルしました。'));},{once:true});
+  if(native&&saved?.keyId){
+   // Existing device-bound enrolment is still required; never replace the
+   // server challenge/signature verification with a local boolean result.
+   queueMicrotask(()=>{if(node.isConnected&&current())bio.click();});
+  }else form.elements.password.focus();
  });
 }

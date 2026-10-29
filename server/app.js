@@ -58,6 +58,8 @@ import {createProcessingSettings,registerProcessingSettings} from './processing-
 import {registerHistoryRemoval} from './history.js';
 import {assertAssetChanges,registerNameIntegrity} from './name-integrity.js';
 import {initializeDefaultAdmin,defaultCredentialWarning} from './bootstrap-admin.js';
+import {registerDiagnosticReports} from './diagnostic-reports.js';
+import {createOperationalSettings,registerOperationalSettings} from './operational-settings.js';
 
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const TICKET_MS = 60 * 60 * 1000;
@@ -82,6 +84,7 @@ export async function createApp(options = {}) {
   const {mediaDir,uploadDir,stagingDir,booksDir,thumbnailDir,videoDir,originalDir,previewDir}=storage;
   const db = openDatabase(join(dataDir, 'mirea.sqlite'));
   if(options.bootstrapAdmin)await initializeDefaultAdmin(db);
+  const operationalSettings=createOperationalSettings(db);
   const processingSettings=createProcessingSettings(db),jobPool=createJobLanes(()=>processingSettings.value);
   const reset=createMediaReset({db,storage});
   try{await reset.recover();}catch(error){db.close();throw error;}
@@ -96,12 +99,12 @@ export async function createApp(options = {}) {
   const videoCoverRevision=db.prepare('SELECT updated_at FROM video_thumbnail_state WHERE asset_id=?');
   const jobCoverRevision=db.prepare("SELECT MAX(updated_at) updated_at FROM admin_jobs WHERE asset_id=? AND kind IN ('thumbnail','owner_thumbnail','repair') AND state='complete'");
   const publicItem=i=>{const stamp=Math.max(videoCoverRevision.get(i.id)?.updated_at??0,jobCoverRevision.get(i.id)?.updated_at??0),generated=stamp?{updated_at:stamp}:null;const row=coverRevision.get(i.id),image=row?customThumbnailRevision(row):generated?customThumbnailRevision({image_id:i.id,updated_at:generated.updated_at}):null;const source=db.prepare('SELECT canonical_ready,source_mime,metadata_json FROM media_ingest WHERE asset_id=?').get(i.id);return {...basePublicItem(i),...(source?{...(!source.canonical_ready?{mimeType:source.source_mime}:{}),processingState:mediaProcessingState(db,i.id,source.canonical_ready),originalPlayback:!source.canonical_ready,downloadReady:Boolean(source.canonical_ready),mediaInfo:JSON.parse(source.metadata_json),processingTasks:db.prepare('SELECT kind,state FROM media_tasks WHERE asset_id=?').all(i.id)}:{}),...(image?{thumbnailUrl:'/api/v1/items/'+i.id+'/thumbnail?revision='+image}:{})};};
-  const maxUploadBytes = Number(options.maxUploadBytes ?? process.env.MAX_UPLOAD_BYTES ?? 2147483648);
+  const maxUploadBytes = Number(options.maxUploadBytes ?? operationalSettings.value.maxUploadBytes);
   if (!Number.isSafeInteger(maxUploadBytes) || maxUploadBytes <= 0) throw new Error('Invalid MAX_UPLOAD_BYTES');
-  const chunkSize = Number(options.chunkSize ?? process.env.UPLOAD_CHUNK_BYTES ?? 8 * 1024 * 1024);
+  const chunkSize = Number(options.chunkSize ?? operationalSettings.value.uploadChunkBytes);
   if (!Number.isSafeInteger(chunkSize) || chunkSize < (options.chunkSize ? 1 : 64 * 1024) || chunkSize > 16 * 1024 * 1024) throw new Error('Invalid UPLOAD_CHUNK_BYTES (64 KiB–16 MiB)');
   const allowedOrigins = options.corsOrigins ?? (process.env.CORS_ORIGINS ?? 'https://localhost').split(',').map(x => x.trim()).filter(Boolean);
-  const allowRegistration = options.allowRegistration ?? process.env.ALLOW_REGISTRATION !== 'false';
+  const allowRegistration = options.allowRegistration ?? operationalSettings.value.allowRegistration;
   const app = Fastify({ logger: options.logger ? {
     serializers: { req: req => ({ method: req.method, url: req.url.split('?')[0], remoteAddress: req.ip }) }
   } : false, ...(options.https?{https:options.https}:{}), bodyLimit: 16384, requestTimeout: 30 * 60 * 1000, trustProxy: false });
@@ -176,6 +179,8 @@ export async function createApp(options = {}) {
   }
   const auth = { preHandler: async req => authenticate(req) };
   const adminAccess=createAdminAccess(db,options,authenticate);
+  registerDiagnosticReports(app,{db,authenticate,adminAccess,rateLimit:options.rateLimit});
+  registerOperationalSettings(app,{settings:operationalSettings,processingSettings,adminAccess});
   registerPrivateShelves(app,{db,authenticate,membership,rateLimit:options.rateLimit});
   registerProcessingSettings(app,{processingSettings,jobPool,adminAccess});
   registerHistoryRemoval(app,{db,authenticate,findItem});
@@ -209,7 +214,7 @@ export async function createApp(options = {}) {
     return loginResult(user,reply,req.body.remember);
   });
   app.get('/api/v1/auth/me', auth, async req => ({ user: req.user }));
-  app.get('/api/v1/history',auth,async req=>({items:db.prepare(`SELECT i.*,s.name AS shelfName,m.role,MAX(v.last_received_at) AS lastSeenAt FROM analytics_views v JOIN items i ON i.id=v.asset_id JOIN shelves s ON s.id=i.shelf_id JOIN memberships m ON m.shelf_id=i.shelf_id AND m.user_id=? WHERE v.user_id=? AND v.context='viewer' AND v.counted=1 AND v.first_received_at>COALESCE((SELECT hidden_at FROM history_hidden h WHERE h.user_id=v.user_id AND h.asset_id=v.asset_id),0) GROUP BY i.id ORDER BY lastSeenAt DESC,i.id LIMIT 1000`).all(req.user.id,req.user.id).map(item=>({...publicItem(item),shelfName:item.shelfName,role:item.role,lastSeenAt:item.lastSeenAt,progress:publicProgress(db.prepare('SELECT * FROM asset_progress WHERE user_id=? AND asset_id=?').get(req.user.id,item.id))}))}));
+  app.get('/api/v1/history',auth,async req=>({items:db.prepare(`SELECT i.*,s.name AS shelfName,m.role,MAX(v.last_received_at) AS lastSeenAt FROM analytics_views v JOIN items i ON i.id=v.asset_id JOIN shelves s ON s.id=i.shelf_id JOIN memberships m ON m.shelf_id=i.shelf_id AND m.user_id=? WHERE v.user_id=? AND s.private=0 AND v.context='viewer' AND v.counted=1 AND v.first_received_at>COALESCE((SELECT hidden_at FROM history_hidden h WHERE h.user_id=v.user_id AND h.asset_id=v.asset_id),0) GROUP BY i.id ORDER BY lastSeenAt DESC,i.id LIMIT 1000`).all(req.user.id,req.user.id).map(item=>({...publicItem(item),shelfName:item.shelfName,role:item.role,lastSeenAt:item.lastSeenAt,progress:publicProgress(db.prepare('SELECT * FROM asset_progress WHERE user_id=? AND asset_id=?').get(req.user.id,item.id))}))}));
   app.post('/api/v1/auth/logout', auth, async (req, reply) => {
     db.prepare('DELETE FROM sessions WHERE id=?').run(req.session.id);
     clearRememberCookie(reply);
@@ -286,16 +291,16 @@ export async function createApp(options = {}) {
   maintenance.setBusy(()=>uploads.busy||mediaPipeline.busy||adminJobs.busy||videoPreviews.busy||navigation.busy||media.busy);
   await registerAdminCleanup(app,{db,dataDir,mediaDir,adminAccess,maintenance,options});
   registerAdminReset(app,{db,storage,adminAccess,maintenance,reset,options});
-  await registerAdminBackups(app,{db,dataDir,mediaDir,adminAccess,maintenance,options});
+  await registerAdminBackups(app,{db,dataDir,mediaDir,adminAccess,maintenance,options,operationalSettings});
   await registerServerUpdates(app,{adminAccess,maintenance,options:{...options,storageSeparated:storage.separate}});
   // onClose runs in reverse order: stop encoders before waiting for either
   // upload or admin queues, so running jobs can persist a resumable state.
   app.addHook('onClose',async()=>{videoTranscoder.close();audioTranscoder.close();});
-  analytics = await registerAnalytics(app, { db, authenticate, membership, findItem, options,adminAccess });
+  analytics = await registerAnalytics(app, { db, authenticate, membership, findItem, options:{...options,analyticsEnabled:options.analyticsEnabled??operationalSettings.value.analyticsEnabled},adminAccess });
   registerProgress(app,{db,authenticate,findItem,options});
   registerSeries(app,{db,authenticate,membership,findItem,publicItem,removeAssetFiles,uploads});
   registerNameIntegrity(app,{db,authenticate,membership,findItem,publicItem});
-  registerPlaylists(app,{db,authenticate,findItem});
+  registerPlaylists(app,{db,authenticate,findItem,publicItem});
   try{await registerDownloads(app,{db,dataDir,uploadDir,booksDir,videoDir,authenticate,findItem,options});}catch(error){await app.close();throw error;}
   app.post('/api/v1/shelves/:id/items', auth, async (req, reply) => {
     membership(req.params.id, req.user.id, ['owner', 'editor']);

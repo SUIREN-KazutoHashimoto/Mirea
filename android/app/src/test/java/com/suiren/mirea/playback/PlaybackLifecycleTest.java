@@ -16,6 +16,11 @@ import static org.junit.Assert.*;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk=35,shadows=PlaybackActivityTest.RatePlayer.class)
 public class PlaybackLifecycleTest {
+    @Test public void taskDismissalPausesWithoutDestroyingTheDecoderAndHomeVisibilityKeepsPlaying()throws Exception{
+        ServiceController<PlaybackService> c=Robolectric.buildService(PlaybackService.class).create();PlaybackService s=c.get();
+        try{MediaPlayer player=seed(s,"background-handoff.m4a");s.visibility(true,false);s.play();s.visibility(false,false);assertTrue(s.playing());assertSame(player,ReflectionHelpers.getField(s,"player"));s.onTaskRemoved(new android.content.Intent());assertFalse(s.playing());assertSame(player,ReflectionHelpers.getField(s,"player"));assertEquals(42000,s.position());assertSame(s,PlaybackService.current);}
+        finally{c.destroy();s.stopped.get(5,TimeUnit.SECONDS);}
+    }
     static final class ReleaseProbe extends MediaPlayer {PlaybackApi api;boolean cancelledBeforeRelease;@Override public void release(){cancelledBeforeRelease=api.closed;super.release();}}
     static class ParkedExecutor extends java.util.concurrent.AbstractExecutorService {
         boolean stopped;public void execute(Runnable task){}public void shutdown(){stopped=true;}public java.util.List<Runnable> shutdownNow(){stopped=true;return java.util.List.of();}public boolean isShutdown(){return stopped;}public boolean isTerminated(){return stopped;}public boolean awaitTermination(long n,TimeUnit unit){return stopped;}

@@ -17,6 +17,7 @@ import {canRegenerateThumbnail} from './owner-media.js';
 import {recoveryCandidates,assessAssetRecovery} from './media-recovery.js';
 import {publishCanonical} from './canonical-publish.js';
 import {setTimeout as delay} from 'node:timers/promises';
+import {jobTiming} from './job-timing.js';
 
 // Owner explicitly approved password-free individual AND bulk reruns. Only
 // these media job actions change; destructive/privilege/backup/update APIs keep
@@ -30,8 +31,8 @@ export async function registerAdminJobs(app,context) {
   let closing=false;const pending=new Map();
   const get=id=>db.prepare('SELECT * FROM admin_jobs WHERE id=?').get(id);
   const assetLabel=db.prepare('SELECT i.title,s.name AS shelf FROM items i JOIN shelves s ON s.id=i.shelf_id WHERE i.id=?');
-  const safe=row=>{const item=row.asset_id?assetLabel.get(row.asset_id):null;return {id:row.id,kind:row.kind,assetId:row.asset_id,title:item?.title??null,shelf:item?.shelf??null,state:row.state,progress:JSON.parse(row.progress_json),error:row.error,createdAt:row.created_at,updatedAt:row.updated_at};};
-  const uploadSafe=row=>({id:row.id,title:row.title,state:row.state,error:row.error,processing:JSON.parse(row.processing_json),createdAt:row.created_at,assetExists:Boolean(db.prepare('SELECT 1 FROM items WHERE id=?').get(row.id))});
+  const safe=row=>{const item=row.asset_id?assetLabel.get(row.asset_id):null;return {id:row.id,...jobTiming(db,row.id),kind:row.kind,assetId:row.asset_id,title:item?.title??null,shelf:item?.shelf??null,state:row.state,progress:JSON.parse(row.progress_json),error:row.error,createdAt:row.created_at,updatedAt:row.updated_at};};
+  const uploadSafe=row=>({id:row.id,...jobTiming(db,row.id,'upload'),title:row.title,state:row.state,error:row.error,processing:JSON.parse(row.processing_json),createdAt:row.created_at,assetExists:Boolean(db.prepare('SELECT 1 FROM items WHERE id=?').get(row.id))});
   const report=(id,value)=>db.prepare('UPDATE admin_jobs SET progress_json=?,updated_at=? WHERE id=?').run(JSON.stringify(value),Date.now(),id);
   // Persist the complete asset snapshot, but keep only a bounded execution
   // window in memory. Queued work is recovered from the database on restart.

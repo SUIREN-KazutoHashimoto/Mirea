@@ -166,7 +166,9 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
     private void showLibrary(){startActivity(new Intent(this,com.suiren.mirea.MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_REORDER_TO_FRONT));}
     @Override public void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);preserve=false;backgroundRequested=false;chrome.interact(SystemClock.elapsedRealtime());render();}
     private void closePlayback(){preserve=false;stopService(new Intent(this,PlaybackService.class));finish();}
-    @Override public void onDestroy(){destroyed=true;handler.removeCallbacks(tick);for(Dialog d:new ArrayList<>(dialogs))d.dismiss();try{unregisterReceiver(changed);}catch(IllegalArgumentException ignored){}if(isFinishing()&&!preserve)stopService(new Intent(this,PlaybackService.class));super.onDestroy();}
+    @Override public void onDestroy(){destroyed=true;handler.removeCallbacks(tick);for(Dialog d:new ArrayList<>(dialogs))d.dismiss();try{unregisterReceiver(changed);}catch(IllegalArgumentException ignored){}/* The foreground service owns playback. Activity recreation, Home and PiP
+        must never tear down its decoder or checkpoint queue. A dismissed PiP
+        pauses; the explicit close action is the only Activity service stop. */if(isFinishing()&&!preserve&&service()!=null)service().pause();super.onDestroy();}
     private void attach(Surface surface){PlaybackService s=service();if(s==null)return;if(surfaceService!=null&&boundSurface!=null&&surfaceService!=s)surfaceService.clearSurface(boundSurface);surfaceService=s;boundSurface=surface;s.setSurface(surface);}
     public void surfaceCreated(SurfaceHolder holder){attach(holder.getSurface());}
     public void surfaceChanged(SurfaceHolder holder,int format,int w,int height){attach(holder.getSurface());}

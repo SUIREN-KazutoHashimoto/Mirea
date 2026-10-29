@@ -10,13 +10,15 @@ export function registerProcessingSettings(app,{processingSettings,jobPool,admin
   });
 }
 export function createProcessingSettings(db,env=process.env){
-  const defaults={maxConcurrentUploads:Number(env.MAX_CONCURRENT_UPLOADS??3),maxConcurrentJobs:Number(env.MAX_CONCURRENT_JOBS??5),maxConcurrentThumbnails:Number(env.MAX_CONCURRENT_THUMBNAILS??2),maxConcurrentPreviews:Number(env.MAX_CONCURRENT_PREVIEWS??1),maxConcurrentIngest:Number(env.MAX_CONCURRENT_INGEST??2),maxUploadAssets:Math.min(1000,Number(env.MAX_UPLOAD_ASSETS??1000))};
+  const defaults={maxConcurrentUploads:3,maxConcurrentJobs:5,maxConcurrentThumbnails:2,maxConcurrentPreviews:1,maxConcurrentIngest:2,maxUploadAssets:1000};
+  const variables={maxConcurrentUploads:'MAX_CONCURRENT_UPLOADS',maxConcurrentJobs:'MAX_CONCURRENT_JOBS',maxConcurrentThumbnails:'MAX_CONCURRENT_THUMBNAILS',maxConcurrentPreviews:'MAX_CONCURRENT_PREVIEWS',maxConcurrentIngest:'MAX_CONCURRENT_INGEST',maxUploadAssets:'MAX_UPLOAD_ASSETS'},overrides={};
+  for(const [key,name] of Object.entries(variables))if(env[name]!==undefined)overrides[key]=key==='maxUploadAssets'?Math.min(1000,Number(env[name])):Number(env[name]);
   const bounds={maxConcurrentUploads:32,maxConcurrentJobs:16,maxConcurrentThumbnails:8,maxConcurrentPreviews:8,maxConcurrentIngest:8,maxUploadAssets:1000};
   const valid=value=>Object.keys(defaults).every(key=>Number.isInteger(value[key])&&value[key]>=1&&value[key]<=bounds[key]);
-  if(!valid(defaults))throw Error('Invalid upload/job concurrency settings');
+  if(!valid({...defaults,...overrides}))throw Error('Invalid upload/job concurrency settings');
   let current={...defaults,...JSON.parse(db.prepare("SELECT value FROM server_settings WHERE key='processing'").get()?.value??'{}')};
   current.maxUploadAssets=Math.min(1000,current.maxUploadAssets);
   if(!valid(current))throw Error('Invalid saved processing settings');
-  return {get conflicts(){return db.prepare('SELECT COUNT(*) n FROM (SELECT shelf_id,parent_id,title FROM series GROUP BY shelf_id,parent_id,title HAVING COUNT(*)>1)').get().n;},get value(){return {...current};},update(value){value={...current,...value};if(!valid(value))throw httpError(400,'転送は1〜32件、変換は1〜16件、その他の処理は1〜8件、一括選択は1〜1000件で指定してください。');
-    db.prepare("INSERT INTO server_settings(key,value) VALUES('processing',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(value));current={...value};return {...current};}};
+  return {get conflicts(){return db.prepare('SELECT COUNT(*) n FROM (SELECT shelf_id,parent_id,title FROM series GROUP BY shelf_id,parent_id,title HAVING COUNT(*)>1)').get().n;},get value(){return {...current,...overrides};},get overrides(){return Object.fromEntries(Object.entries(overrides).map(([key,value])=>[key,{variable:variables[key],value}]));},update(value){value={...current,...Object.fromEntries(Object.entries(value).filter(([key])=>!(key in overrides)))};if(!valid(value))throw httpError(400,'転送は1〜32件、変換は1〜16件、その他の処理は1〜8件、一括選択は1〜1000件で指定してください。');
+    db.prepare("INSERT INTO server_settings(key,value) VALUES('processing',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(value));current={...value};return {...current,...overrides};}};
 }

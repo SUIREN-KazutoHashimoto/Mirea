@@ -3,7 +3,7 @@ import {resolveQualityPreference} from './quality-preference.js';
 
 // One HTMLVideoElement for the whole viewing session: ABR changes never create
 // a new view, reset resume state, or trigger series continuation.
-export function attachVideoStream(video,{ticket,absoluteUrl,renew,onQuality=()=>{},onOptions=()=>{},onError=()=>{},initialQuality='auto',onChoose=()=>{},HlsClass=Hls,events=globalThis.window}) {
+export function attachVideoStream(video,{ticket,absoluteUrl,renew,onQuality=()=>{},onOptions=()=>{},onError=()=>{},initialQuality='auto',onChoose=()=>{},HlsClass=Hls,events=globalThis.window,preload=false}) {
   let hls,disposed=false,selected=resolveQualityPreference(ticket.renditions??[],initialQuality),preferred=initialQuality,actual='unknown',refreshing,refreshTimer,streamKind='mp4',manifestReady=false;
   const restores=new Set();
   let restoring,retryPending=false,retrySeamless=false;
@@ -55,7 +55,7 @@ export function attachVideoStream(video,{ticket,absoluteUrl,renew,onQuality=()=>
   }
   if(ticket.hlsUrl&&HlsClass.isSupported()){
     streamKind='hls';
-    hls=new HlsClass({maxBufferLength:90,maxMaxBufferLength:180,maxBufferSize:64*1024*1024,backBufferLength:10,enableWorker:true,autoStartLoad:false});
+    hls=new HlsClass({maxBufferLength:preload?20:90,maxMaxBufferLength:preload?30:180,maxBufferSize:(preload?16:64)*1024*1024,backBufferLength:10,enableWorker:true,autoStartLoad:false});
     hls.on(HlsClass.Events.MANIFEST_PARSED,()=>{if(disposed)return;manifestReady=true;if(applyLevel())hls.startLoad();options();emit();});
     hls.on(HlsClass.Events.LEVEL_SWITCHED,(_event,data)=>{const level=hls.levels[data.level];actual=qualities().find(q=>q.width===level?.width&&q.height===level?.height)?.quality??'unknown';options();emit();});
     hls.on(HlsClass.Events.ERROR,(_event,data)=>{if(data.fatal&&!disposed)onError(new Error('配信を読み込めません。アクセス権と通信を確認し、再接続してください。'));});
@@ -63,5 +63,5 @@ export function attachVideoStream(video,{ticket,absoluteUrl,renew,onQuality=()=>
   }else if(ticket.hlsUrl&&video.canPlayType('application/vnd.apple.mpegurl')){streamKind='hls';video.src=sourceUrl();actual=['auto','higher','data'].includes(selected)?'unknown':selected;}
   else{selected='legacy';actual='legacy';video.src=absoluteUrl(ticket.url);}
   options();emit();scheduleRefresh();
-  return {choose,reconnect,dispose(){disposed=true;clearTimeout(refreshTimer);events?.removeEventListener('online',connected);video.removeEventListener('mirea:playback-intent',intent);for(const listener of restores)video.removeEventListener('loadedmetadata',listener);restores.clear();restoring=null;hls?.destroy();}};
+  return {choose,reconnect,adopt(callbacks){({renew=renew,onQuality=onQuality,onOptions=onOptions,onError=onError,onChoose=onChoose}=callbacks);if(hls){hls.config.maxBufferLength=90;hls.config.maxMaxBufferLength=180;hls.config.maxBufferSize=64*1024*1024;}options();emit();scheduleRefresh();},dispose(){disposed=true;clearTimeout(refreshTimer);events?.removeEventListener('online',connected);video.removeEventListener('mirea:playback-intent',intent);for(const listener of restores)video.removeEventListener('loadedmetadata',listener);restores.clear();restoring=null;hls?.destroy();}};
 }

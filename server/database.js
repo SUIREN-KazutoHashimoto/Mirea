@@ -80,7 +80,7 @@ export function openDatabase(filename) {
         UPDATE schema_version SET version = 2;
       `));
     } finally { db.exec('PRAGMA foreign_keys = ON'); }
-  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,21,22,23].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
+  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,21,22,23,24].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
   if (version < 10) {
     // v10 adds EPUB while retaining v9's nullable uploader attribution.
     // Account deletion removes attribution, not another member's shared assets.
@@ -457,6 +457,26 @@ export function openDatabase(filename) {
     }
     db.exec('UPDATE schema_version SET version=23');
   });
+  db.exec(`CREATE TABLE IF NOT EXISTS diagnostic_batches(
+    id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    reports_json TEXT NOT NULL,report_count INTEGER NOT NULL,created_at INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS diagnostic_batches_created ON diagnostic_batches(created_at,id);
+    CREATE TABLE IF NOT EXISTS transfer_hidden(
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    upload_id TEXT NOT NULL REFERENCES upload_sessions(id) ON DELETE CASCADE,
+    hidden_at INTEGER NOT NULL,PRIMARY KEY(user_id,upload_id));
+    CREATE TRIGGER IF NOT EXISTS transfer_retried AFTER UPDATE OF state ON upload_sessions
+    WHEN NEW.state!=OLD.state BEGIN DELETE FROM transfer_hidden WHERE upload_id=NEW.id;END;
+    UPDATE schema_version SET version=24;`);
+  db.exec('CREATE TABLE IF NOT EXISTS job_timings(scope TEXT NOT NULL,id TEXT NOT NULL,started_at INTEGER,finished_at INTEGER,PRIMARY KEY(scope,id))');
+  for(const [table,scope,running]of [['upload_sessions','upload','uploading'],['admin_jobs','admin','running'],['media_tasks','media','running']])db.exec(`
+    CREATE TRIGGER IF NOT EXISTS ${table}_timing_insert AFTER INSERT ON ${table} BEGIN
+      INSERT OR REPLACE INTO job_timings(scope,id,started_at,finished_at) VALUES('${scope}',NEW.id,CASE WHEN NEW.state='${running}' THEN CAST(unixepoch('subsec')*1000 AS INTEGER) END,NULL);END;
+    CREATE TRIGGER IF NOT EXISTS ${table}_timing_state AFTER UPDATE OF state ON ${table} WHEN NEW.state!=OLD.state BEGIN
+      INSERT INTO job_timings(scope,id,started_at,finished_at) VALUES('${scope}',NEW.id,CASE WHEN NEW.state='${running}' THEN CAST(unixepoch('subsec')*1000 AS INTEGER) END,CASE WHEN NEW.state IN ('complete','failed','cancelled') THEN CAST(unixepoch('subsec')*1000 AS INTEGER) END)
+      ON CONFLICT(scope,id) DO UPDATE SET started_at=CASE WHEN NEW.state='${running}' THEN COALESCE(job_timings.started_at,excluded.started_at) ELSE job_timings.started_at END,finished_at=excluded.finished_at;END;
+    CREATE TRIGGER IF NOT EXISTS ${table}_timing_delete AFTER DELETE ON ${table} BEGIN DELETE FROM job_timings WHERE scope='${scope}' AND id=OLD.id;END;
+  `);
   if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Database foreign key validation failed');
   return db;
 }

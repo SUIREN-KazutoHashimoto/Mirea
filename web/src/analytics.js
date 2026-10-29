@@ -1,7 +1,7 @@
 import { NativePlayer,nativePlayerAvailable } from './native-player-bridge.js';
 import { ciphertextHash } from './download-core.js';
 import { getSession, getEndpoint, native } from './api.js';
-import { version } from '../../package.json' with {type:'json'};
+import { version } from './client-version.js';
 import { createViewRecorder, pageViewport } from './analytics-core.js';
 import { browserStore, createOutbox } from './analytics-outbox.js';
 

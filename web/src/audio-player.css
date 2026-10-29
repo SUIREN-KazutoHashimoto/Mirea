@@ -24,7 +24,7 @@
 .audio-player.audio-motion::before,.audio-player.audio-motion::after{animation-play-state:running}@keyframes audio-drift{0%{transform:translate(-12%,-8%) rotate(-9deg) scale(1.03)}50%{transform:translate(4%,10%) rotate(5deg) scale(1.13)}100%{transform:translate(12%,-5%) rotate(13deg) scale(1.06)}}@keyframes audio-flow{from{transform:translate(13%,8%) rotate(12deg) scale(1.15)}to{transform:translate(-13%,-10%) rotate(-14deg) scale(1.02)}}@media(prefers-reduced-motion:reduce){.audio-player::before,.audio-player::after{animation:none}}
 
 /* Keep artwork below visible chrome in short landscape windows too. */
-.audio-screen[data-chrome=visible] .audio-player{padding-top:var(--viewer-top-height,88px)}
+.audio-screen[data-chrome-pinned=true] .audio-player{padding-top:0}
 .player-control-row .player-background{font-size:12px;padding:6px 10px;line-height:1.3;min-height:40px}
 @media(max-height:450px){.audio-art img{max-height:var(--audio-art-height,120px);min-height:0;height:auto;object-fit:contain}.audio-art{grid-template-rows:minmax(0,1fr) minmax(0,1fr)}.audio-player .player-help{display:none}}
 @media(max-width:400px){.player-mode-controls{gap:6px}.player-mode-controls label,.player-mode-controls button{flex:1;min-width:0}.player-mode-controls select{width:100%;max-width:100%;font-size:12px}.player-mode-controls button{font-size:12px;padding:6px}}

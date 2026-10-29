@@ -7,6 +7,10 @@ export function createViewerScreen({ title, kind, onClose, doc = document }) {
   node.innerHTML = '<div class="viewer-top" data-viewer-chrome><header class="viewer-header"><button class="viewer-back" type="button" aria-label="ライブラリへ戻る">← <span>ライブラリ</span></button><div><small></small><h1></h1></div><button class="viewer-fullscreen icon-button" type="button" aria-label="全画面を切り替える">⛶</button></header><div class="viewer-meta"></div><div class="viewer-tools"></div></div><div class="viewer-body"></div><button class="viewer-chrome-toggle" type="button" aria-label="操作メニューを表示" aria-expanded="false">•••</button>';
   node.querySelector('h1').textContent = title; node.querySelector('small').textContent = kind === 'audio' ? 'MIREA / LISTEN' : kind === 'video' ? 'MIREA / WATCH' : 'MIREA / READ';
   let closed = false, minimized=false,mini,media,dockOptions,stopDockBinding; node.open = true;
+  node.dataset.chromePinned='false';
+  const pin=doc.createElement('button');pin.type='button';pin.className='viewer-pin icon-button';pin.setAttribute('aria-label','操作メニューを固定');pin.setAttribute('aria-pressed','false');pin.title='操作メニューを固定';pin.textContent='⌖';
+  node.querySelector('.viewer-fullscreen').before(pin);
+  pin.onclick=()=>{const pinned=node.dataset.chromePinned!=='true';node.dataset.chromePinned=String(pinned);pin.setAttribute('aria-pressed',String(pinned));pin.title=pinned?'操作メニューの固定を解除':'操作メニューを固定';pin.setAttribute('aria-label',pin.title);node.showChrome(true);node.dispatchEvent(new Event('viewer:layout'));};
   const previousOverflow = doc.body.style.overflow;
   const fullscreen = () => { const operation = doc.fullscreenElement ? doc.exitFullscreen?.() : node.requestFullscreen?.(); operation?.catch?.(() => {}); };
   let chromeTimer;
@@ -18,7 +22,7 @@ export function createViewerScreen({ title, kind, onClose, doc = document }) {
   node.showChrome = (visible = true) => {
     if (closed) return;
     clearTimeout(chromeTimer);
-    if (!visible && node.querySelector('[data-chrome-pinned="true"]')) return;
+    if (!visible && (node.dataset.chromePinned==='true'||node.querySelector('[data-chrome-pinned="true"]'))) return;
     node.dataset.chrome = visible ? 'visible' : 'hidden';
     toggle.setAttribute('aria-expanded', String(visible));
     toggle.setAttribute('aria-label', visible ? '操作メニューを隠す' : '操作メニューを表示');
@@ -36,6 +40,7 @@ export function createViewerScreen({ title, kind, onClose, doc = document }) {
     else if (!node.querySelector('[data-viewer-chrome]:focus-within')) node.showChrome(false);
   });
   const updateDock=()=>mini?.update({key:dockOptions?.key??title,id:dockOptions?.id,title,kind,playing:Boolean(media&&!media.paused),positionMs:(media?.currentTime||0)*1000,durationMs:(media?.duration||0)*1000});
+  node.setAsset=asset=>{title=asset.title;kind=asset.kind;node.setAttribute('aria-label',title);node.querySelector('.viewer-header h1').textContent=title;node.querySelector('.viewer-header small').textContent=kind==='audio'?'MIREA / LISTEN':kind==='video'?'MIREA / WATCH':'MIREA / READ';node.classList.toggle('audio-screen',kind==='audio');node.classList.toggle('video-screen',kind==='video');node.classList.toggle('book-screen',!['audio','video'].includes(kind));updateDock();};
   node.bindBackground=(element,options)=>{stopDockBinding?.();media=element;dockOptions=options;const events=['play','pause','timeupdate','durationchange','loadedmetadata','ended'];for(const name of events)element.addEventListener(name,updateDock);stopDockBinding=()=>{for(const name of events)element.removeEventListener(name,updateDock);};updateDock();};
   const restore=()=>{if(closed)return;minimized=false;node.isMinimized=false;node.style.display='';node.dispatchEvent(new Event('viewer:presentation'));mini?.dispose();mini=null;if(app)app.inert=true;doc.body.style.overflow='hidden';node.focus();};
   node.minimize = () => {

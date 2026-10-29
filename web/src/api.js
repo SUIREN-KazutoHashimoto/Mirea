@@ -1,4 +1,6 @@
 import {requestError,clearDiagnostics} from './error-diagnostics.js';
+import packageInfo from './client-version.js';
+import {compareVersions} from './version-compatibility.js';
 import { NativePlayer,nativePlayerAvailable,invalidateNativePlayback } from './native-player-bridge.js';
 import { Capacitor,registerPlugin } from '@capacitor/core';
 import {offlineVault,offlineIdentity,forgetOfflineIdentity} from './offline-vault.js';
@@ -17,6 +19,9 @@ export const native = Capacitor.isNativePlatform();
 let savedEndpoint;try{savedEndpoint=localStorage.getItem('mirea.server');}catch{}
 let endpoint = native ? (savedEndpoint || import.meta.env.VITE_API_URL || '') : '';
 let session,rememberChoice=true,authRevision=0;
+let compatibleEndpoint,compatibility={majorMismatch:false};
+function checkCompatibility(path){if(native&&compatibleEndpoint===endpoint&&compatibility.majorMismatch&&path!=='/config'&&!path.startsWith('/app-updates/')&&path!=='/auth/logout')throw Object.assign(new Error('サーバーとアプリのメジャーバージョンが異なります。アプリを更新するか、対応するサーバーを選択してください。'),{code:'APP_VERSION_INCOMPATIBLE'});}
+export const requireCompatibleServer=()=>checkCompatibility('/content');
 export const sessionRevision=()=>authRevision;
 export const isOfflineSession=()=>session?.offline===true;
 export async function markSessionOffline(){if(session&&await offlineIdentity(endpoint,session.user.id))session={...session,offline:true};}
@@ -94,7 +99,9 @@ export const absoluteUrl = path => `${endpoint}${path}`;
 export const authHeaders = () => ({ Authorization: `Bearer ${session?.token ?? ''}`,...(shelfUnlockValue()?{'X-Mirea-Shelf-Unlock':shelfUnlockValue()}:{}) });
 
 export async function api(path, options = {}) {
+  const recordErrors=options.diagnostics!==false;const {diagnostics,...requestOptions}=options;options=requestOptions;
   if (native && !endpoint) throw new Error('接続先のサーバーURLを設定してください。');
+  checkCompatibility(path);
   const token = session?.token,context=authRevision;
   if(session?.offline&&!token&&!path.startsWith('/auth/login')&&!path.startsWith('/auth/register')&&path!=='/config')throw new Error('オフラインです。接続後に自動同期します。');
   options.signal?.throwIfAborted();
@@ -106,23 +113,24 @@ export async function api(path, options = {}) {
       body: options.body ? JSON.stringify(options.body) : undefined,
       cache: 'no-store'
     });
-  } catch { options.signal?.throwIfAborted();throw requestError({error:'サーバーに接続できません。接続先とネットワークを確認してください。'},0,{network:true,record:context===authRevision}); }
+  } catch { options.signal?.throwIfAborted();throw requestError({error:'サーバーに接続できません。接続先とネットワークを確認してください。'},0,{network:true,record:recordErrors&&context===authRevision}); }
   options.signal?.throwIfAborted();
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     options.signal?.throwIfAborted();
-    if(response.status===423&&data.shelfUnlockRequired&&!options.shelfRetried){await unlockRequiredShelf(data.shelfUnlockRequired);if(context!==authRevision)throw Error('アカウントが変更されました。');return api(path,{...options,shelfRetried:true});}
-    const error = requestError(data,response.status,{record:context===authRevision});
+    if(response.status===423&&data.shelfUnlockRequired&&!options.shelfRetried&&recordErrors){await unlockRequiredShelf(data.shelfUnlockRequired);if(context!==authRevision)throw Error('アカウントが変更されました。');return api(path,{...options,shelfRetried:true});}
+    const error = requestError(data,response.status,{record:recordErrors&&context===authRevision});
     if (response.status === 401 && session && session.token === token && !path.startsWith('/auth/login')) {
       setSession(null);
       window.dispatchEvent(new Event('mirea:unauthorized'));
     }
     throw error;
   }
-  const result=response.status===204?null:await response.json();options.signal?.throwIfAborted();return result;
+  const result=response.status===204?null:await response.json();options.signal?.throwIfAborted();if(native&&path==='/config'){compatibleEndpoint=endpoint;compatibility=compareVersions(packageInfo.version,result?.version);window.dispatchEvent(new CustomEvent('mirea:server-version',{detail:{...compatibility,version:result?.version}}));}return result;
 }
 
 export async function authenticatedBlob(path, signal) {
+  checkCompatibility(path);
   const token = session?.token,context=authRevision;
   if(session?.offline&&!token)throw new Error('オフラインです。');
   const response = await fetch(absoluteUrl(path), { headers: authHeaders(), signal, cache: 'no-store' });
@@ -139,6 +147,7 @@ export async function authenticatedBlob(path, signal) {
 }
 
 export function upload(shelfId, files, title, onProgress, options) {
+  checkCompatibility('/uploads');
   const token = session?.token;
   const release = beginUpdateActivity();
   let task;

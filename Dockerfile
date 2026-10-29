@@ -6,6 +6,7 @@ RUN pnpm install --frozen-lockfile
 COPY web ./web
 COPY server/video-types.js ./server/video-types.js
 COPY server/audio-types.js ./server/audio-types.js
+COPY server/playlist-kind.js ./server/playlist-kind.js
 COPY server/name-rules.js ./server/name-rules.js
 COPY server/error-diagnostic-schema.js ./server/error-diagnostic-schema.js
 COPY vite.config.js ./
@@ -25,7 +26,7 @@ RUN gcc -std=c11 -O2 -Wall -Wextra -Werror -D_FORTIFY_SOURCE=2 -fstack-protector
 
 FROM node:24.19.0-bookworm-slim AS runtime
 ARG VCS_REF=unknown
-ARG VERSION=0.22.4-beta
+ARG VERSION=0.23.0-beta
 LABEL org.opencontainers.image.title="Mirea" \
       org.opencontainers.image.description="Shared video, audio and book library" \
       org.opencontainers.image.source="https://github.com/SUIREN-KazutoHashimoto/Mirea" \

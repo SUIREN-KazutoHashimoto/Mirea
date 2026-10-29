@@ -39,6 +39,17 @@ export function openSeriesManager({dialog,api,esc,shelves,initialShelfId,initial
       const children=rows.filter(s=>s.id!==id&&(!s.parentId||s.parentId===id)&&!isInSeries(rows,id,s.id));
       body.innerHTML=`<button class="text-button series-back" type="button">← シリーズを追加</button><form class="series-edit"><fieldset><label>シリーズ名<input name="title" maxlength="200" required value="${esc(detail.series.title)}"></label><label>説明<textarea name="description" maxlength="2000" rows="2">${esc(detail.series.description)}</textarea></label><label>親シリーズ<select name="parentId">${options(rows,detail.series.parentId,id)}</select></label><details class="series-child-picker" open><summary>子シリーズを追加・解除</summary><p class="muted">チェックしたシリーズを中に入れます。解除してもシリーズや作品は削除されません。</p>${children.map(s=>`<label class="series-child-choice"><input type="checkbox" data-child-series="${esc(s.id)}" ${s.parentId===id?'checked':''}>${esc(s.title)}</label>`).join('')||'<p class="muted">追加できるシリーズはありません。先にシリーズを作成してください。</p>'}</details><p class="muted">以下はこのシリーズに直接所属する作品です。別のシリーズの作品は保存時にここへ移動します。上から再生／閲覧する順で、子シリーズの作品とは別に管理します。最大1,000件。</p><label>作品の並び順<select class="series-order-mode"><option value="name">名前の昇順（追加・名前変更時も自動）</option><option value="manual">手動で指定</option></select></label><div class="series-order-tools"><button type="button" class="button secondary series-sort-name">名前の昇順にまとめて並べる</button></div><ol class="series-order"></ol><div class="series-add"><label>追加するアセット（複数選択）<select class="series-candidate" multiple size="6" aria-label="追加するアセット（複数選択）"></select></label><div><button class="text-button select-all-assets" type="button">すべて選択</button><button class="button secondary" type="button" id="series-add">選択した作品をまとめて追加</button></div></div><p class="form-error" role="alert" hidden></p><div class="modal-actions"><button class="text-button series-delete" type="button">シリーズを削除</button><button class="button primary" type="submit">シリーズを保存</button></div><button class="text-button series-reload" type="button">保存せず最新の内容を読み直す</button></fieldset></form>`;
       const form=body.querySelector('form'),order=body.querySelector('.series-order'),candidate=body.querySelector('.series-candidate');
+      const chosenAssets=new Set(),searchLabel=document.createElement('label'),assetSearch=document.createElement('input'),candidateCount=document.createElement('p');
+      searchLabel.textContent='追加する作品を検索';assetSearch.type='search';assetSearch.className='series-candidate-search';assetSearch.placeholder='タイトル・所属シリーズで検索';assetSearch.setAttribute('aria-label','追加するアセットを検索');searchLabel.append(assetSearch);candidate.parentElement.before(searchLabel);candidateCount.className='muted series-candidate-count';candidateCount.setAttribute('role','status');candidate.after(candidateCount);
+      const rememberCandidates=()=>{for(const option of candidate.options)if(option.selected)chosenAssets.add(option.value);else chosenAssets.delete(option.value);};
+      function renderCandidates(){
+        const included=new Set(entries.map(e=>e.assetId)),query=assetSearch.value.normalize('NFKC').toLocaleLowerCase();for(const id of chosenAssets)if(included.has(id))chosenAssets.delete(id);
+        const available=library.items.filter(item=>!item.pending&&!included.has(item.id)),matching=available.filter(item=>(item.title+' '+(item.series?.title??'')).normalize('NFKC').toLocaleLowerCase().includes(query)).sort((a,b)=>names.compare(a.title,b.title));
+        candidate.innerHTML=matching.slice(0,200).map(item=>`<option value="${item.id}" ${chosenAssets.has(item.id)?'selected':''}>${esc(item.title)}${item.series&&item.series.id!==id?' 【'+esc(item.series.title)+'から移動】':''} (${item.kind==='video'?'動画':item.kind==='audio'?'音声':'本'})</option>`).join('');
+        candidateCount.textContent=`${matching.length}件が一致 · 選択 ${chosenAssets.size}件${matching.length>200?'（先頭200件を表示。検索で絞り込めます）':''}`;body.querySelector('#series-add').disabled=!chosenAssets.size||entries.length>=1000;
+      }
+      candidate.onchange=()=>{rememberCandidates();renderCandidates();};assetSearch.oninput=()=>{rememberCandidates();renderCandidates();};
+      assetSearch.onkeydown=event=>{if(event.key==='Enter')event.preventDefault();};
       const mode=body.querySelector('.series-order-mode');mode.value=orderMode;mode.onchange=()=>{orderMode=mode.value;renderOrder();};body.querySelector('.series-sort-name').onclick=()=>{orderMode='name';mode.value=orderMode;renderOrder();};
       function renderOrder(){
         if(orderMode==='name')sortNames();
@@ -46,13 +57,11 @@ export function openSeriesManager({dialog,api,esc,shelves,initialShelfId,initial
         order.querySelectorAll('[data-label]').forEach(input=>input.oninput=()=>entries[Number(input.dataset.label)].label=input.value);
         order.querySelectorAll('[data-up],[data-down]').forEach(button=>button.onclick=()=>{orderMode='manual';mode.value=orderMode;const index=Number(button.dataset.up??button.dataset.down),target=index+(button.dataset.up===undefined?1:-1);[entries[index],entries[target]]=[entries[target],entries[index]];renderOrder();});
         order.querySelectorAll('[data-remove]').forEach(button=>button.onclick=()=>{entries.splice(Number(button.dataset.remove),1);renderOrder();});
-        const available=library.items.filter(item=>!item.pending&&!entries.some(e=>e.assetId===item.id));
-        candidate.innerHTML=available.map(item=>`<option value="${item.id}">${esc(item.title)}${item.series&&item.series.id!==id?' 【'+esc(item.series.title)+'から移動】':''} (${item.kind==='video'?'動画':item.kind==='audio'?'音声':'本'})</option>`).join('');
-        body.querySelector('#series-add').disabled=!available.length||entries.length>=1000;
+        renderCandidates();
       }
       renderOrder();
-      body.querySelector('.select-all-assets').onclick=()=>{for(const option of candidate.options)option.selected=true;};
-      body.querySelector('#series-add').onclick=()=>{try{entries=appendSeriesAssets(entries,[...candidate.selectedOptions].map(o=>o.value),assets);renderOrder();}catch(err){error(err);}};
+      body.querySelector('.select-all-assets').onclick=()=>{for(const option of candidate.options){option.selected=true;chosenAssets.add(option.value);}renderCandidates();};
+      body.querySelector('#series-add').onclick=()=>{try{rememberCandidates();entries=appendSeriesAssets(entries,[...chosenAssets],assets);chosenAssets.clear();renderOrder();}catch(err){error(err);}};
       body.querySelector('.series-back').onclick=list;body.querySelector('.series-reload').onclick=()=>edit(id);
       form.onsubmit=async e=>{
         e.preventDefault();const fieldset=form.querySelector('fieldset');fieldset.disabled=true;
@@ -69,25 +78,22 @@ export function openSeriesManager({dialog,api,esc,shelves,initialShelfId,initial
   if(initialSeriesId)edit(initialSeriesId);else list();return node;
 }
 
+import {setPlayerIcon} from './player-icons.js';
 const activeNavigations=new Set();
 export function seriesNativeState(active){for(const update of activeNavigations)update(active);}
 
-export function mountSeriesNavigation({node,body,item,api,esc,open,isCurrent,isActive=()=>!document.hidden,enabled=true,onEnabled=()=>{},beforeMove=async()=>{},order,onModes=()=>{}}){
-  const bar=document.createElement('nav');bar.className='series-reader-nav';bar.setAttribute('aria-label','シリーズ内の移動');bar.hidden=true;(node.querySelector('.viewer-meta')??node).append(bar);
+export function mountSeriesNavigation({node,body,meta,item,api,esc,open,isCurrent,isActive=()=>!document.hidden,enabled=true,onEnabled=()=>{},beforeMove=async()=>{},order,onModes=()=>{},loadContext=()=>api(`/items/${item.id}/series`),preload=()=>{}}){
+  const bar=document.createElement('nav');bar.className='series-reader-nav';bar.setAttribute('aria-label','シリーズ内の移動');bar.hidden=true;(meta??node.querySelector('.viewer-meta')??node).append(bar);
   const footer=document.createElement('div');footer.className='series-book-end';footer.hidden=true;
   const subscribers=new Set();let disposed=false,book=null,videoCleanup,signature='',pendingEnd,video,loopEpoch=0;
   const alive=()=>!disposed && node.isConnected && node.open && isCurrent();
   const backgroundCapable=['video','audio'].includes(item.kind);
   const active=()=>alive() && isActive() && (backgroundCapable || !document.hidden);
-  const core=createSeriesContinuation({assetId:item.id,enabled,order,loadContext:()=>api(`/items/${item.id}/series`),isActive:active,changed:render,
+  const core=createSeriesContinuation({assetId:item.id,enabled,order,loadContext,delayMs:250,isActive:active,changed:render,
     move:async(target,options,allowed)=>{
       await beforeMove();
       if(!active() || !allowed())return false;
-      return new Promise(resolve=>{
-        const background=Boolean(node.isMinimized);
-        node.addEventListener('close',()=>{if(isCurrent() && isActive() && (backgroundCapable || !document.hidden))open(target,{...options,playbackOrder:order,background:options.autoplay&&background});resolve();},{once:true});
-        node.close();
-      });
+      return open(target,{...options,playbackOrder:order,background:options.autoplay&&Boolean(node.isMinimized),reuseScreen:node});
     }
   });
   function render(state=core.state){
@@ -102,6 +108,7 @@ export function mountSeriesNavigation({node,body,item,api,esc,open,isCurrent,isA
         signature=key;
         bar.innerHTML=`<strong>${esc(series.title)}</strong><span>${currentIndex+1} / ${items.length} · ${esc(items[currentIndex].series.label)}</span><div><button class="button secondary series-prev">← 前のアセット</button><select aria-label="シリーズ内のアセット">${items.map((asset,index)=>`<option value="${esc(asset.id)}" ${asset.offlineUnavailable?'disabled':''} ${index===currentIndex?'selected':''}>${index+1}. ${esc(asset.series.label)} ${esc(asset.title)}</option>`).join('')}</select><button class="button secondary series-next">次のアセット →</button></div><div class="series-continuation"><label><input type="checkbox" class="series-continuous">連続再生・閲覧</label><span class="series-continuation-status" role="status"></span><button type="button" class="text-button series-cancel" hidden>自動移動を停止</button><button type="button" class="text-button series-now" hidden>今すぐ次へ</button></div>`;
         const details=document.createElement('details'),summary=document.createElement('summary');summary.append(bar.querySelector('strong'),bar.querySelector('span'));details.append(summary,...bar.querySelectorAll(':scope > div'));bar.append(details);
+        setPlayerIcon(bar.querySelector('.series-prev'),'previous','前の作品');setPlayerIcon(bar.querySelector('.series-next'),'next','次の作品');
         bar.querySelector('.series-prev').onclick=()=>core.navigate({direction:-1});
         bar.querySelector('.series-next').onclick=()=>core.navigate();
         bar.querySelector('select').onchange=e=>core.navigate({targetId:e.target.value});
@@ -123,7 +130,7 @@ export function mountSeriesNavigation({node,body,item,api,esc,open,isCurrent,isA
     const lastPage=book && (book.atEnd??book.page===book.total);
     footer.hidden=!(lastPage && enabled && context?.series);
     if(!footer.hidden){
-      if(!footer.isConnected)(node.querySelector('.viewer-meta')??body).append(footer);
+      if(!footer.isConnected)(meta??node.querySelector('.viewer-meta')??body).append(footer);
       footer.innerHTML=next?`<span>この本の最後のページです。次は「${esc(next.title)}」</span><button type="button" class="button secondary" ${canContinue && book.ready?'':'disabled'}>次のアセットへ読み進む</button>`:'<span>この本はシリーズの最後のアセットです。</span>';
       const button=footer.querySelector('button');if(button)button.onclick=()=>core.nextBook();
     }
@@ -135,14 +142,16 @@ export function mountSeriesNavigation({node,body,item,api,esc,open,isCurrent,isA
   document.addEventListener('visibilitychange',visibility);window.addEventListener('pagehide',suspend);activeNavigations.add(nativeState);
   const ready=(async()=>{
     try{
-      const context=await api(`/items/${item.id}/series`);
+      const context=await loadContext();
       if(!alive())return;
       core.setContext(context);
+      if(enabled&&!order?.modes.shuffle)preload(context?.items?.[context.currentIndex+1]??(order?.modes.repeat==='series'?context?.items?.[0]:null));
       if(pendingEnd?.ended && active())core.videoEnded();pendingEnd=null;
     }catch{if(alive())core.notify('シリーズ情報を確認できないため、連続移動は停止しています。');}
   })();
   return {
     ready,
+    preloadNext(){const context=core.state.context;if(enabled&&!order?.modes.shuffle)preload(context?.items?.[context.currentIndex+1]??(order?.modes.repeat==='series'?context?.items?.[0]:null));},
     get modeState(){return {...(order?.modes??{repeat:'off',shuffle:false}),hasSeries:Boolean(core.state.context?.series)};},
     setModes(value){if(!order)return;loopEpoch++;order.setModes(value);onModes(order.modes);onEnabled(true);core.setEnabled(true);},
     get canContinue(){return core.state.canContinue;},
@@ -153,11 +162,13 @@ export function mountSeriesNavigation({node,body,item,api,esc,open,isCurrent,isA
     cancel:()=>core.cancel(),
     bindVideo(element,{autoplay=false}={}){
       videoCleanup?.();video=element;
+      const ahead=()=>{if(Number.isFinite(video.duration)&&video.duration-video.currentTime<45)this.preloadNext();};video.addEventListener('timeupdate',ahead);
       const ended=async()=>{if(order?.modes.repeat==='one'&&core.state.enabled){const epoch=++loopEpoch;try{await beforeMove();if(epoch!==loopEpoch||!active()||order.modes.repeat!=='one'||!core.state.enabled)return;video.currentTime=0;await video.play();}catch{if(alive())core.notify('単体リピートを開始できません。再生ボタンで再開してください。');}return;}if(!core.state.context)pendingEnd=video;else core.videoEnded();};
       const cancel=()=>{loopEpoch++;pendingEnd=null;core.cancel();};
       const failure=()=>core.cancel('メディアのエラーにより連続再生を停止しました。');
-      videoCleanup=bindContinuationVideo(video,{autoplay,canAutoplay:()=>active(),onEnded:ended,onReset:cancel,onError:failure,
+      const unbind=bindContinuationVideo(video,{autoplay,canAutoplay:()=>active(),onEnded:ended,onReset:cancel,onError:failure,
         onBlocked:reason=>core.notify(reason==='policy'?'自動再生が制限されました。プレーヤーの再生ボタンを押してください。':'自動再生を停止しました。再生ボタンで開始してください。')});
+      videoCleanup=()=>{video.removeEventListener('timeupdate',ahead);unbind();};
     },
     dispose(){if(disposed)return;disposed=true;loopEpoch++;pendingEnd=null;core.dispose();videoCleanup?.();subscribers.clear();activeNavigations.delete(nativeState);document.removeEventListener('visibilitychange',visibility);window.removeEventListener('pagehide',suspend);}
   };

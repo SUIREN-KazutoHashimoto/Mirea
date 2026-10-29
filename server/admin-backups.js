@@ -10,7 +10,7 @@ import {encryptBackup} from './backup-archive.js';
 import {adminBody} from './admin.js';
 
 const TTL=24*3600000;
-export async function registerAdminBackups(app,{db,dataDir,mediaDir=dataDir,adminAccess:a,maintenance,options}){
+export async function registerAdminBackups(app,{db,dataDir,mediaDir=dataDir,adminAccess:a,maintenance,options,operationalSettings}){
   const directory=join(dataDir,'admin-backups');await mkdir(directory,{recursive:true,mode:0o700});
   const pathFor=id=>join(directory,id+'.mireabackup');
   const jobs=()=>db.prepare("SELECT id,kind,state,progress_json,error,created_at,updated_at,output_size FROM admin_jobs WHERE kind IN ('backup_metadata','backup_full') ORDER BY created_at DESC LIMIT 100").all();
@@ -41,7 +41,7 @@ export async function registerAdminBackups(app,{db,dataDir,mediaDir=dataDir,admi
       const configPath=options.backupConfigFile??join(PROJECT_ROOT,'.env');
       if(await lstat(configPath).catch(e=>{if(e.code==='ENOENT')return null;throw e;}))await add(configPath,'configuration/server.env');
       const metadata=Buffer.from(JSON.stringify({format:1,mode,createdAt:new Date().toISOString(),schema:db.prepare('SELECT version FROM schema_version').get().version,
-        settings:{allowRegistration:options.allowRegistration??process.env.ALLOW_REGISTRATION!=='false',analyticsEnabled:options.analyticsEnabled??process.env.ANALYTICS_ENABLED!=='false',serverAdminUserIds:options.serverAdminUserIds??process.env.SERVER_ADMIN_USER_IDS??'',maxUploadBytes:options.maxUploadBytes??process.env.MAX_UPLOAD_BYTES??2147483648},
+        settings:{...(operationalSettings?.value??{}),allowRegistration:options.allowRegistration??operationalSettings?.value.allowRegistration??process.env.ALLOW_REGISTRATION!=='false',analyticsEnabled:options.analyticsEnabled??operationalSettings?.value.analyticsEnabled??process.env.ANALYTICS_ENABLED!=='false',serverAdminUserIds:options.serverAdminUserIds??process.env.SERVER_ADMIN_USER_IDS??'',maxUploadBytes:options.maxUploadBytes??operationalSettings?.value.maxUploadBytes??process.env.MAX_UPLOAD_BYTES??2147483648},
         includesPersonalLogs:true,includesDownloadKey:true,mediaIncluded:mode==='full',storage:{separate:mediaDir!==dataDir,archiveLayout:'combined',restore:'Restore logical data/ tree into DATA_DIR; migrate media offline before enabling MEDIA_DIR'},
         files:files.map(file=>({name:file.name,size:file.size,mtimeMs:file.mtime})),
         excluded:['OS/runtime','TLS and CA private keys outside DATA_DIR','APK/update signing keys','other backup archives','maintenance helper configuration']},null,2));

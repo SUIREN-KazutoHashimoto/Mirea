@@ -16,7 +16,7 @@ public final class PlaybackApi implements AutoCloseable {
     public static final class Failure extends IOException {
         public final int status;
         Failure(int status){super("Playback API failed ("+status+")");this.status=status;}
-        public boolean denied(){return status==401||status==403||status==404||status==410;}
+        public boolean denied(){return status==401||status==403||status==404||status==410||status==423;}
     }
     public PlaybackApi(String origin,String token,String userId)throws Exception{
         this(origin,token,userId,"");
@@ -30,7 +30,9 @@ public final class PlaybackApi implements AutoCloseable {
         StringBuilder hex=new StringBuilder();for(byte b:digest)hex.append(String.format("%02x",b));partition=hex.toString();
     }
     public PlaybackApi fork()throws Exception{if(closed)throw new IOException("Closed context");return new PlaybackApi(origin,token,userId,shelfUnlock);}
+    boolean sameAuthorization(PlaybackApi other){return other!=null&&!closed&&!other.closed&&partition.equals(other.partition)&&token.equals(other.token)&&shelfUnlock.equals(other.shelfUnlock);}
     public PlaybackApi background()throws Exception{PlaybackApi copy=fork();copy.connectTimeout=2000;copy.readTimeout=2000;return copy;}
+    synchronized void promote(){connectTimeout=10000;readTimeout=15000;}
     public static boolean uuid(String value){return value!=null&&value.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");}
     public synchronized HttpURLConnection connection(String path,String method)throws IOException{
         if(closed||!safePath(path))throw new IOException("Playback context closed or invalid path");
@@ -40,6 +42,7 @@ public final class PlaybackApi implements AutoCloseable {
         if(path==null||!path.startsWith("/api/v1/")||path.contains("..")||path.contains("#")||path.contains("%")||path.contains("\\")||path.contains("\r")||path.contains("\n"))return false;
         if(!path.contains("?"))return path.matches("/api/v1/[A-Za-z0-9_/-]+");
         if(path.matches("/api/v1/items/[0-9a-f-]{36}/content\\?ticket=[A-Za-z0-9_-]{43}"))return true;
+        if(path.matches("/api/v1/playlists/[0-9a-f-]{36}/playback\\?assetId=[0-9a-f-]{36}"))return true;
         return path.matches("/api/v1/items/[0-9a-f-]{36}/(?:renditions/[0-9]{2,4}p/content|hls/(?:master\\.m3u8|[0-9]{2,4}p(?:\\.m3u8|-init\\.mp4|-[0-9]{5}\\.m4s)))\\?generation=(?:base|[0-9a-f-]{36})")||path.matches("/api/v1/items/[0-9a-f-]{36}/navigation/storyboard\\?revision=[0-9]{1,10}");
     }
     public JSONObject json(String path,String method,JSONObject body)throws Exception{
