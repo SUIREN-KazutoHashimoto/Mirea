@@ -49,7 +49,7 @@ const offline=await scenario({online:false});assert.equal(offline.requests,0);as
 const expired=await scenario({cached:false});assert.ok(expired.error);assert.notEqual(expired.session?.offline,true);assert.equal(expired.clears,0);
 for(const native of [true,false])for(const status of [401,403]){const denied=await scenario({native,status});assert.equal(denied.session,null);assert.equal(denied.session?.offline,undefined);}
 const loggedOut=await scenario({loggedOut:true});assert.equal(loggedOut.session,null);
-const [major,minor]=clientVersion.split('.').map(Number);
+const [major,minor]=clientVersion.version.split('.').map(Number);
 const nextMajor=await scenario({serverVersion:`${major+1}.0.0`});assert.equal(nextMajor.contentError?.code,'APP_VERSION_INCOMPATIBLE');assert.equal(nextMajor.contentRequests,0);assert.equal(nextMajor.versionEvents[0].majorMismatch,true);assert.equal(nextMajor.session.user.id,user.id);
 const newer=await scenario({serverVersion:`${major}.${minor+1}.0-beta`});assert.equal(newer.contentError,undefined);assert.equal(newer.contentRequests,1);assert.equal(newer.versionEvents[0].update,true);
 console.log(JSON.stringify({unreachableAndStalledBody:true,browserAndNative:true,offlineImmediate:true,denialDoesNotFallback:true,expiredGrantDenied:true,temporarySessionReconnect:true,rememberedCredentialsPreserved:true}));
