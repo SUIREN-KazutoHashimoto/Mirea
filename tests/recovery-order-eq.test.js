@@ -11,7 +11,9 @@ import {openDatabase,transaction} from '../server/database.js';
 import {orderSeriesItems} from '../server/series-order.js';
 import {PeakLimiter} from '../web/src/eq-limiter.js';
 import {EQ_FREQUENCIES,equalizerSettings} from '../web/src/equalizer.js';
-import {createVideoTranscoder} from '../server/video-transcode.js';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {ffmpegPath} from '../server/media.js';
 import sharp from 'sharp';
 import {makePdf,makeMp4} from './fixtures.js';
 const password='recovery-fixture-password';
@@ -72,14 +74,15 @@ test('phantom conversion state with no task is repaired, source playback tickets
 });
 
 test('individual transcode publishes canonical file and clears stale ingest readiness instead of leaving original-only playback',async t=>{
- const c=await setup(t),bytes=await makeMp4(join(c.dir,'retry.mp4'),{duration:.3}),id=await c.asset('Retry','video/mp4',bytes);await writeFile(join(c.dir,'originals',id),bytes);c.db.prepare("INSERT INTO media_ingest(asset_id,source_mime,source_filename,source_size,retain_original,canonical_ready,created_at) VALUES(?,'video/mp4','retry.mp4',?,1,0,1)").run(id,bytes.length);c.db.prepare("INSERT INTO media_tasks(id,asset_id,kind,state,created_at,updated_at) VALUES(?,?,'transcode','failed',1,1)").run(randomUUID(),id);
+ const c=await setup(t),bytes=await makeMp4(join(c.dir,'retry.mp4'),{duration:.3}),id=await c.asset('Retry','video/mp4',bytes);await writeFile(join(c.dir,'originals',id),bytes);c.db.prepare("INSERT INTO media_ingest(asset_id,source_mime,source_filename,source_size,retain_original,canonical_ready,metadata_json,created_at) VALUES(?,'video/mp4','retry.mp4',?,1,0,'{}',1)").run(id,bytes.length);c.db.prepare("INSERT INTO media_tasks(id,asset_id,kind,state,created_at,updated_at) VALUES(?,?,'transcode','failed',1,1)").run(randomUUID(),id);
  const r=await c.req('POST','/admin/assets/'+id+'/regenerate',{kind:'transcode',acknowledgeCost:true});assert.equal(r.statusCode,202,r.body);assert.equal((await c.wait(r.json().job.id)).state,'complete');assert.equal(c.db.prepare('SELECT canonical_ready FROM media_ingest WHERE asset_id=?').get(id).canonical_ready,1);assert.equal(c.db.prepare("SELECT state FROM media_tasks WHERE asset_id=? AND kind='transcode'").get(id).state,'complete');const ticket=(await c.req('POST','/items/'+id+'/playback-ticket')).json();assert(ticket.hlsUrl);assert.deepEqual(await readFile(join(c.dir,'originals',id)),bytes);
 });
 
 test('legacy audio with no task metadata is adopted and repaired from its existing media without requiring the original uploader to retain editor access',async t=>{
  const c=await setup(t),length=4800,bytes=Buffer.alloc(44+length*2);bytes.write('RIFF');bytes.writeUInt32LE(bytes.length-8,4);bytes.write('WAVEfmt ',8);bytes.writeUInt32LE(16,16);bytes.writeUInt16LE(1,20);bytes.writeUInt16LE(1,22);bytes.writeUInt32LE(16000,24);bytes.writeUInt32LE(32000,28);bytes.writeUInt16LE(2,32);bytes.writeUInt16LE(16,34);bytes.write('data',36);bytes.writeUInt32LE(length*2,40);for(let n=0;n<length;n++)bytes.writeInt16LE(Math.round(Math.sin(n*Math.PI*2*440/16000)*5000),44+n*2);
- const id=await c.asset('Legacy audio','audio/wav',bytes),uploader=(await c.req('POST','/auth/register',{name:'Former',email:'former@example.test',password},null)).json();c.db.prepare('UPDATE items SET uploaded_by=? WHERE id=?').run(uploader.user.id,id);
- const r=await c.req('POST','/admin/assets/repair-incomplete',{acknowledgeCost:true});assert.equal(r.statusCode,202,r.body);assert.equal(r.json().accepted,1);const job=c.db.prepare("SELECT id FROM admin_jobs WHERE kind='repair'").get();assert.equal((await c.wait(job.id)).state,'complete');assert.equal(c.db.prepare('SELECT canonical_ready FROM media_ingest WHERE asset_id=?').get(id).canonical_ready,1);assert(c.db.prepare('SELECT 1 FROM audio_assets WHERE item_id=?').get(id));assert.deepEqual(await readFile(join(c.dir,'originals',id)),bytes);assert.equal((await c.req('GET','/admin/assets/repair-preview')).json().count,0);
+ await writeFile(join(c.dir,'audio.wav'),bytes);await promisify(execFile)(ffmpegPath(),['-hide_banner','-loglevel','error','-y','-i',join(c.dir,'audio.wav'),'-c:a','aac',join(c.dir,'audio.m4a')],{windowsHide:true,timeout:15000});const encoded=await readFile(join(c.dir,'audio.m4a'));
+ const id=await c.asset('Legacy audio','audio/mp4',encoded),uploader=(await c.req('POST','/auth/register',{name:'Former',email:'former@example.test',password},null)).json();c.db.prepare('UPDATE items SET uploaded_by=? WHERE id=?').run(uploader.user.id,id);
+ const r=await c.req('POST','/admin/assets/repair-incomplete',{acknowledgeCost:true});assert.equal(r.statusCode,202,r.body);assert.equal(r.json().accepted,1);const job=c.db.prepare("SELECT id FROM admin_jobs WHERE kind='repair'").get();assert.equal((await c.wait(job.id)).state,'complete');assert.equal(c.db.prepare('SELECT canonical_ready FROM media_ingest WHERE asset_id=?').get(id).canonical_ready,1);assert(c.db.prepare('SELECT 1 FROM audio_assets WHERE item_id=?').get(id));assert.deepEqual(await readFile(join(c.dir,'originals',id)),encoded);assert.equal((await c.req('GET','/admin/assets/repair-preview')).json().count,0);
 });
 
 test('peak protection is transparent for quiet signals, linked across channels, bounded for all-band boosts and never silences sustained content',()=>{
