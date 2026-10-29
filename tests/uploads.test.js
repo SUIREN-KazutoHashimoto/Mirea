@@ -22,7 +22,7 @@ test('image uploads advertise 100 MiB, accept its exact boundary, reject larger 
  const rejected=await ctx.request('POST','/shelves/'+ctx.shelfId+'/uploads',ctx.owner,{title:'Too large',files:[{filename:'too-large.png',mime:'image/png',size:limit+1}]});assert.equal(rejected.statusCode,413,rejected.body);
  const {validateUploadPlan}=await import('../web/src/upload-batch.js'),job=size=>[{key:'page',title:'Boundary',imageBook:true,files:[{name:'page.png',type:'image/png',size}]}];assert.equal(validateUploadPlan(job(limit),config),'');assert.match(validateUploadPlan(job(limit+1),config),/画像1枚/);
  const image=await sharp({create:{width:4096,height:3000,channels:3,background:'#506fa0'}}).png({compressionLevel:0}).toBuffer();assert(image.length>25*1024*1024&&image.length<=limit);
- const upload=await ctx.start([{filename:'large-page.png',mime:'image/png',size:image.length}]);await ctx.send(upload,[image]);assert.equal((await ctx.request('POST','/uploads/'+upload.id+'/complete',ctx.owner)).statusCode,202);const complete=await ctx.wait(upload.id);assert.equal(complete.item.kind,'image-book');assert.equal(complete.item.pageCount,1);assert.deepEqual(await readFile(join(ctx.dataDir,'books',upload.id,'1.png')),image);
+ const upload=await ctx.start([{filename:'large-page.png',mime:'image/png',size:image.length}]);await ctx.send(upload,[image]);assert.equal((await ctx.request('POST','/uploads/'+upload.id+'/complete',ctx.owner)).statusCode,202);const complete=await ctx.wait(upload.id);assert.equal(complete.item.kind,'image-book');assert.equal(complete.item.pageCount,1);assert.deepEqual(await readFile(join(ctx.dataDir,'uploads','books',upload.id,'1.png')),image);
 });
 
 async function setup(t, overrides = {}) {
