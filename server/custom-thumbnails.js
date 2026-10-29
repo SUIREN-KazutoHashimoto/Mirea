@@ -8,6 +8,18 @@ import {httpError} from './security.js';
 
 const uuid={type:'string',pattern:'^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$'};
 const properties={assetIds:{type:'array',items:uuid,minItems:1,maxItems:1000,uniqueItems:true},seriesId:uuid};
+// A repeated-group base64 regex exhausts V8's regexp stack on valid multi-MiB
+// covers. Scan once with constant stack space, preserving strict alphabet and
+// padding rules. The request schema and decoded byte limit still bound size.
+export function validThumbnailBase64(value){
+  if(typeof value!=='string'||!value.length||value.length%4!==0)return false;
+  let end=value.length;if(value[end-1]==='=')end--;if(value[end-1]==='=')end--;
+  for(let i=0;i<end;i++){
+    const c=value.charCodeAt(i);
+    if(!(c>=65&&c<=90||c>=97&&c<=122||c>=48&&c<=57||c===43||c===47))return false;
+  }
+  return true;
+}
 export function customThumbnail(db,thumbnailDir,id){
   const row=db.prepare('SELECT image_id FROM thumbnail_overrides WHERE asset_id=?').get(id);
   return row?join(thumbnailDir,'custom',row.image_id+'.jpg'):null;
@@ -74,7 +86,7 @@ export async function registerCustomThumbnails(app,{db,thumbnailDir,media,authen
   app.post('/api/v1/thumbnails/custom',{...auth,bodyLimit:8*1024*1024,schema:schema(true)},async req=>{
     targets(req);
     const {base64}=req.body.image;
-    if(!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(base64))throw httpError(400,'画像データが不正です。');
+    if(!validThumbnailBase64(base64))throw httpError(400,'画像データが不正です。');
     const bytes=Buffer.from(base64,'base64');if(!bytes.length||bytes.length>5*1024*1024)throw httpError(413,'画像は5MB以下にしてください。');
     const id=randomUUID(),source=join(directory,id+'.input'),temp=join(directory,id+'.part.jpg'),final=join(directory,id+'.jpg');let committed=false;
     try{
