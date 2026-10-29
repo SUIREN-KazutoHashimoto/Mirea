@@ -88,7 +88,7 @@ form.append('title', '画像から作った本');
 for (const image of orderedImages) form.append('file', image);
 ```
 
-画像の本は送信順をページ順として固定し、サーバーでは並べ替えません。1枚から1,000枚まで、画像1枚100 MiB・4,000万画素以下、全画像の合計は `maxUploadBytes` 以下です。全ページをデコードして検査した上で、元のJPEG・PNG・WebPを再圧縮せず保持します。ページの配信には元のMIMEを使い、返す寸法はEXIFの向きを反映した表示寸法です。動くWebPなどは受け付けません。
+画像の本は送信順をページ順として固定し、サーバーでは並べ替えません。1枚から1,000枚まで、画像1枚100 MiB以下（画素数の上限なし）、全画像の合計は `maxUploadBytes` 以下です。全ページをデコードして検査した上で、元のJPEG・PNG・WebPを再圧縮せず保持します。ページの配信には元のMIMEを使い、返す寸法はEXIFの向きを反映した表示寸法です。動くWebPなどは受け付けません。
 
 `item` には `kind`（pdf / video / image-book）、`pageCount`、`thumbnailUrl` を含みます。画像の本の `mimeType` は `application/vnd.mirea.image-book`。サムネイルも各ページもBearer認証が必要です。Webでは認証付きfetchからBlob URLを作って表示します。本棚の共有解除後はサムネイル・ページ一覧・各ページすべての新規取得を拒否します。画像の本は `/content` と動画用チケットでは取得できません。
 

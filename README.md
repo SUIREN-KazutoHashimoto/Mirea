@@ -2,7 +2,7 @@
 
 ブラウザー版は[PWAとしてインストール](docs/pwa.md)できます。ログイン画面・設定に案内があり、既存の暗号化ダウンロードと7日間のオフライン視聴を利用します。
 
-**0.22.1beta**（内部 `0.22.1-beta`、Android versionCode 46）。[配布リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.22.1beta)、[変更履歴・制限](RELEASE.md)、[音質・転送・所有者の再生成](docs/player-transfers.md)、[プレイヤーの点検・修正](docs/player-reliability.md)、[転送・メディア処理・プライベート本棚](docs/upload-pipeline.md)、[設定・ジョブ・転送の画面改善](docs/management-ui.md)、[エラー詳細とプライバシー](docs/error-diagnostics.md)、[TrueNAS 25.04.2.6 Custom App手順](docs/truenas-25.04.md)を参照してください。既存の専用APK署名を維持し、旧デバッグ署名からの初回移行だけは手動です。
+**0.22.2beta**（内部 `0.22.2-beta`、Android versionCode 47）。[配布リリース](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.22.2beta)、[変更履歴・制限](RELEASE.md)、[音質・転送・所有者の再生成](docs/player-transfers.md)、[プレイヤーの点検・修正](docs/player-reliability.md)、[転送・メディア処理・プライベート本棚](docs/upload-pipeline.md)、[設定・ジョブ・転送の画面改善](docs/management-ui.md)、[エラー詳細とプライバシー](docs/error-diagnostics.md)、[TrueNAS 25.04.2.6 Custom App手順](docs/truenas-25.04.md)を参照してください。既存の専用APK署名を維持し、旧デバッグ署名からの初回移行だけは手動です。
 
 コンテナは[stable／betaの追従タグ](docs/container-channels.md)に対応します。`beta`は最新の公開済みベータ版、`stable`は最初の正式版公開後から最新正式版を指します。版番号タグ・Gitタグは固定し、更新前のバックアップとNAS側での更新操作は引き続き必要です。
 
@@ -81,7 +81,7 @@ TrueNAS 25.04.2.6では[専用手順と推奨値](docs/truenas-25.04.md)、[Cust
 
 **自前サーバー（直接起動／コンテナ）＋Cloudflare Tunnel／Proxyを使う場合**は、[Cloudflare運用メモ](docs/cloudflare.md) を確認してください。分割転送は実装済みですが、公開Tunnelを含む通常のCDN経路には動画・大容量ファイルの利用条件があり、分割だけで本番配信の条件を満たすわけではありません。Stream等の対応サービス、DNS-onlyの別配信経路、または私設ネットワークなどの選択が必要です。
 
-画像の本は、画像をまとめて選択して1回アップロードすると1冊になります。選択時にファイル名の数字順（1、2、10）に並べ、登録前に矢印でページ順を変更できます。先頭ページが表紙です。1冊500枚まで、画像1枚25 MiBまで・4,000万画素まで、合計サイズはアップロード上限以内です。静止画を対象とし、ページの元画像は再圧縮せずそのまま保存します。EXIFの向きは閲覧・サムネイル生成時に反映します。
+画像の本は、画像をまとめて選択して1回アップロードすると1冊になります。選択時にファイル名の数字順（1、2、10）に並べ、登録前に矢印でページ順を変更できます。先頭ページが表紙です。1冊1,000枚まで、画像1枚100 MiBまで（画素数の上限なし）、合計サイズはアップロード上限以内です。静止画を対象とし、ページの元画像は再圧縮せずそのまま保存します。EXIFの向きは閲覧・サムネイル生成時に反映します。
 
 サムネイルの生成を完了してから登録します。読み取れない画像・PDF・動画、暗号化PDFなどは登録を拒否し、途中の本を残しません。更新前に登録済みのPDF・動画のサムネイルは、初回表示時に生成・保存されます。
 
