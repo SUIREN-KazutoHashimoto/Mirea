@@ -4,6 +4,7 @@ import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
 import {repository,registryImage,releaseVersion,newestPublishedRelease,validatePromotion,validateChannelAdvance} from './container-channel-policy.mjs';
+import {imageAccept,platformImageDescriptor,verifyTestedImageIdentity} from './container-image-policy.mjs';
 
 const {GITHUB_ACTIONS,GITHUB_EVENT_NAME,GITHUB_REPOSITORY,GITHUB_EVENT_PATH,GH_TOKEN}=process.env;
 assert(GITHUB_ACTIONS==='true'&&GITHUB_REPOSITORY===repository&&GH_TOKEN&&['release','workflow_dispatch'].includes(GITHUB_EVENT_NAME),'Unexpected channel publication context');
@@ -35,20 +36,24 @@ const path=repository.toLowerCase();
 // HTTPS; it is never stored, passed as a CLI argument, or printed.
 const access=await request('https://ghcr.io/token?service=ghcr.io&scope=repository:'+path+':pull,push',{headers:{authorization:'Basic '+Buffer.from(repository.split('/')[0]+':'+GH_TOKEN).toString('base64')}});
 const registryToken=(await access.json()).token;assert(registryToken,'Registry authorization failed');
-const accept='application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json';
+const accept=imageAccept;
 async function registry(part,{missing=false,blob=false}={}){
  let r=await fetch('https://ghcr.io/v2/'+path+part,{headers:{authorization:'Bearer '+registryToken,accept},redirect:'manual',signal:AbortSignal.timeout(30000)});
  if(blob&&[301,302,307,308].includes(r.status)){const target=new URL(r.headers.get('location'));assert(target.protocol==='https:'&&['pkg-containers.githubusercontent.com','ghcr.io'].includes(target.hostname));r=await request(target);}
  if(missing&&r.status===404)return null;assert.equal(r.status,200,'Registry read failed');const b=Buffer.from(await r.arrayBuffer());assert(b.length<1024*1024,'Registry metadata too large');return {bytes:b,type:r.headers.get('content-type')?.split(';')[0],digest:r.headers.get('docker-content-digest')};
 }
 const manifest=await registry('/manifests/'+plan.digestReference.split('@')[1]);
-assert.equal(hash(manifest.bytes),plan.digestReference.split('@')[1]);assert.equal(manifest.digest,hash(manifest.bytes));assert(accept.split(', ').includes(manifest.type),'Only the exact single-platform tested manifest may be promoted');
-const image=JSON.parse(manifest.bytes);assert.equal(image.config.digest,plan.imageId);
-const config=await registry('/blobs/'+image.config.digest,{blob:true});assert.equal(hash(config.bytes),plan.imageId);const c=JSON.parse(config.bytes);
+assert.equal(hash(manifest.bytes),plan.digestReference.split('@')[1]);
+async function inspectImage(root,testedId){
+ assert.equal(root.digest,hash(root.bytes),'Image digest header mismatch');let image=JSON.parse(root.bytes);const descriptor=platformImageDescriptor(image,root.type);
+ if(descriptor){const child=await registry('/manifests/'+descriptor.digest);assert.equal(child.type,descriptor.mediaType);assert.equal(child.bytes.length,descriptor.size);assert.equal(hash(child.bytes),descriptor.digest);assert.equal(child.digest,descriptor.digest);image=JSON.parse(child.bytes);assert.equal(platformImageDescriptor(image,child.type),null,'A runnable image must not be an index');}
+ const config=await registry('/blobs/'+image.config.digest,{blob:true});assert.equal(hash(config.bytes),image.config.digest);if(testedId)verifyTestedImageIdentity(testedId,hash(root.bytes),image.config.digest);return JSON.parse(config.bytes);
+}
+const c=await inspectImage(manifest,plan.imageId);
 assert(c.os==='linux'&&c.architecture==='amd64'&&c.config.User==='1000:1000');assert.equal(c.config.Labels['org.opencontainers.image.revision'],commit);assert.equal(c.config.Labels['org.opencontainers.image.version'],plan.version);
 const channelManifest='/manifests/'+plan.channel;
 const old=await registry(channelManifest,{missing:true});
-if(old){const oldManifest=JSON.parse(old.bytes),oldConfig=await registry('/blobs/'+oldManifest.config.digest,{blob:true});assert.equal(hash(oldConfig.bytes),oldManifest.config.digest);const previous=JSON.parse(oldConfig.bytes);validateChannelAdvance({version:previous.config.Labels['org.opencontainers.image.version'],digestReference:registryImage+'@'+hash(old.bytes)},plan);}
+if(old){const previous=await inspectImage(old);validateChannelAdvance({version:previous.config.Labels['org.opencontainers.image.version'],digestReference:registryImage+'@'+hash(old.bytes)},plan);}
 await request('https://ghcr.io/v2/'+path+channelManifest,{method:'PUT',headers:{authorization:'Bearer '+registryToken,'content-type':manifest.type},body:manifest.bytes});
 const checked=await registry(channelManifest);assert.deepEqual(checked.bytes,manifest.bytes);assert.equal(checked.digest,hash(manifest.bytes));
 console.log(JSON.stringify({success:true,...plan,publicRelease:release.html_url,exactTestedManifestPromoted:true,automaticNasRestart:false}));
