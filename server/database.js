@@ -438,7 +438,7 @@ export function openDatabase(filename) {
     CREATE TABLE IF NOT EXISTS shelf_challenges(challenge TEXT PRIMARY KEY,session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,shelf_id TEXT NOT NULL REFERENCES shelves(id) ON DELETE CASCADE,key_id TEXT NOT NULL,expires_at INTEGER NOT NULL);
     UPDATE schema_version SET version=21;
   `));
-  if(version<22)transaction(db,()=>db.exec(`
+  transaction(db,()=>db.exec(`
     CREATE TABLE IF NOT EXISTS upload_queue(
       id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       shelf_id TEXT NOT NULL REFERENCES shelves(id) ON DELETE CASCADE,

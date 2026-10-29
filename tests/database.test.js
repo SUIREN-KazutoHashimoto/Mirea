@@ -6,6 +6,15 @@ import { join, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { openDatabase } from '../server/database.js';
 
+test('schema22 remains current across repeated opens and preserves registered transfer metadata',async()=>{
+  const folder=await mkdtemp(join(tmpdir(),'mirea-transfer-migration-')),filename=join(folder,'migration.sqlite');let db=openDatabase(filename);
+  try{
+    db.exec("INSERT INTO users VALUES('user','transfer@example.test','Existing','hash',1);INSERT INTO shelves(id,name,description,created_at) VALUES('shelf','Existing','',1);INSERT INTO memberships VALUES('shelf','user','owner');DROP TABLE upload_queue;UPDATE schema_version SET version=21;");db.close();db=openDatabase(filename);
+    assert.equal(db.prepare('SELECT version FROM schema_version').get().version,22);db.prepare("INSERT INTO upload_queue VALUES('queued','user','shelf',NULL,'Preserve','application/pdf',100,1,9999999999999,NULL)").run();const before=db.prepare('SELECT * FROM upload_queue').all();
+    for(let n=0;n<3;n++){db.close();db=openDatabase(filename);assert.equal(db.prepare('SELECT version FROM schema_version').get().version,22);assert.deepEqual(db.prepare('SELECT * FROM upload_queue').all(),before);assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);}
+  }finally{db.close();await rm(folder,{recursive:true,force:true});}
+});
+
 test('real v11 MIME migration keeps all child rows, video metadata, keys and series guards; audio metadata cascades',async()=>{
   const folder=await mkdtemp(join(tmpdir(),'mirea-audio-migration-')),filename=join(folder,'migration.sqlite');let db=openDatabase(filename);
   try{
