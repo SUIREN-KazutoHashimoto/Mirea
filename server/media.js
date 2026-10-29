@@ -18,7 +18,7 @@ export const IMAGE_BOOK_MIME = 'application/vnd.mirea.image-book';
 export const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 export const imageExtension = mime => ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' })[mime];
 export const MAX_BOOK_PAGES = 1000;
-export const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+export const MAX_IMAGE_BYTES = 100 * 1024 * 1024;
 export const PREVIEW_SECONDS = 10;
 export const MAX_PREVIEW_BYTES = 2 * 1024 * 1024;
 const runFile = promisify(execFile);
