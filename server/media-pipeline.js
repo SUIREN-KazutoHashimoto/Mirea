@@ -9,6 +9,7 @@ import {moveStorage} from './storage-move.js';
 import {removeItemDirectory} from './media.js';
 import {probeVideo} from './video-transcode.js';
 import {selectVideoSource} from './media-source.js';
+import {videoMetadata} from './video-stream.js';
 import {regularMedia,assessAssetRecovery} from './media-recovery.js';
 import {probeAudio,audioThumbnail} from './audio-transcode.js';
 import {thumbnailWebp} from './thumbnail-webp.js';
@@ -56,6 +57,7 @@ export async function createMediaPipeline(app,context){
  async function execute(row){
   const source=ingest(row.asset_id);if(!source)return;const asset=authorize(row.asset_id),raw=join(originalDir,asset.id),work=join(stagingDir,asset.id,row.id);
   const check=()=>{if(task(row.id)?.state!=='running')throw httpError(409,'ジョブはキャンセルされています。');return authorize(asset.id);};await mkdir(work,{recursive:true,mode:0o700});
+  let newGeneration;
   try{
    if(row.kind==='thumbnail'){
     if(customThumbnail(db,thumbnailDir,asset.id)){
@@ -75,11 +77,11 @@ export async function createMediaPipeline(app,context){
     const video=source.source_mime.startsWith('video/');
     const metadata=await(video?videoTranscoder:audioTranscoder).convert(raw,work,{authorize:check,report:value=>report(row,value),thumbnail:false});check();
     let path;
-    if(video){for(const name of metadata.renditions.flatMap(r=>[r.quality+'.mp4',...r.files]))await syncFile(join(work,name));await syncDirectory(work);await mkdir(join(videoDir,asset.id),{recursive:true,mode:0o700});const final=join(videoDir,asset.id,row.id);await removeItemDirectory(join(videoDir,asset.id),row.id);await moveStorage(work,final,{authorize:check});metadata.generation=row.id;metadata.originalFilename=source.source_filename;path=join(final,metadata.renditions[0].quality+'.mp4');}
+    if(video){for(const name of metadata.renditions.flatMap(r=>[r.quality+'.mp4',...r.files]))await syncFile(join(work,name));await syncDirectory(work);await mkdir(join(videoDir,asset.id),{recursive:true,mode:0o700});newGeneration=randomUUID();const final=join(videoDir,asset.id,newGeneration);await moveStorage(work,final,{authorize:check});metadata.generation=newGeneration;metadata.originalFilename=source.source_filename;path=join(final,metadata.renditions[0].quality+'.mp4');}
     else{metadata.originalFilename=source.source_filename;path=join(work,'audio.m4a');}
     await canonical(path,asset.id,row.id);check();
     transaction(db,()=>{
-     if(video){db.prepare('INSERT INTO video_assets VALUES(?,?,?) ON CONFLICT(item_id) DO UPDATE SET metadata_json=excluded.metadata_json,original_retained=excluded.original_retained').run(asset.id,JSON.stringify(metadata),source.retain_original);db.prepare('INSERT OR REPLACE INTO video_generations VALUES(?,?,?,?)').run(asset.id,row.id,JSON.stringify(metadata),Date.now());}
+     if(video){const previous=videoMetadata(db,asset.id);if(previous){db.prepare('INSERT OR IGNORE INTO video_generations VALUES(?,?,?,?)').run(asset.id,previous.generation??'base',JSON.stringify(previous),Date.now());db.prepare('INSERT OR IGNORE INTO playback_generations SELECT token_hash,? FROM playback_tickets WHERE item_id=?').run(previous.generation??'base',asset.id);}db.prepare('INSERT INTO video_assets VALUES(?,?,?) ON CONFLICT(item_id) DO UPDATE SET metadata_json=excluded.metadata_json,original_retained=excluded.original_retained').run(asset.id,JSON.stringify(metadata),source.retain_original);db.prepare('INSERT INTO video_generations VALUES(?,?,?,?)').run(asset.id,newGeneration,JSON.stringify(metadata),Date.now());}
      else db.prepare('INSERT INTO audio_assets VALUES(?,?,?) ON CONFLICT(item_id) DO UPDATE SET metadata_json=excluded.metadata_json,original_retained=excluded.original_retained').run(asset.id,JSON.stringify(metadata),source.retain_original);
      db.prepare('UPDATE items SET mime_type=?,filename=?,size=? WHERE id=?').run(video?'video/mp4':'audio/mp4',source.source_filename.replace(/\.[^.]+$/,'')+(video?'.mp4':'.m4a'),video?metadata.renditions[0].size:metadata.size,asset.id);
      db.prepare('UPDATE media_ingest SET canonical_ready=1 WHERE asset_id=?').run(asset.id);
@@ -89,7 +91,7 @@ export async function createMediaPipeline(app,context){
     await media.preview(join(uploadDir,asset.id),path,'video/mp4',{startSeconds:anchor});if(!(await stat(path)).size)throw Error('Empty generated preview');const preview=await probeVideo(path);if(preview.video.codec_name!=='h264'||preview.audio||preview.duration>10.5)throw Error('Invalid generated preview');check();
     await moveStorage(path,join(previewDir,asset.id+'.mp4'),{authorize:check});recordVideoPreview(db,asset.id,anchor);
    }
-  }finally{await removeItemDirectory(join(stagingDir,asset.id),row.id);}
+  }finally{if(newGeneration&&!db.prepare('SELECT 1 FROM video_generations WHERE item_id=? AND generation=?').get(asset.id,newGeneration))await removeItemDirectory(join(videoDir,asset.id),newGeneration);await removeItemDirectory(join(stagingDir,asset.id),row.id);}
  }
  const readyTasks=db.prepare(`SELECT t.* FROM media_tasks t LEFT JOIN media_tasks p ON p.asset_id=t.asset_id AND p.kind=CASE t.kind WHEN 'transcode' THEN 'thumbnail' WHEN 'preview' THEN 'transcode' END
   WHERE t.kind=? AND t.state='queued' AND (t.kind='thumbnail' OR p.id IS NULL OR p.state NOT IN ('queued','running'))
