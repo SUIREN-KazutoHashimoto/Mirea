@@ -4,29 +4,30 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import sharp from 'sharp';
-import { readFile } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 
 sharp.cache(false);
 sharp.concurrency(1);
 
 const { source, destination, mode } = workerData;
-const imageOptions = { limitInputPixels: 40_000_000, failOn: 'warning' };
+// Image uploads are limited by encoded file size, not dimensions (owner-approved
+// policy). Preserve strict decoding and the separate worker/time/concurrency limits.
+const imageOptions = { limitInputPixels: false, failOn: 'warning' };
 try {
   if (mode === 'epub-thumbnail') {
     const { compileEpub } = await import('./epub.js');
     parentPort.postMessage(await compileEpub(source,destination,workerData.bundlePath));
   } else if (mode === 'validate-image') {
-    const input = await readFile(source);
-    const metadata = await sharp(input, imageOptions).metadata();
+    const metadata = await sharp(source, imageOptions).metadata();
     if (!['jpeg', 'png', 'webp'].includes(metadata.format) || (metadata.pages ?? 1) > 1) {
       throw new Error('JPEG・PNG・WebPの静止画像を選択してください。');
     }
     // Fully decode for integrity checking, but preserve original page bytes and quality.
-    await sharp(input, imageOptions).stats();
+    await sharp(source, imageOptions).stats();
     const swap = [5, 6, 7, 8].includes(metadata.orientation);
-    parentPort.postMessage({ width: swap ? metadata.height : metadata.width, height: swap ? metadata.width : metadata.height, size: input.byteLength });
+    parentPort.postMessage({ width: swap ? metadata.height : metadata.width, height: swap ? metadata.width : metadata.height, size: (await stat(source)).size });
   } else if (mode === 'image-thumbnail') {
-    await sharp(await readFile(source), imageOptions).rotate().flatten({ background: '#ffffff' })
+    await sharp(source, imageOptions).rotate().flatten({ background: '#ffffff' })
       .resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true })
       .jpeg({ quality: 82 }).toFile(destination);
     parentPort.postMessage({ pageCount: 1 });

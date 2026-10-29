@@ -23,6 +23,13 @@ async function setup(t){
  c.image={mime:'image/png',base64:(await sharp({create:{width:120,height:80,channels:4,background:'#7744ffaa'}}).png().toBuffer()).toString('base64')};
  return c;
 }
+test('high-resolution custom covers regenerate from their preserved original without a pixel-count restriction',async t=>{
+ const c=await setup(t),original=await sharp({create:{width:5120,height:8192,channels:3,background:'#3a6080'}}).png().toBuffer();assert(original.length<5*1024*1024);
+ const response=await c.req('POST','/thumbnails/custom',c.owner,{assetIds:[c.one],image:{mime:'image/png',base64:original.toString('base64')}});assert.equal(response.statusCode,200,response.body);
+ const selected=c.db.prepare('SELECT image_id FROM thumbnail_overrides WHERE asset_id=?').get(c.one),base=join(c.dataDir,'thumbnails','custom',selected.image_id);
+ await unlink(base+'.jpg');await unlink(base+'.webp');await ensureCustomThumbnail(c.db,join(c.dataDir,'thumbnails'),createMediaProcessor(),c.one,{force:true});
+ assert.deepEqual(await readFile(base+'.input'),original);const metadata=await sharp(base+'.webp').metadata();assert.equal(metadata.format,'webp');assert.equal(metadata.width,640);assert.equal(metadata.height,1024);
+});
 test('custom thumbnails enforce ACL, validate decoded static images, update bulk atomically and preserve auto-generated originals',async t=>{
  const c=await setup(t),body={assetIds:[c.one,c.two],image:c.image};
  assert.equal((await c.req('POST','/thumbnails/custom',c.viewer,body)).statusCode,403);

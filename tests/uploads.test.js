@@ -15,6 +15,20 @@ import {uploadErrorMessage} from '../server/upload-errors.js';
 const pdf = makePdf();
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
+test('high-resolution image pages below 100 MiB publish in all supported formats and keep their originals',async t=>{
+ const ctx=await setup(t,{maxUploadBytes:100*1024*1024,chunkSize:1024*1024});
+ for(const [format,mime,extension] of [['png','image/png','png'],['jpeg','image/jpeg','jpg'],['webp','image/webp','webp']]){
+  const width=5120,height=8192,image=await sharp({create:{width,height,channels:3,background:'#506fa0'}})[format]().toBuffer();
+  assert(width*height>40_000_000);assert(image.length<20*1024*1024);
+  const upload=await ctx.start([{filename:'page.'+extension,mime,size:image.length}]);await ctx.send(upload,[image]);
+  const accepted=await ctx.request('POST','/uploads/'+upload.id+'/complete',ctx.owner);assert.equal(accepted.statusCode,202,accepted.body);
+  const complete=await ctx.wait(upload.id);assert.equal(complete.item.kind,'image-book');assert.equal(complete.item.pageCount,1);
+  assert.deepEqual(await readFile(join(ctx.dataDir,'uploads','books',upload.id,'1.'+extension)),image);
+  const cover=await ctx.request('GET','/items/'+upload.id+'/thumbnail',ctx.owner);assert.equal(cover.statusCode,200,cover.body);
+  const metadata=await sharp(cover.rawPayload).metadata();assert.equal(metadata.format,'webp');assert.equal(metadata.width,640);assert.equal(metadata.height,1024);
+ }
+});
+
 test('image uploads advertise 100 MiB, accept its exact boundary, reject larger pages and preserve a real image over the old 25 MiB limit',async t=>{
  const limit=100*1024*1024,ctx=await setup(t,{maxUploadBytes:256*1024*1024,chunkSize:1024*1024});
  const config=(await ctx.request('GET','/config')).json();assert.equal(config.maxImageBytes,limit);
