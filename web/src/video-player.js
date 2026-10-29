@@ -40,6 +40,7 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
   modeSelect.onchange=()=>playback?.setModes({repeat:modeSelect.value});shuffleButton.onclick=()=>playback?.setModes({shuffle:!playback?.modeState.shuffle});const stopModes=playback?.subscribe(updateModes);updateModes();
   const video = root.querySelector('video,audio'), seek = root.querySelector('.player-seek'), volume = root.querySelector('.player-volume'), center = root.querySelector('.player-center');
   const stopEqualizer=mountEqualizer(root,video,{doc});
+  root.dispatchEvent(new CustomEvent('viewer:player-ready',{bubbles:true}));
   video.controls = false;video.muted=playbackPreferences.muted;video.volume=playbackPreferences.volume;video.playbackRate=playbackPreferences.rate;
   const listeners = []; let disposed = false, timer, clickTimer, scrubbing = false, hasHeatmap = false,navigation;
   const listen = (target, event, fn, options) => { target.addEventListener(event, fn, options); listeners.push(() => target.removeEventListener(event, fn, options)); };

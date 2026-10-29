@@ -49,7 +49,8 @@ export function mountErrorDiagnostics({dialog}){
     // An existing confirmation dialog stays in control: never replace it or
     // unexpectedly open another modal. Put the explicit detail action inside.
     const modal=[...document.querySelectorAll('dialog[open]:not(.diagnostic-modal)')].at(-1);
-    const viewer=document.querySelector('.viewer-screen'),controls=viewer?.querySelector('.player-mode-controls,.viewer-header');
+    const viewer=document.querySelector('.viewer-screen'),controls=viewer?.querySelector('.player-mode-controls')??viewer?.querySelector('.viewer-header');
+    for(const launcher of launchers)if(launcher.classList.contains('diagnostic-inline')&&launcher.parentElement!==controls){launcher.remove();launchers.delete(launcher);}
     for(const parent of [document.body,...(modal?[modal]:[]),...(controls?[controls]:[])]){
       if([...launchers].some(node=>node.parentElement===parent))continue;
       const launcher=button('エラーの詳細を見る',()=>{if(current?.isConnected)return;current=openErrorDiagnostics(dialog);});launcher.classList.add('diagnostic-launcher');launcher.classList.add(parent===document.body?'diagnostic-floating':parent===controls?'diagnostic-inline':'diagnostic-dialog-action');
@@ -59,8 +60,9 @@ export function mountErrorDiagnostics({dialog}){
   listeners.add(update);
   const unhandled=event=>{if(event.reason?.name==='AbortError'||event.error?.name==='AbortError')return;recordClientError(event.reason??event.error);};
   window.addEventListener('unhandledrejection',unhandled);window.addEventListener('error',unhandled);
+  window.addEventListener('viewer:player-ready',update);
   // Viewers/dialogs are direct children. Observe only that boundary, avoiding
   // work for playback frames, progress updates or changing thumbnail colors.
   const observer=new MutationObserver(update);observer.observe(document.body,{childList:true});
-  update();return ()=>{observer.disconnect();listeners.delete(update);window.removeEventListener('unhandledrejection',unhandled);window.removeEventListener('error',unhandled);for(const node of launchers)node.remove();};
+  update();return ()=>{observer.disconnect();listeners.delete(update);window.removeEventListener('viewer:player-ready',update);window.removeEventListener('unhandledrejection',unhandled);window.removeEventListener('error',unhandled);for(const node of launchers)node.remove();};
 }
