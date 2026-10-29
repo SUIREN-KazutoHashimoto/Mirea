@@ -101,6 +101,7 @@ export async function registerAdminJobs(app,context) {
           await commitCanonical(item,metadata,id,authorize);
         }else if(row.kind==='thumbnail'&&customThumbnail(db,thumbnailDir,item.id)){
           await ensureCustomThumbnail(db,thumbnailDir,media,item.id,{force:true,authorize});
+          db.prepare('UPDATE items SET thumbnail_ready=1 WHERE id=?').run(item.id);
         }else{
           const first=item.mime_type===IMAGE_BOOK_MIME?db.prepare('SELECT mime_type FROM image_pages WHERE item_id=? AND page_number=1').get(item.id):null;
           let source=first?join(booksDir,item.id,'1.'+imageExtension(first.mime_type)):join(uploadDir,item.id);if(isAudio(item.mime_type)){const raw=join(originalDir,item.id),info=await lstat(raw).catch(error=>{if(error.code!=='ENOENT')throw error;return null;});if(info?.isFile()&&!info.isSymbolicLink())source=raw;}
@@ -154,8 +155,8 @@ export async function registerAdminJobs(app,context) {
   const auth={onRequest:async req=>a.requireAdmin(req)};
   const ownerAuth={onRequest:async req=>context.authenticate(req)};
   const ownItem=req=>context.findItem(req.params.id,req.user.id);
-  app.get('/api/v1/admin/assets/repair-preview',auth,async()=>{
-    const result=await recoveryCandidates(context);return {count:result.assets.length,busy:result.busy,healthy:result.healthy,assets:result.assets.slice(0,100)};
+  app.get('/api/v1/admin/assets/repair-preview',auth,async req=>{
+    const result=await recoveryCandidates(context);a.requireAdmin(req);return {count:result.assets.length,busy:result.busy,healthy:result.healthy,assets:result.assets.slice(0,100)};
   });
   app.post('/api/v1/admin/assets/repair-incomplete',{...auth,config:{rateLimit:context.rateLimit===false?false:{max:2,timeWindow:'1 minute'}},schema:{body:retryBody()}},async(req,reply)=>{
     if(maintenance.locked)throw httpError(409,'保守処理中です。');const result=await recoveryCandidates(context);a.requireAdmin(req);if(maintenance.locked)throw httpError(409,'保守処理中です。');let accepted=0,skipped=result.busy;

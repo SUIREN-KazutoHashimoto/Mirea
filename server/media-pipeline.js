@@ -60,6 +60,7 @@ export async function createMediaPipeline(app,context){
    if(row.kind==='thumbnail'){
     if(customThumbnail(db,thumbnailDir,asset.id)){
      await ensureCustomThumbnail(db,thumbnailDir,media,asset.id,{force:true,authorize:check});
+     db.prepare('UPDATE items SET thumbnail_ready=1 WHERE id=?').run(asset.id);
      if(source.source_mime.startsWith('video/')&&!db.prepare('SELECT 1 FROM video_thumbnail_state WHERE asset_id=?').get(asset.id)){const duration=JSON.parse(source.metadata_json).duration;recordVideoThumbnail(db,asset.id,duration<1?0:duration*(.4+Math.random()*.2));}
     }
     else{
@@ -91,7 +92,9 @@ export async function createMediaPipeline(app,context){
   }finally{await removeItemDirectory(join(stagingDir,asset.id),row.id);}
  }
  const readyTasks=db.prepare(`SELECT t.* FROM media_tasks t LEFT JOIN media_tasks p ON p.asset_id=t.asset_id AND p.kind=CASE t.kind WHEN 'transcode' THEN 'thumbnail' WHEN 'preview' THEN 'transcode' END
-  WHERE t.kind=? AND t.state='queued' AND (t.kind='thumbnail' OR p.id IS NULL OR p.state NOT IN ('queued','running')) ORDER BY t.created_at,t.id LIMIT ?`);
+  WHERE t.kind=? AND t.state='queued' AND (t.kind='thumbnail' OR p.id IS NULL OR p.state NOT IN ('queued','running'))
+  AND (t.kind!='preview' OR NOT EXISTS(SELECT 1 FROM media_tasks cover WHERE cover.asset_id=t.asset_id AND cover.kind='thumbnail' AND cover.state IN ('queued','running')))
+  ORDER BY t.created_at,t.id LIMIT ?`);
  const failedPreviews=db.prepare("SELECT t.id,t.asset_id FROM media_tasks t JOIN media_tasks p ON p.asset_id=t.asset_id AND p.kind='transcode' WHERE t.kind='preview' AND t.state='queued' AND p.state IN ('failed','cancelled')");
  function pump(){
   if(closing||pumping)return;pumping=true;
