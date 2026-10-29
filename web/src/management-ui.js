@@ -1,5 +1,13 @@
 export function progressPercent(value){const n=Number(value);return Number.isFinite(n)?Math.max(0,Math.min(100,Math.round(n))):0;}
 export function displayTime(value){const n=Number(value);return Number.isFinite(n)&&n>0&&n<=8640000000000000?new Date(n).toLocaleString(undefined,{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'—';}
+export function executionTiming({createdAt,startedAt,finishedAt,updatedAt,state,percent},now=Date.now()){
+  const start=Number(startedAt??createdAt),terminal=['complete','failed','cancelled','paused'].includes(state),end=terminal?Number(finishedAt??updatedAt):now;
+  if(terminal&&!Number.isFinite(end))return '経過時間の記録なし';
+  if(!Number.isFinite(start)||start<=0)return '';
+  const elapsed=Math.max(0,end-start),seconds=Math.floor(elapsed/1000),duration=seconds>=3600?`${Math.floor(seconds/3600)}時間${Math.floor(seconds%3600/60)}分`:seconds>=60?`${Math.floor(seconds/60)}分${seconds%60}秒`:`${seconds}秒`;
+  const progress=Number(percent),remaining=progress>0&&progress<100&&elapsed>=5000?elapsed*(100-progress)/progress:null;
+  return `経過 ${duration}`+(terminal?'':state==='queued'?' · 開始待ち':state==='processing'?' · 終了予想は処理の進捗から算出します':remaining!==null?` · 終了予想 ${displayTime(now+remaining)}`:' · 終了予想を計算中');
+}
 
 // Progress polling must not discard focus, expanded details or scroll position.
 export function keyedRenderer(container,{key,create,update,after=null}){

@@ -19,6 +19,11 @@ import static org.junit.Assert.*;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk=35)
 public class PlaybackApiTest {
+    @Test public void playlistPlaybackAllowsOnlyAnExactAssetQuery(){
+        String route="/api/v1/playlists/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/playback?assetId=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        assertTrue(PlaybackApi.safePath(route));for(String suffix:new String[]{"&token=secret","#fragment","/other","%2f"})assertFalse(PlaybackApi.safePath(route+suffix));assertFalse(PlaybackApi.safePath(route.replace("assetId=","redirect=")));assertFalse(PlaybackApi.safePath(route.replace("/playlists/","/../playlists/")));
+    }
+    @Test public void aReachableLockedPrivateShelfIsNeverTreatedAsAnOfflineConnectionFailure(){assertTrue(new PlaybackApi.Failure(423).denied());assertFalse(new PlaybackApi.Failure(503).denied());}
     /** Only the test transport is HTTP/loopback. Production context still requires HTTPS. */
     private static final class Endpoint implements AutoCloseable {
         final ServerSocket server;final Thread worker;final JSONObject reply;volatile String method,type,length;volatile byte[] body;

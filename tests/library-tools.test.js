@@ -24,7 +24,11 @@ test('personal playlists span authorized shelves, retain order after restart, hi
  assert.equal((await req('PUT','/playlists/'+p.id,a,{revision:p.revision,title:p.title,assetIds:[two,one]})).statusCode,200);
  assert.equal((await req('PUT','/playlists/'+p.id,a,{revision:p.revision,title:p.title,assetIds:[one]})).statusCode,409);
  p=(await req('GET','/playlists',a)).json().playlists[0];assert.deepEqual(p.assetIds,[two,one]);
+ const video=randomUUID();db.prepare("INSERT INTO items(id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at) VALUES(?,?,?,'fixture.mp4','video/mp4',1,?,1)").run(video,s1,'Video',a.user.id);assert.equal(p.kind,'book');
+ const mixed=await req('PUT','/playlists/'+p.id,a,{revision:p.revision,title:p.title,assetIds:[two,one,video]});assert.equal(mixed.statusCode,422,mixed.body);const preserved=(await req('GET','/playlists',a)).json().playlists[0];assert.deepEqual(preserved.assetIds,p.assetIds);assert.equal(preserved.revision,p.revision);
+ const timed=(await req('POST','/playlists',a,{title:'Video queue'})).json().playlist;assert.equal((await req('PUT','/playlists/'+timed.id,a,{revision:timed.revision,title:timed.title,assetIds:[video]})).statusCode,200);const context=await req('GET',`/playlists/${timed.id}/playback?assetId=${video}`,a);assert.equal(context.statusCode,200,context.body);assert.equal(context.json().series.playlist,true);assert.equal(context.json().items[0].id,video);assert.equal((await req('GET',`/playlists/${timed.id}/playback?assetId=${video}`,b)).statusCode,404);assert.equal((await req('GET',`/playlists/${timed.id}/playback?assetId=${one}`,a)).statusCode,404);assert.equal((await req('GET',`/playlists/${p.id}/playback?assetId=${one}`,a)).statusCode,422);
  assert.equal((await req('PUT','/playlists/'+p.id,b,{revision:p.revision,title:'stolen',assetIds:[two]})).statusCode,404);
+ assert.equal((await req('DELETE','/playlists/'+timed.id,a,{revision:timed.revision+1})).statusCode,204);
  assert.deepEqual((await req('GET','/playlists',b)).json().playlists,[]);assert.equal((await req('GET','/playlists',null)).statusCode,401);
  assert.equal((await req('PUT','/playlists/'+p.id,a,{revision:p.revision,title:p.title,assetIds:[one,one]})).statusCode,400);
  await app.close();app=await createApp({dataDir,rateLimit:false});assert.deepEqual((await req('GET','/playlists',a)).json().playlists[0].assetIds,[two,one]);
@@ -33,7 +37,7 @@ test('personal playlists span authorized shelves, retain order after restart, hi
  const cache=normalizeCatalog(catalog,a.user.id);assert.deepEqual(cache.playlists[0].assetIds,[one]);
  assert.equal((await req('PUT','/playlists/'+p.id,a,{revision:p.revision,title:p.title,assetIds:[two]})).statusCode,404);
  const count=db.prepare('SELECT COUNT(*) n FROM items').get().n;assert.equal((await req('DELETE','/playlists/'+p.id,a,{revision:p.revision})).statusCode,204);assert.equal(db.prepare('SELECT COUNT(*) n FROM items').get().n,count);
- assert.equal(db.prepare('SELECT version FROM schema_version').get().version,23);assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
+ assert.equal(db.prepare('SELECT version FROM schema_version').get().version,24);assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
 });
 test('sorting is numeric/stable in both directions, size/progress work and preferences survive unavailable storage',()=>{
  const a={id:'a',title:'Track 2',createdAt:2,size:20,progress:{updatedAt:50}},b={id:'b',title:'Track 10',createdAt:1,size:10,progress:{completed:true,updatedAt:100}};

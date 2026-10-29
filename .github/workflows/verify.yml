@@ -54,6 +54,7 @@ jobs:
           path: |
             .local/ui-checks
             .local/player-ui-checks
+            .local/workspace-ui-checks
           retention-days: 7
   container:
     if: github.event_name == 'push' || github.event_name == 'pull_request'

@@ -4,6 +4,12 @@
 .collection-view-controls select{width:auto;min-height:36px;font-size:12px;max-width:210px;padding:6px 28px 6px 10px}
 .item-grid[data-layout="grid2"]{grid-template-columns:repeat(2,minmax(0,1fr))}
 .item-grid[data-layout="grid3"]{grid-template-columns:repeat(3,minmax(0,1fr))}
+.item-grid[data-layout="grid5"]{grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}
+.item-grid[data-layout="grid5"] .card-art{height:auto;min-height:0;aspect-ratio:1}
+.item-grid[data-layout="grid5"] .card-content{padding:10px;min-width:0}
+.item-grid[data-layout="grid5"] .card-content h3{font-size:12px;overflow-wrap:anywhere}
+.item-grid[data-layout="grid5"] .card-meta{flex-wrap:wrap;font-size:10px}
+.item-grid[data-layout="grid5"] .card-shelf,.item-grid[data-layout="grid5"] .card-progress{font-size:10px}
 .item-grid[data-layout="list"]{grid-template-columns:minmax(0,1fr)}
 .item-grid[data-layout="list"] .card-open{display:grid;grid-template-columns:120px minmax(0,1fr);align-items:center}
 .item-grid[data-layout="list"] .card-art{aspect-ratio:1;width:120px;height:120px;margin:0;border-radius:10px}
@@ -24,6 +30,10 @@
  .collection-view-controls select{width:100%;max-width:100%;min-height:36px;font-size:11px}
  .compact-library .item-grid[data-layout="grid2"]{grid-template-columns:repeat(2,minmax(0,1fr))}
  .compact-library .item-grid[data-layout="grid3"]{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+ .item-grid[data-layout="grid5"],.compact-library .item-grid[data-layout="grid5"]{grid-template-columns:repeat(5,minmax(0,1fr));gap:6px}
+ .item-grid[data-layout="grid5"] .card-content{padding:6px}
+ .item-grid[data-layout="grid5"] .card-art{margin:3px}
+ .item-grid[data-layout="grid5"] .card-content h3{font-size:10px;line-height:1.4}
  .compact-library .item-grid[data-layout="list"]{grid-template-columns:minmax(0,1fr)}
  .item-grid[data-layout="grid3"] .card-content{padding:8px}
  .item-grid[data-layout="grid3"] .card-content h3{font-size:11px;line-height:1.5}

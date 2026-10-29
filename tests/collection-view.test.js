@@ -10,6 +10,7 @@ test('2/3-column or list and full/compact preferences are independent, bounded a
  assert.deepEqual(loadCollectionView(storage),{layout:'grid2',details:'full'});
  saveCollectionView({layout:'grid3',details:'compact',arbitrary:'discard'},storage);assert.deepEqual(loadCollectionView(storage),{layout:'grid3',details:'compact'});
  assert.deepEqual(normalizeCollectionView({layout:'bad',details:'bad'}),{layout:'grid2',details:'full'});
+ saveCollectionView({layout:'grid5',details:'compact'},storage);assert.deepEqual(loadCollectionView(storage),{layout:'grid5',details:'compact'});saveCollectionView({layout:'grid3',details:'compact'},storage);
  const bad={getItem(){throw Error();},setItem(){throw Error();}};assert.equal(loadCollectionView(bad).layout,'grid2');assert.equal(saveCollectionView({layout:'list',details:'full'},bad).layout,'list');
  const controls={};const container={set innerHTML(_){controls['.collection-layout']={};controls['.collection-details']={};},querySelector:s=>controls[s]},grid={dataset:{}};let changes=0;
  mountCollectionView({container,grid,storage,onChanged:()=>changes++});assert.equal(grid.dataset.layout,'grid3');

@@ -15,7 +15,7 @@ export function createBookChrome(container, { kind, total, onError = () => {} })
     <footer class="book-footer"><div class="book-page-controls"><button class="icon-button previous" type="button" aria-label="前のページ">←</button><label><input class="page-input" type="number" min="1" value="1" aria-label="ページ番号"><span class="page-total">/ ${total || '…'}</span></label><button class="icon-button next" type="button" aria-label="次のページ">→</button><output class="book-percent">0%</output></div><label class="book-scrubber"><span class="sr-only">本の進行度からページを選択</span><input type="range" min="1" max="${total || 1}" value="1" step="1" disabled></label><p class="book-reading-hint">ページの端をタップ・左右にスワイプして読み進める</p></footer>`;
   const stage = container.querySelector('.book-stage'), panel = container.querySelector('.book-directory-panel'), directory = container.querySelector('.book-directory'), direction = container.querySelector('.book-direction'), slider = container.querySelector('.book-scrubber input');
   const zoom = container.querySelector('.book-zoom'), screen = container.closest('.viewer-screen');
-  screen?.querySelector('.viewer-tools').append(container.querySelector('.book-toolbar'));
+  (container.assetTools??screen?.querySelector('.viewer-tools'))?.append(container.querySelector('.book-toolbar'));
   container.querySelector('.book-footer').setAttribute('data-viewer-chrome', '');
   let state = { page: 1, total: total || 1, ready: false }, handlers = {}, disposed = false, pointer, lastSwipe = 0;
   const pointers = new Set();

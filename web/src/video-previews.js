@@ -83,7 +83,7 @@ export function mountVideoPreviews(root, {
     entry.label.className = 'video-preview-label';
     entry.label.setAttribute('aria-hidden', 'true');
     entry.label.textContent = 'プレビュー準備中…';
-    cover.append(entry.label);
+    (cover.closest?.('.card-open')?.querySelector('.card-content')??cover).append(entry.label);
     cover.classList.add('preview-loading');
     try {
       const deadline = Date.now() + pollLimit;

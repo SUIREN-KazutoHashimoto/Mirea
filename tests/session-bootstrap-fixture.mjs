@@ -4,23 +4,26 @@ import assert from 'node:assert/strict';
 import {createLoginStore} from '../web/src/session-store.js';
 import {connectionBudget} from '../web/src/connection-budget.js';
 import {requestError,clearDiagnostics} from '../web/src/error-diagnostics.js';
+import clientVersion from '../web/src/client-version.js';
+import {compareVersions} from '../web/src/version-compatibility.js';
 const source=await readFile(new URL('../web/src/api.js',import.meta.url),'utf8'),origin='https://mirea.test',user={id:'owner',name:'Owner',email:'owner@test'},saved={user,token:'a'.repeat(43),expiresAt:Date.now()+86400000};
-async function scenario({native=true,cached=true,online=true,status,bodyDelay=false,loggedOut=false,temporarySession=false,reconnect=false}={}){
-  let clears=0,requests=0,connected=false;const storage=new Map(),window=new EventTarget();
+async function scenario({native=true,cached=true,online=true,status,bodyDelay=false,loggedOut=false,temporarySession=false,reconnect=false,serverVersion}={}){
+  let clears=0,requests=0,connected=Boolean(serverVersion);const storage=new Map(),window=new EventTarget(),versionEvents=[];window.addEventListener('mirea:server-version',event=>versionEvents.push(event.detail));
   if(temporarySession)storage.set('mirea.session:web',JSON.stringify({origin:'',remember:false,session:saved}));
   const secure={load:async()=>({session:JSON.stringify(saved)}),clear:async()=>{clears++;},save:async()=>{}};
   const vault={loggedOut:async()=>loggedOut,setLoggedOut:async()=>{},forget:async()=>{},saveIdentity:async()=>{}};
   const fetch=async(path,{signal}={})=>{
     requests++;signal?.throwIfAborted();
-    if(connected)return path.endsWith('/auth/me')?new Response(JSON.stringify({user})):new Response('{}',{status:401});
+    if(connected){if(path.endsWith('/auth/me'))return new Response(JSON.stringify({user}));if(serverVersion&&path.endsWith('/config'))return new Response(JSON.stringify({version:serverVersion}));if(serverVersion)return new Response('{}');return new Response('{}',{status:401});}
     if(status)return new Response(JSON.stringify({error:'denied'}),{status});
     const pending=()=>new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}));
     if(bodyDelay)return {ok:true,status:200,json:pending};
     return pending();
   };
-  const context=createContext({fetch,console,AbortSignal,AbortController,setTimeout,clearTimeout,URL,Response,TextEncoder,crypto,Event,window,location:{origin},localStorage:{getItem:()=>origin,setItem:()=>{}},sessionStorage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)}});
+  const context=createContext({fetch,console,AbortSignal,AbortController,setTimeout,clearTimeout,URL,Response,TextEncoder,crypto,Event,CustomEvent,window,location:{origin},localStorage:{getItem:()=>origin,setItem:()=>{}},sessionStorage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)}});
   const exports={
     './error-diagnostics.js':{requestError,clearDiagnostics},
+    './client-version.js':{default:clientVersion},'./version-compatibility.js':{compareVersions},
     './native-transfers.js':{nativeTransfersAvailable:()=>native,nativeUpload:()=>{},configureNativeTransfers:()=>{},invalidateTransfers:()=>{}},
     './download-core.js':{ciphertextHash:async()=> 'fixture-partition'},'./transfer-manager.js':{stopTransfers:()=>{},clearTransferRecords:()=>{}},
     './private-shelves.js':{clearShelfUnlocks:()=>{},shelfUnlockValue:()=>'',unlockRequiredShelf:async()=>{}},
@@ -35,7 +38,8 @@ async function scenario({native=true,cached=true,online=true,status,bodyDelay=fa
   const budget=connectionBudget({ms:35,online}),start=performance.now();let error;
   try{await module.namespace.initializeSession({signal:budget.signal});}catch(e){error=e;}finally{budget.dispose();}
   const elapsed=performance.now()-start;if(reconnect){connected=true;await module.namespace.reconnectSession({signal:AbortSignal.timeout(300)});}
-  return {session:module.namespace.getSession(),error,clears,requests,elapsed};
+  let contentError,contentRequests;if(serverVersion){await module.namespace.api('/config');contentRequests=requests;try{await module.namespace.api('/shelves');}catch(error){contentError=error;}contentRequests=requests-contentRequests;}
+  return {session:module.namespace.getSession(),error,clears,requests,elapsed,contentError,contentRequests,versionEvents};
 }
 for(const native of [true,false])for(const bodyDelay of [false,true]){
   const result=await scenario({native,bodyDelay});assert.equal(result.error,undefined);assert.equal(result.session.offline,true);assert.equal(result.session.user.id,user.id);assert.equal(result.session.token,native?saved.token:'');assert.equal(result.clears,0);assert.ok(result.elapsed<600);
@@ -45,4 +49,7 @@ const offline=await scenario({online:false});assert.equal(offline.requests,0);as
 const expired=await scenario({cached:false});assert.ok(expired.error);assert.notEqual(expired.session?.offline,true);assert.equal(expired.clears,0);
 for(const native of [true,false])for(const status of [401,403]){const denied=await scenario({native,status});assert.equal(denied.session,null);assert.equal(denied.session?.offline,undefined);}
 const loggedOut=await scenario({loggedOut:true});assert.equal(loggedOut.session,null);
+const [major,minor]=clientVersion.version.split('.').map(Number);
+const nextMajor=await scenario({serverVersion:`${major+1}.0.0`});assert.equal(nextMajor.contentError?.code,'APP_VERSION_INCOMPATIBLE');assert.equal(nextMajor.contentRequests,0);assert.equal(nextMajor.versionEvents[0].majorMismatch,true);assert.equal(nextMajor.session.user.id,user.id);
+const newer=await scenario({serverVersion:`${major}.${minor+1}.0-beta`});assert.equal(newer.contentError,undefined);assert.equal(newer.contentRequests,1);assert.equal(newer.versionEvents[0].update,true);
 console.log(JSON.stringify({unreachableAndStalledBody:true,browserAndNative:true,offlineImmediate:true,denialDoesNotFallback:true,expiredGrantDenied:true,temporarySessionReconnect:true,rememberedCredentialsPreserved:true}));

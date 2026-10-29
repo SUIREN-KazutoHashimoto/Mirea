@@ -21,16 +21,20 @@ final class AdaptivePlayback {
     final ExoPlayer player;
     private final JSONArray qualities;
     private final DefaultTrackSelector selector;
+    private Events events;private boolean announced;
     AdaptivePlayback(Context context,PlaybackApi api,String id,String generation,String contentPath,long contentSize,JSONArray qualities,Events events){
+        this(context,api,id,generation,contentPath,contentSize,qualities,events,false);
+    }
+    AdaptivePlayback(Context context,PlaybackApi api,String id,String generation,String contentPath,long contentSize,JSONArray qualities,Events callbacks,boolean preload){
+        this.events=callbacks;
         this.qualities=qualities;
         selector=new DefaultTrackSelector(context);
         DefaultLoadControl buffers=new DefaultLoadControl.Builder().setBufferDurationsMs(60000,180000,750,1500)
-            .setTargetBufferBytes(bufferBytes(Runtime.getRuntime().maxMemory())).setPrioritizeTimeOverSizeThresholds(false).setBackBuffer(10000,true).build();
+            .setTargetBufferBytes(bufferBytes(Runtime.getRuntime().maxMemory())).setPrioritizeTimeOverSizeThresholds(false).setBackBuffer(preload?0:10000,true).build();
         player=new ExoPlayer.Builder(context).setTrackSelector(selector).setLoadControl(buffers).build();
         player.setAudioAttributes(new AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(),false);
         player.setWakeMode(C.WAKE_MODE_LOCAL);
         player.addListener(new Player.Listener(){
-            boolean announced;
             public void onPlaybackStateChanged(int state){events.buffering(state==Player.STATE_BUFFERING);if(state==Player.STATE_READY&&!announced){announced=true;events.ready();}if(state==Player.STATE_ENDED)events.ended();events.changed();}
             public void onPlayerError(PlaybackException error){events.failed();}
             public void onVideoSizeChanged(VideoSize size){events.changed();}
@@ -47,6 +51,7 @@ final class AdaptivePlayback {
             player.setMediaSource(new ProgressiveMediaSource.Factory(factory).createMediaSource(MediaItem.fromUri(api.origin+contentPath)));
         }
     }
+    void adoptEvents(Events callbacks){events=callbacks;announced=false;events.audioSession(player.getAudioSessionId());if(player.getPlaybackState()==Player.STATE_READY){announced=true;events.ready();}events.changed();}
     static int bufferBytes(long heap){return (int)Math.max(8L*1024*1024,Math.min(64L*1024*1024,heap/8));}
     void quality(String mode){
         DefaultTrackSelector.Parameters.Builder b=selector.buildUponParameters().clearVideoSizeConstraints().setMinVideoSize(0,0).setForceHighestSupportedBitrate(false).setForceLowestBitrate(false).setExceedVideoConstraintsIfNecessary(false);

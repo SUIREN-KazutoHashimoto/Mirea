@@ -25,7 +25,7 @@ export const DIAGNOSTIC_CODES=new Set(('INTERNAL_ERROR HTTP_ERROR CLIENT_ERROR N
   'ERR_INVALID_ARG_TYPE ERR_INVALID_ARG_VALUE ERR_OUT_OF_RANGE ERR_STREAM_PREMATURE_CLOSE ERR_STREAM_DESTROYED ABORT_ERR').split(' ').concat([...MEDIA_DIAGNOSTIC_CODES]));
 export const DIAGNOSTIC_SOURCES=new Set(('accounts admin-access admin-backups admin-cleanup admin-jobs admin-reset admin analytics app-updates app '+
   'audio-art audio-publish audio-transcode audio-types backup-archive bootstrap-admin custom-thumbnails database downloads ebook-types epub '+
-  'error-diagnostics error-diagnostic-schema history image-integrity index job-context job-pool jpeg-end-marker library-catalog maintenance-gate media-binary media-failure media-source media-worker media '+
+  'error-diagnostics error-diagnostic-schema diagnostic-reports history image-integrity index job-context job-pool job-timing jpeg-end-marker library-catalog maintenance-gate media-binary media-failure media-source media-worker media media-pipeline canonical-publish owner-media operational-settings playlist-kind '+
   'name-integrity name-rules pending-uploads playlists processing-settings progress remember-session remote-app-update replay-eligibility replay-heatmap '+
   'resumable runtime security series-actions series server-updates shelf-management storage-move storage thumbnail-webp update-manifest upload-errors '+
   'upload-publish upload-series video-navigation video-previews video-publish video-stream video-thumbnail video-transcode video-types').split(' ').map(s=>'server/'+s+'.js'));

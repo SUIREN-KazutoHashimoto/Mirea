@@ -1,3 +1,4 @@
+import {jobTiming} from './job-timing.js';
 import {transaction} from './database.js';
 import {registerTransferQueue,linkQueuedUpload} from './transfer-queue.js';
 import {assertUploadName} from './name-integrity.js';
@@ -59,7 +60,7 @@ export async function registerResumableUploads(app, context) {
     const processing=JSON.parse(upload.processing_json),diagnostic=upload.state==='failed'?normalizeDiagnostic(processing.diagnostic):null;
     const page=diagnostic?.image?.page,file=page?JSON.parse(upload.files_json)[page-1]:null;
     return {
-      id: upload.id, shelfId:upload.shelf_id, maxParallelParts:4, protocolVersion:2, state: upload.state, chunkSize: upload.chunk_size, expiresAt: upload.expires_at,
+      id: upload.id,...jobTiming(db,upload.id,'upload'), shelfId:upload.shelf_id, maxParallelParts:4, protocolVersion:2, state: upload.state, chunkSize: upload.chunk_size, expiresAt: upload.expires_at,
       seriesId:upload.target_series_id,seriesWarning:upload.series_warning,
       title: upload.title, retainOriginal: Boolean(upload.retain_original), processing,
       ...(diagnostic?{diagnostic}:{}),...(file?{failedFile:{page,filename:file.filename}}:{}),
@@ -226,15 +227,19 @@ export async function registerResumableUploads(app, context) {
     const cursor=req.query.cursor?.split(':'),rank=cursor?Number(cursor[0]):-1,before=cursor?Number(cursor[1]):0,after=cursor?.[2]??'';
     if(!Number.isSafeInteger(before))throw httpError(400,'転送一覧の続き位置が不正です。');
     const rows=db.prepare(`SELECT u.*,q.id AS client_transfer_id,CASE WHEN u.state IN ('uploading','processing') THEN 0 ELSE 1 END AS queue_rank FROM upload_sessions u LEFT JOIN upload_queue q ON q.upload_id=u.id JOIN memberships m ON m.shelf_id=u.shelf_id AND m.user_id=u.user_id
-      WHERE u.user_id=? AND m.role IN ('owner','editor') AND u.state IN ('complete','failed','cancelled') AND (u.state!='uploading' OR u.expires_at>?)
+      WHERE u.user_id=? AND m.role IN ('owner','editor') AND u.state IN ('complete','failed','cancelled') AND NOT EXISTS(SELECT 1 FROM transfer_hidden h WHERE h.upload_id=u.id AND h.user_id=u.user_id) AND (u.state!='uploading' OR u.expires_at>?)
       AND (?<0 OR (CASE WHEN u.state IN ('uploading','processing') THEN 0 ELSE 1 END)>? OR (CASE WHEN u.state IN ('uploading','processing') THEN 0 ELSE 1 END)=? AND (u.created_at<? OR u.created_at=? AND u.id<?))
       ORDER BY queue_rank,u.created_at DESC,u.id DESC LIMIT 101`).all(req.user.id,Date.now(),rank,rank,rank,before,before,after);
-    const queue=cursor?[]:db.prepare(`SELECT q.*,u.state,u.processing_json,u.error,(SELECT COALESCE(SUM(size),0) FROM upload_parts p WHERE p.upload_id=q.upload_id) AS received_bytes FROM upload_queue q JOIN memberships m ON m.shelf_id=q.shelf_id AND m.user_id=q.user_id LEFT JOIN upload_sessions u ON u.id=q.upload_id WHERE q.user_id=? AND m.role IN ('owner','editor') AND (q.upload_id IS NULL AND q.expires_at>? OR u.state IN ('uploading','processing') AND (u.state!='uploading' OR u.expires_at>?)) ORDER BY q.created_at,q.id`).all(req.user.id,Date.now(),Date.now()).map(row=>({id:row.upload_id,clientTransferId:row.id,title:row.title,shelfId:row.shelf_id,seriesId:row.series_id,state:row.state??'queued',createdAt:row.created_at,totalBytes:row.total_bytes,receivedBytes:row.state==='processing'?row.total_bytes:row.received_bytes,processing:JSON.parse(row.processing_json??'{}'),...(row.error?{error:row.error}:{})}));
+    const queue=cursor?[]:db.prepare(`SELECT q.*,u.state,u.processing_json,u.error,(SELECT COALESCE(SUM(size),0) FROM upload_parts p WHERE p.upload_id=q.upload_id) AS received_bytes FROM upload_queue q JOIN memberships m ON m.shelf_id=q.shelf_id AND m.user_id=q.user_id LEFT JOIN upload_sessions u ON u.id=q.upload_id WHERE q.user_id=? AND m.role IN ('owner','editor') AND (q.upload_id IS NULL AND q.expires_at>? OR u.state IN ('uploading','processing') AND (u.state!='uploading' OR u.expires_at>?)) ORDER BY q.created_at,q.id`).all(req.user.id,Date.now(),Date.now()).map(row=>({id:row.upload_id,...(row.upload_id?jobTiming(db,row.upload_id,'upload'):{}),clientTransferId:row.id,title:row.title,shelfId:row.shelf_id,seriesId:row.series_id,state:row.state??'queued',createdAt:row.created_at,totalBytes:row.total_bytes,receivedBytes:row.state==='processing'?row.total_bytes:row.received_bytes,processing:JSON.parse(row.processing_json??'{}'),...(row.error?{error:row.error}:{})}));
     if(!cursor)for(const row of db.prepare("SELECT u.* FROM upload_sessions u JOIN memberships m ON m.shelf_id=u.shelf_id AND m.user_id=u.user_id WHERE u.user_id=? AND m.role IN ('owner','editor') AND (u.state='processing' OR u.state='uploading' AND u.expires_at>?) AND NOT EXISTS(SELECT 1 FROM upload_queue q WHERE q.upload_id=u.id)").all(req.user.id,Date.now())){const value=status(row,false),totalBytes=JSON.parse(row.files_json).reduce((n,f)=>n+f.size,0);queue.push({...value,createdAt:row.created_at,totalBytes,receivedBytes:row.state==='processing'?totalBytes:value.receivedBytes});}
     return {queue,uploads:rows.slice(0,100).map(row=>{
       const totalBytes=JSON.parse(row.files_json).reduce((n,f)=>n+f.size,0),value=status(row,false);
       return {...value,clientTransferId:row.client_transfer_id,createdAt:row.created_at,totalBytes,receivedBytes:row.state==='uploading'||row.state==='cancelled'?value.receivedBytes:totalBytes};
     }),nextCursor:rows.length>100?`${rows[99].queue_rank}:${rows[99].created_at}:${rows[99].id}`:null};
+  });
+  app.post('/api/v1/transfers/uploads/clear-attention',auth,async req=>{
+    const result=db.prepare("INSERT OR IGNORE INTO transfer_hidden(user_id,upload_id,hidden_at) SELECT user_id,id,? FROM upload_sessions WHERE user_id=? AND state IN ('failed','cancelled')").run(Date.now(),req.user.id);
+    return {hidden:Number(result.changes)};
   });
   app.get('/api/v1/uploads', auth, async req => ({uploads:db.prepare("SELECT u.* FROM upload_sessions u JOIN memberships m ON m.shelf_id=u.shelf_id AND m.user_id=u.user_id WHERE u.user_id=? AND m.role IN ('owner','editor') AND (u.state IN ('processing','failed') OR u.state='uploading' AND u.expires_at>?) ORDER BY u.created_at DESC LIMIT 100").all(req.user.id,Date.now()).map(row=>status(row,false)),activeCount:activeCount(req.user.id)}));
 

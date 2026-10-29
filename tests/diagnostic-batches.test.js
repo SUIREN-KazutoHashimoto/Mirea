@@ -1,0 +1,20 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {DatabaseSync} from 'node:sqlite';
+import {createApp} from '../server/app.js';
+test('diagnostic batches strip private fields, require authentication/admin rights and survive restart without changing assets',async t=>{
+ const dataDir=await mkdtemp(join(tmpdir(),'mirea-report-'));let app=await createApp({dataDir,rateLimit:false});const db=new DatabaseSync(join(dataDir,'mirea.sqlite'));t.after(async()=>{db.close();await app.close();await rm(dataDir,{recursive:true,force:true});});
+ const call=(method,path,user,payload)=>app.inject({method,url:'/api/v1'+path,headers:user?{authorization:'Bearer '+user.token}:{},...(payload?{payload}:{})});
+ const user=(await call('POST','/auth/register',null,{email:'reports@example.test',name:'Reports',password:'fixture-passphrase'})).json();
+ const report={schemaVersion:1,errorId:randomUUID(),occurredAt:new Date().toISOString(),status:500,operation:'upload',category:'internal',code:'INTERNAL_ERROR',type:'Error',trace:[],redacted:true,message:'PRIVATE TITLE',url:'https://private.test/token',email:'private@example.test',assetId:randomUUID(),causes:[{message:'SECRET',code:'ENOSPC',type:'Error',category:'capacity',trace:[{source:'C:/private/path',line:2,column:3}]}]};
+ const body={id:randomUUID(),reports:[report]};assert.equal((await call('POST','/diagnostics/batches',null,body)).statusCode,401);assert.equal((await call('POST','/diagnostics/batches',user,body)).statusCode,200);assert.equal((await call('POST','/diagnostics/batches',user,body)).statusCode,200);assert.equal((await call('GET','/admin/diagnostics',user)).statusCode,403);
+ const stored=db.prepare('SELECT * FROM diagnostic_batches').all();assert.equal(stored.length,1);for(const secret of ['PRIVATE','SECRET','private.test','private@example','assetId'])assert(!stored[0].reports_json.includes(secret),secret);
+ db.prepare("INSERT INTO user_access(user_id,server_role,disabled) VALUES(?,'admin',0) ON CONFLICT(user_id) DO UPDATE SET server_role='admin'").run(user.user.id);
+ const inbox=await call('GET','/admin/diagnostics',user);assert.equal(inbox.statusCode,200,inbox.body);assert.equal(inbox.json().batches.length,1);assert(!inbox.body.includes(user.user.id));assert(!inbox.body.includes(user.user.email));
+ assert.equal((await call('POST','/diagnostics/batches',user,{id:randomUUID(),reports:[{message:'raw'}]})).statusCode,400);assert.equal((await call('POST','/diagnostics/batches',user,{id:randomUUID(),reports:Array(21).fill(report)})).statusCode,400);
+ await app.close();app=await createApp({dataDir,rateLimit:false});assert.equal((await call('GET','/admin/diagnostics',user)).json().batches.length,1);assert.equal(db.prepare('SELECT version FROM schema_version').get().version,24);
+});

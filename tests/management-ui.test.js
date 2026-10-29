@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {progressPercent,displayTime} from '../web/src/management-ui.js';
+import {progressPercent,displayTime,executionTiming} from '../web/src/management-ui.js';
 import {filterJobRows} from '../web/src/job-presentation.js';
 import {filterTransfers,transferSummary,clearTransferRecords,trackTransfer,transferRows} from '../web/src/transfer-manager.js';
 
@@ -18,10 +18,14 @@ test('job filters preserve originals, group active states, and sort records dete
 });
 test('transfer views filter states, direction and title without discarding recoverable records',()=>{
  const rows=[{id:1,title:'PDF',direction:'download',state:'complete'},{id:2,title:'Music',direction:'upload',state:'running'},{id:3,title:'VIDEO',direction:'download',state:'paused'},{id:4,title:'Book',direction:'upload',state:'failed'}];
- assert.deepEqual(transferSummary(rows),{active:1,attention:2,complete:1,total:4});
+ assert.deepEqual(transferSummary(rows),{active:1,processing:0,attention:2,complete:1,total:4});
  assert.deepEqual(filterTransfers(rows,{view:'attention'}).map(r=>r.id),[4,3]);
- assert.deepEqual(filterTransfers(rows,{direction:'download',query:'video'}).map(r=>r.id),[3]);
+ assert.deepEqual(filterTransfers(rows,{view:'attention',direction:'download',query:'video'}).map(r=>r.id),[3]);
  assert.deepEqual(filterTransfers(rows,{view:'complete'}).map(r=>r.id),[1]);assert.equal(rows.length,4);
+});
+test('processing belongs only in its own view and timing distinguishes waiting, estimates and terminal elapsed time',()=>{
+ const rows=[{title:'transfer',state:'running',direction:'upload'},{title:'job',state:'processing',direction:'upload'}];assert.equal(transferSummary(rows).active,1);assert.equal(transferSummary(rows).processing,1);assert.deepEqual(filterTransfers(rows).map(row=>row.title),['transfer']);assert.deepEqual(filterTransfers(rows,{view:'processing'}).map(row=>row.title),['job']);
+ assert.match(executionTiming({createdAt:1000,state:'running',percent:50},11000),/経過 10秒.*終了予想/);assert.match(executionTiming({createdAt:1000,state:'queued'},11000),/開始待ち/);assert.equal(executionTiming({createdAt:1000,finishedAt:5000,state:'complete'},11000),'経過 4秒');assert.equal(executionTiming({createdAt:NaN,state:'running'},11000),'');
 });
 test('clearing account transfer records cannot be undone by late completion or progress',async()=>{
  let report,finish;const row=trackTransfer({direction:'upload',title:'previous account',notifications:false,work:update=>{report=update;return new Promise(resolve=>finish=resolve);}});

@@ -1,3 +1,4 @@
+import {playlistKind} from '../../server/playlist-kind.js';
 export function playlistEntries(playlists,items,{search='',sort,compare}={}){
   const assets=new Map(items.map(i=>[i.id,i]));
   return playlists.filter(p=>p.title.toLocaleLowerCase().includes(search.toLocaleLowerCase())).map(p=>{
@@ -12,9 +13,9 @@ export function mountPlaylistEditor({container,playlist,draft,items,api,esc,onCh
   const error=e=>{if(container.isConnected&&current()){const box=form.querySelector('.form-error');box.textContent=e.message;box.hidden=false;}};
   form.elements.title.oninput=e=>draft.title=e.target.value;
   function render(){
-    const query=form.elements.query.value.toLocaleLowerCase(),available=[...byId.values()].filter(i=>(i.title+' '+i.shelfName).toLocaleLowerCase().includes(query));
+    const query=form.elements.query.value.toLocaleLowerCase(),selectedKinds=new Set(draft.assetIds.map(id=>playlistKind(byId.get(id))).filter(Boolean)),selectedKind=selectedKinds.size===1?[...selectedKinds][0]:null,available=[...byId.values()].filter(i=>(i.title+' '+i.shelfName).toLocaleLowerCase().includes(query)&&(!selectedKind||playlistKind(i)===selectedKind||draft.assetIds.includes(i.id)));
     picker.innerHTML=available.map(i=>`<label><input type="checkbox" value="${i.id}" ${draft.assetIds.includes(i.id)?'checked':''}>${esc(i.title)}<small>${esc(i.shelfName)}</small></label>`).join('')||'<p class="muted">該当する作品がありません。</p>';
-    picker.querySelectorAll('input').forEach(el=>el.onchange=()=>{if(el.checked&&draft.assetIds.length>=1000){el.checked=false;error(Error('1,000作品までです。'));return;}draft.assetIds=el.checked?[...draft.assetIds,el.value]:draft.assetIds.filter(id=>id!==el.value);render();});
+    picker.querySelectorAll('input').forEach(el=>el.onchange=()=>{if(el.checked&&draft.assetIds.length>=1000){el.checked=false;error(Error('1,000作品までです。'));return;}if(el.checked&&selectedKinds.size&&(!selectedKinds.has(playlistKind(byId.get(el.value)))||selectedKinds.size>1)){el.checked=false;error(Error('同じ種類の作品だけを選んでください。'));return;}draft.assetIds=el.checked?[...draft.assetIds,el.value]:draft.assetIds.filter(id=>id!==el.value);render();});
     order.innerHTML=draft.assetIds.map((id,index)=>`<li><span>${index+1}. ${esc(byId.get(id)?.title??'現在閲覧できない作品（保存時に除外）')}</span><button type="button" data-up="${index}" ${index===0?'disabled':''} aria-label="${index+1}番目を前へ">↑</button><button type="button" data-down="${index}" ${index===draft.assetIds.length-1?'disabled':''} aria-label="${index+1}番目を後ろへ">↓</button><button type="button" data-remove="${index}" aria-label="${index+1}番目をリストから外す">外す</button></li>`).join('');
     order.querySelectorAll('[data-up],[data-down],[data-remove]').forEach(b=>b.onclick=()=>{const index=Number(b.dataset.up??b.dataset.down??b.dataset.remove);if(b.dataset.remove!==undefined)draft.assetIds.splice(index,1);else{const next=index+(b.dataset.up===undefined?1:-1);[draft.assetIds[index],draft.assetIds[next]]=[draft.assetIds[next],draft.assetIds[index]];}render();});
   }

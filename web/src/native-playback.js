@@ -1,12 +1,14 @@
 import { mountPlaybackDock } from './playback-dock.js';
 import { authenticatedBlob } from './api.js';
-import { getSession,getEndpoint,isOfflineSession } from './api.js';
+import { getSession,getEndpoint,isOfflineSession,requireCompatibleServer } from './api.js';
 import { NativePlayer,nativePlayerAvailable,nativePlaybackGeneration,nativePlaybackStopped } from './native-player-bridge.js';
 import { prepareNativeDownload,downloadedThumbnail,listDownloads } from './downloads.js';
 import {offlineCatalog,offlineCollection,offlineSeriesContext} from './offline-catalog.js';
 import {offlineVault,offlinePartition} from './offline-vault.js';
 import { beginUpdateActivity } from './update-busy.js';
 import {shelfUnlockValue} from './private-shelves.js';
+import {rememberPlayback,forgetPlayback,clearPlaybackPresentation} from './playback-resume.js';
+import {playlistContext} from './playlist-context.js';
 
 let release,dock,dockIdentity,refreshEpoch=0;
 export async function refreshNativePlayback(eventState){
@@ -18,7 +20,8 @@ export async function refreshNativePlayback(eventState){
   const status=typeof eventState?.active==='boolean'?eventState:await NativePlayer.status();if(!current())return;
   if(status.active&&!release)release=beginUpdateActivity();else if(!status.active&&release){release();release=null;}
   if(!status.active||!actor){dock?.dispose();dock=null;return;}
-  if(!dock)dock=mountPlaybackDock({onRestore:()=>NativePlayer.show(),onToggle:state=>state.playing?NativePlayer.pause():NativePlayer.play(),onStop:()=>NativePlayer.stop().then(refreshNativePlayback),loadArtwork:async(state,signal)=>{
+  rememberPlayback({id:status.item?.id,kind:status.video?'video':'audio',positionMs:status.positionMs,durationMs:status.durationMs});
+  if(!dock)dock=mountPlaybackDock({onRestore:()=>NativePlayer.show(),onToggle:state=>state.playing?NativePlayer.pause():NativePlayer.play(),onStop:()=>{forgetPlayback();return NativePlayer.stop().then(refreshNativePlayback);},loadArtwork:async(state,signal)=>{
     const valid=()=>!signal.aborted&&getEndpoint()===state.origin&&getSession()?.user.id===state.userId;
     if(!valid())return null;const cover=await downloadedThumbnail(state.id).catch(()=>null);if(!valid())return null;
     return cover||authenticatedBlob('/api/v1/items/'+state.id+'/thumbnail',signal);
@@ -30,7 +33,9 @@ export async function initializeNativePlayback(){
   await NativePlayer.addListener('playbackState',state=>refreshNativePlayback(state).catch(()=>{}));
   await refreshNativePlayback();
 }
-export async function openNativePlayback(item,{restart=false,continuous=true,analytics=false,version='',isCurrent=()=>true,progress=()=>{}}={}){
+export async function openNativePlayback(item,{restart=false,continuous=true,analytics=false,version='',playlistId,isCurrent=()=>true,progress=()=>{}}={}){
+  requireCompatibleServer();
+  clearPlaybackPresentation();
   await nativePlaybackStopped();const session=getSession(),origin=getEndpoint(),epoch=nativePlaybackGeneration();
   if(!session)throw new Error('ログインしてください。');
   const valid=()=>isCurrent()&&nativePlaybackGeneration()===epoch&&getSession()?.token===session.token&&getEndpoint()===origin;
@@ -45,14 +50,14 @@ export async function openNativePlayback(item,{restart=false,continuous=true,ana
   if(download){
     const partition=offlinePartition(origin,session.user.id),catalog=await(await offlineCatalog()).load(partition).catch(()=>null);
     if(catalog){
-      const rows=await listDownloads(),vault=await offlineVault(),playable=new Set(),members=new Set(offlineSeriesContext(offlineCollection(catalog,rows,playable),item.id).items.map(asset=>asset.id));
+      const rows=await listDownloads(),vault=await offlineVault(),playable=new Set(),members=new Set((playlistId?playlistContext(catalog.playlists??[],offlineCollection(catalog,rows,playable).items,playlistId,item.id):offlineSeriesContext(offlineCollection(catalog,rows,playable),item.id)).items.map(asset=>asset.id));
       const ready=rows.filter(row=>row.state==='ready'&&members.has(row.assetId));let index=0;
       await Promise.all(Array.from({length:Math.min(4,ready.length)},async()=>{while(valid()&&index<ready.length){const row=ready[index++],lease=await vault.lease(partition,row.manifest.id).catch(()=>null);if(lease){playable.add(row.assetId);lease.key='';}}}));
-      const context=offlineSeriesContext(offlineCollection(catalog,rows,playable),item.id);
+      const context=playlistId?playlistContext(catalog.playlists??[],offlineCollection(catalog,rows,playable).items,playlistId,item.id):offlineSeriesContext(offlineCollection(catalog,rows,playable),item.id);
       if(context.series){const manifests=new Map(rows.filter(row=>row.state==='ready'&&playable.has(row.assetId)&&['audio','video'].includes(row.manifest.kind)).map(row=>[row.assetId,row.manifest]));offlineSeries={...context,items:context.items.map(asset=>({...asset,...(manifests.has(asset.id)?{offlineDownload:manifests.get(asset.id)}:{})}))};}
     }
   }
   if(!valid())throw new Error('再生準備を取り消しました。');
-  await NativePlayer.open({...(offlineSeries?{offlineSeries}:{}),...(artwork?{artwork}:{}),origin,token:session.token,userId:session.user.id,shelfUnlock:shelfUnlockValue(),item,restart,continuous,analytics,version,autoplay:true,...(download?{download,offline:isOfflineSession()}:{})});
+  await NativePlayer.open({...(playlistId?{playlistId}:{}),...(offlineSeries?{offlineSeries}:{}),...(artwork?{artwork}:{}),origin,token:session.token,userId:session.user.id,shelfUnlock:shelfUnlockValue(),item,restart,continuous,analytics,version,autoplay:true,...(download?{download,offline:isOfflineSession()}:{})});
   await refreshNativePlayback();
 }

@@ -23,6 +23,10 @@ final class PlaybackIcon extends Drawable {
                 if(name.equals("forward")){canvas.translate(24,0);canvas.scale(-1,1);}paint.setStyle(Paint.Style.FILL);paint.setTextSize(8);paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));paint.setTextAlign(Paint.Align.CENTER);canvas.drawText("10",12,15,paint);break;
             }
             case "rotate":canvas.drawRoundRect(7,3,17,21,2,2,paint);path(canvas,2,10,2,6,5,6);path(canvas,22,14,22,18,19,18);path(canvas,2,6,5,3);path(canvas,22,18,19,21);break;
+            case "repeat":path(canvas,4,8,19,8,15,4);path(canvas,19,8,15,12);path(canvas,20,16,5,16,9,20);path(canvas,5,16,9,12);break;
+            case "shuffle":path(canvas,3,6,7,6,17,18,21,18,18,15);path(canvas,21,18,18,21);path(canvas,3,18,7,18,17,6,21,6,18,3);path(canvas,21,6,18,9);break;
+            case "speed":canvas.drawArc(3,3,21,21,150,240,false,paint);path(canvas,12,13,17,6);path(canvas,7,18,17,18);break;
+            case "equalizer":path(canvas,5,3,5,21);path(canvas,12,3,12,21);path(canvas,19,3,19,21);path(canvas,2,8,8,8);path(canvas,9,16,15,16);path(canvas,16,7,22,7);break;
             case "pip":canvas.drawRoundRect(2,4,22,20,2,2,paint);paint.setStyle(Paint.Style.FILL);canvas.drawRoundRect(12,12,20,18,1,1,paint);break;
             case "background":canvas.drawArc(4,3,20,21,180,180,false,paint);canvas.drawRoundRect(3,11,7,20,2,2,paint);canvas.drawRoundRect(17,11,21,20,2,2,paint);break;
             case "music":path(canvas,9,18,9,5,20,3,20,16);path(canvas,9,8,20,6);paint.setStyle(Paint.Style.FILL);canvas.drawOval(3,16,9,21,paint);canvas.drawOval(14,14,20,19,paint);break;

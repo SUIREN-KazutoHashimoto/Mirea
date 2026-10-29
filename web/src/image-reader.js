@@ -26,7 +26,7 @@ export function openImageBook(container, item, onError, tracker, progress, downl
   progress?.bind(()=>ready?bookPosition(stage,displayedPage,zoom.value):null);
   const manifestRequest = new AbortController();
   function resize() {
-    const page = pages[current - 1];
+    const page = pages[displayedPage - 1];
     if (!page) return;
     const anchor=ready?bookPosition(stage,displayedPage,zoom.value):null;
     const scale = bookScale(page.width,page.height,stage.clientWidth,stage.clientHeight,zoom.value);
@@ -47,23 +47,33 @@ export function openImageBook(container, item, onError, tracker, progress, downl
     publishPage();
     loading.hidden = false;
     loading.textContent = `${current}ページ目を読み込んでいます…`;
-    image.hidden = true;
+    // Keep the current page visible until its replacement has decoded.
     container.querySelector('.viewer-error')?.remove();
     try {
       const blob = await pageCache.get(current,request.signal);
       if (disposed || revision !== generation) return;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-      objectUrl = URL.createObjectURL(blob);
-      image.onload = () => { if (!disposed && revision === generation) { loading.hidden = true; image.hidden = false; resize();restoreBookPosition(stage,anchor);displayedPage=current;ready=true;tracker?.ready(current,image,stage,image.clientWidth/pages[current-1].width);progress?.capture();publishPage(); } };
-      image.onerror = () => { if (!disposed) onError(new Error('ページ画像を表示できません。')); };
+      const cached=warm?.number===current?warm:null;if(cached)warm=null;
+      const nextUrl=cached?.url??URL.createObjectURL(blob),decoded=cached?.decoded??new Image();if(!cached)decoded.src=nextUrl;
+      try{await(cached?.promise??decoded.decode());}catch(error){URL.revokeObjectURL(nextUrl);throw error;}
+      if(disposed||revision!==generation){URL.revokeObjectURL(nextUrl);return;}
+      const oldUrl=objectUrl;objectUrl=nextUrl;
       image.alt = `${current}ページ目`;
       image.src = objectUrl;
+      if(oldUrl)URL.revokeObjectURL(oldUrl);
+      loading.hidden=true;image.hidden=false;
       stage.scrollTop = 0;
       stage.scrollLeft = 0;
-      resize();
+      displayedPage=current;resize();restoreBookPosition(stage,anchor);ready=true;tracker?.ready(current,image,stage,image.clientWidth/pages[current-1].width);progress?.capture();publishPage();
+      void warmNext(current+1,revision);
     } catch (error) {
       if (!disposed && revision === generation && error.name !== 'AbortError') { loading.hidden = true; onError(error); }
     }
+  }
+  let warm;
+  async function warmNext(number,revision){
+    if(warm){URL.revokeObjectURL(warm.url);warm=null;}
+    const page=pages[number-1];if(!page||page.width*page.height>16_000_000)return;
+    try{const blob=await pageCache.get(number);if(disposed||revision!==generation)return;const url=URL.createObjectURL(blob),decoded=new Image();decoded.src=url;const promise=decoded.decode();warm={url,decoded,number,promise};await promise;}catch{/* Optional page predecode never interrupts reading. */}
   }
   previous.onclick = () => go(current - 1);
   const advance=()=>advanceBook({ready,page:current,total:pages.length,go,continuation:seriesNavigation});
@@ -98,6 +108,7 @@ export function openImageBook(container, item, onError, tracker, progress, downl
     clearTimeout(scrollTimer); stage.removeEventListener('scroll',scroll);
     chrome.dispose();
     if (objectUrl) URL.revokeObjectURL(objectUrl);
+    if(warm)URL.revokeObjectURL(warm.url);
   };
   cleanup.restart=()=>{restartRequested=true;zoom.value='fit';go(1);};return cleanup;
 }

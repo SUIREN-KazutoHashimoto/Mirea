@@ -1,11 +1,12 @@
 import {chapterAt,chapterJump,spriteFrame} from './player-actions.js';
+import {setPlayerIcon} from './player-icons.js';
 
 export function mountVideoNavigation(root,video,seek,{doc=document,format,seekTo,seeking=()=>{},onError=()=>{},edit}={}){
   let nav={chapters:[],captions:[]},url,active=false,precise=false,origin,wasPlaying=false,caption='off',size=20,disposed=false;
   try{caption=localStorage.getItem('mirea-caption-language')??'off';size=Number(localStorage.getItem('mirea-caption-size'))||20;}catch{}
   const removers=[],listen=(t,e,f,o)=>{t.addEventListener(e,f,o);removers.push(()=>t.removeEventListener(e,f,o));};
   const subtitles=doc.createElement('div');subtitles.className='player-captions';subtitles.setAttribute('aria-live','off');root.append(subtitles);
-  const settings=doc.createElement('details');settings.className='player-navigation-settings';const summary=doc.createElement('summary');summary.textContent='字幕・チャプター';settings.append(summary);
+  const settings=doc.createElement('details');settings.className='player-navigation-settings player-option-menu';const summary=doc.createElement('summary');setPlayerIcon(summary,'captions','字幕・チャプター');settings.append(summary);
   listen(settings,'toggle',()=>{if(settings.open)for(const other of root.querySelectorAll('details'))if(other!==settings)other.open=false;});
   const chapters=doc.createElement('select');chapters.setAttribute('aria-label','チャプター');chapters.onchange=()=>seekTo(Number(chapters.value)/1000);
   const tracks=doc.createElement('select');tracks.setAttribute('aria-label','字幕');tracks.onchange=()=>{caption=tracks.value;try{localStorage.setItem('mirea-caption-language',nav.captions.find(t=>t.id===caption)?.language??'off');}catch{}update();};

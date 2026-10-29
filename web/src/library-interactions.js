@@ -36,13 +36,13 @@ export function mountLibraryDrawer({layout,panel,main,opener,closer,backdrop,act
 export function mountAssetHold(root,show,{doc=root.ownerDocument,delay=500,slop=12,setTimer=setTimeout,clearTimer=clearTimeout,now=Date.now}={}){
   let timer,press,blocked,until=0;const listeners=[],listen=(node,event,fn,options)=>{node.addEventListener(event,fn,options);listeners.push(()=>node.removeEventListener(event,fn,options));};
   const cancel=()=>{clearTimer(timer);timer=null;press=null;};
-  function trigger(button){cancel();if(!button?.isConnected)return;blocked=button;until=now()+1000;show(button.dataset.open);}
+  function trigger(button,position){cancel();if(!button?.isConnected)return;blocked=button;until=now()+1000;show(button.dataset.open,position);}
   listen(root,'pointerdown',e=>{cancel();if(e.button!==0||e.isPrimary===false)return;const button=e.target.closest('[data-open]');if(!button)return;press={id:e.pointerId,x:e.clientX,y:e.clientY,button};timer=setTimer(()=>trigger(button),delay);},{passive:true});
   listen(root,'pointermove',e=>{if(press&&(e.pointerId!==press.id||Math.hypot(e.clientX-press.x,e.clientY-press.y)>slop))cancel();},{passive:true});
   for(const name of ['pointerup','pointercancel','lostpointercapture','keydown'])listen(root,name,cancel);
   listen(doc,'visibilitychange',cancel);listen(doc.defaultView,'blur',cancel);
   listen(root,'click',e=>{if(e.detail!==0&&now()<until&&blocked?.contains(e.target)){e.preventDefault();e.stopImmediatePropagation();blocked=null;}},true);
   listen(root,'keydown',e=>{if(e.key==='ContextMenu'||e.key==='F10'&&e.shiftKey){const button=e.target.closest('[data-open]');if(button){e.preventDefault();trigger(button);}}});
-  listen(root,'contextmenu',e=>{const button=e.target.closest('[data-open]');if(!button)return;e.preventDefault();if(now()>=until||blocked!==button)trigger(button);});
+  listen(root,'contextmenu',e=>{const button=e.target.closest('[data-open]');if(!button)return;e.preventDefault();if(now()>=until||blocked!==button)trigger(button,e.clientX||e.clientY?{x:e.clientX,y:e.clientY}:undefined);});
   return {dispose(){cancel();listeners.forEach(remove=>remove());}};
 }
