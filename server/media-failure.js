@@ -8,6 +8,9 @@ export function decoderFailureCode(message,nativeCode){
  if(filesystem.has(nativeCode))return nativeCode;
  if(['IMAGE_FORMAT_UNSUPPORTED','IMAGE_ANIMATED_UNSUPPORTED'].includes(nativeCode))return nativeCode;
  const text=typeof message==='string'?message.slice(0,16384):'';
+ if(/no space left on device|not enough space on (?:the )?disk|disk (?:is )?full/i.test(text))return 'ENOSPC';
+ if(/disk quota exceeded/i.test(text))return 'EDQUOT';
+ if(/read-only file system/i.test(text))return 'EROFS';
  if(/input file is missing|no such file or directory/i.test(text))return 'ENOENT';
  if(/permission denied|access is denied/i.test(text))return 'EACCES';
  if(/premature end|unexpected end|truncat|end of (?:file|buffer)|end-of-buffer/i.test(text))return 'IMAGE_TRUNCATED';
