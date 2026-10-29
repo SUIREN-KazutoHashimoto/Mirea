@@ -14,6 +14,7 @@ import { mediaBinary } from './media-binary.js';
 
 import {recordVideoThumbnail} from './video-thumbnail.js';
 import {customThumbnail,ensureCustomThumbnail} from './custom-thumbnails.js';
+import {mediaFailure} from './media-failure.js';
 export const IMAGE_BOOK_MIME = 'application/vnd.mirea.image-book';
 export const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 export const imageExtension = mime => ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' })[mime];
@@ -85,18 +86,18 @@ function workerOperation(data) {
     const abort=()=>{receivedResult=true;clearTimeout(timer);worker.terminate();reject(signal.reason);};
     signal?.addEventListener('abort',abort,{once:true});
     let receivedResult = false;
-    const timer = setTimeout(() => { worker.terminate(); reject(httpError(422, '本・画像の処理が時間内に完了しませんでした。')); }, 30_000);
+    const timer = setTimeout(() => { receivedResult=true;worker.terminate(); reject(Object.assign(httpError(422, '本・画像の処理が時間内に完了しませんでした。'),{code:'MEDIA_PROCESSING_TIMEOUT'})); }, 30_000);
     worker.once('message', async result => {
       receivedResult = true;
       clearTimeout(timer);
       // Native decoders may hold source files open until the worker exits on Windows.
       await worker.terminate();
       if (result.error && process.env.TEST_LOG === '1') console.error('Media worker:', result.error);
-      if (result.error) reject(httpError(422, data.mode==='epub-thumbnail'?'EPUBを読み込めません。破損・DRM・固定レイアウト・サイズ制限を確認してください。':'画像またはPDFを読み込めません。破損・暗号化・対応形式を確認してください。'));
+      if (result.error) reject(mediaFailure(result,data.mode));
       else resolve(result);
     });
     worker.once('error', error => { clearTimeout(timer); reject(error); });
-    worker.once('exit', () => { signal?.removeEventListener('abort',abort);clearTimeout(timer); if (!receivedResult) reject(httpError(422, 'メディアの処理に失敗しました。')); });
+    worker.once('exit', () => { signal?.removeEventListener('abort',abort);clearTimeout(timer); if (!receivedResult) reject(Object.assign(httpError(503, 'メディア処理が中断されました。サーバーの稼働状態を確認してください。'),{code:'MEDIA_WORKER_FAILED'})); });
   });
 }
 

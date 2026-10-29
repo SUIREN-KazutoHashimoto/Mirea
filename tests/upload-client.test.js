@@ -6,6 +6,17 @@ import { tmpdir } from 'node:os';
 import { createApp } from '../server/app.js';
 import { createResumableUpload } from '../web/src/resumable-upload.js';
 import { makePdf } from './fixtures.js';
+import {clearDiagnostics,diagnosticFor,recentDiagnostics} from '../web/src/error-diagnostics.js';
+
+test('an HTTP-200 failed background upload preserves its server diagnostic instead of replacing it with a client error',async t=>{
+ const oldStorage=Object.getOwnPropertyDescriptor(globalThis,'localStorage'),oldFetch=globalThis.fetch;clearDiagnostics();
+ t.after(()=>{globalThis.fetch=oldFetch;if(oldStorage)Object.defineProperty(globalThis,'localStorage',oldStorage);else delete globalThis.localStorage;clearDiagnostics();});
+ Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:()=>null,setItem:()=>{},removeItem:()=>{}}});
+ const diagnostic={schemaVersion:1,errorId:crypto.randomUUID(),occurredAt:new Date().toISOString(),status:422,operation:'upload',category:'validation',code:'IMAGE_TRUNCATED',type:'Error',trace:[],redacted:true,image:{stage:'page-validation',phase:'decode',format:'jpeg',page:7,pages:30,filename:'private.jpg'}};
+ globalThis.fetch=async()=>new Response(JSON.stringify({id:crypto.randomUUID(),state:'failed',receivedBytes:4,processing:{diagnostic},error:'画像書籍の7 / 30ページ目を読み込めません。'}),{headers:{'content-type':'application/json'}});
+ const file=new File([Buffer.from([0xff,0xd8,0xff,0xd9])],'private.jpg',{type:'image/jpeg'}),task=createResumableUpload({endpoint:'http://127.0.0.1',token:'test',userId:'fixture',unauthorized:()=>assert.fail('Unexpected 401')},crypto.randomUUID(),[file],'Fixture',()=>{});
+ await assert.rejects(task.promise,error=>diagnosticFor(error)?.errorId===diagnostic.errorId&&error.status===422);assert.equal(recentDiagnostics()[0].code,'IMAGE_TRUNCATED');assert.equal(recentDiagnostics()[0].image.page,7);assert(!JSON.stringify(recentDiagnostics()).includes('private.jpg'));
+});
 
 test('web upload client recovers a lost part response and resumes received parts after a network outage', async t => {
   const dataDir = await mkdtemp(join(tmpdir(), 'mirea-client-'));

@@ -13,6 +13,11 @@ import {createApp} from '../server/app.js';
 import {requestError,recentDiagnostics,clearDiagnostics,diagnosticText,recordClientError,recordDiagnostic} from '../web/src/error-diagnostics.js';
 const secret='秘密の作品@example.test_TOKEN_013579';
 const request={method:'DELETE',routeOptions:{url:'/api/v1/series/:id'},url:'/api/v1/series/'+secret+'?password='+secret,body:{title:secret},headers:{authorization:'Bearer '+secret}};
+test('image diagnostics expose only fixed phases, format, dimensions and page numbers, including safe decoder locations for 422',()=>{
+ const failure=Object.assign(error(),{code:'IMAGE_TRUNCATED',image:{stage:'page-validation',phase:'decode',format:'jpeg',page:2,pages:300,width:5000,height:8000,filename:secret,path:'/media/'+secret,profile:secret}});
+ const d=createErrorDiagnostic(failure,{method:'POST',routeOptions:{url:'/api/v1/shelves/:id/uploads'}},{status:422});assert.deepEqual(d.image,{stage:'page-validation',phase:'decode',format:'jpeg',page:2,pages:300,width:5000,height:8000});assert(d.trace.length);assert(!JSON.stringify(d).includes(secret));
+ assert.deepEqual(normalizeDiagnostic({...d,image:{...d.image,page:1001,format:secret,phase:secret,filename:secret}}).image,{stage:'page-validation',pages:300,width:5000,height:8000});
+});
 function error(){
   const root=Object.assign(new Error('cannot remove '+secret),{code:'EACCES',syscall:'rmdir',path:'/mnt/PrivatePool/'+secret});
   root.stack=`Error: ${secret}\n    at ${secret} (${pathToFileURL(join(PROJECT_ROOT,'server/series-actions.js'))}:43:12)\n    at native (/mnt/PrivatePool/${secret}:1:1)\n    at ${secret} (${pathToFileURL(join(PROJECT_ROOT,'server/secret-title.js'))}:44:13)`;

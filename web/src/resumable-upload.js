@@ -125,7 +125,7 @@ export function createResumableUpload({ endpoint, token, shelfUnlock='',userId, 
       state = await retry(() => request(`/uploads/${uploadId}${state.protocolVersion>=2?'/status':''}`));
       onProgress(100,state.processing);
     }
-    if (state.state !== 'complete' || !state.item) { save(null); throw new Error(state.error || 'コンテンツを保存できませんでした。'); }
+    if (state.state !== 'complete' || !state.item) { save(null);const diagnostic=state.diagnostic??state.processing?.diagnostic;throw requestError({error:state.error||'コンテンツを保存できませんでした。',diagnostic},diagnostic?.status??422,{record:false,defer:isCurrent()}); }
     save(null);
     return { item: state.item,seriesWarning:state.seriesWarning??'' };
   })().catch(error => {

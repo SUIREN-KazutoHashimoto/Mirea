@@ -8,9 +8,20 @@ import { tmpdir } from 'node:os';
 import sharp from 'sharp';
 import { createMediaProcessor, ffmpegPath } from '../server/media.js';
 import { makeMp4, withOutOfRangeEditList } from './fixtures.js';
+import {thumbnailWebp} from '../server/thumbnail-webp.js';
 
 const run = promisify(execFile);
 const options = { timeout: 30_000, maxBuffer: 1024 * 1024, windowsHide: true };
+test('JPEG with only a missing EOI marker is strictly revalidated on a copy; missing pixels still fail and original bytes survive',async t=>{
+ const {directory,media}=await setup(t),full=await sharp({create:{width:80,height:120,channels:3,background:'#4077b0'}}).withMetadata({orientation:6}).jpeg().toBuffer();
+ assert.deepEqual([...full.subarray(-2)],[0xff,0xd9]);const bytes=full.subarray(0,full.length-2),source=join(directory,'without-end.jpg');await writeFile(source,bytes);
+ await assert.rejects(sharp(source,{failOn:'warning'}).stats(),/premature end/i);
+ const metadata=await media.validateImage(source);assert.equal(metadata.width,120);assert.equal(metadata.height,80);assert.equal(metadata.size,bytes.length);
+ const cover=join(directory,'cover.jpg');await media.thumbnail(source,'image/jpeg',cover);assert.equal((await sharp(cover).metadata()).width,120);
+ const webp=await thumbnailWebp(source,{destination:join(directory,'cover.webp'),force:true});assert.equal((await sharp(webp).metadata()).format,'webp');assert.deepEqual(await readFile(source),bytes);
+ for(const [name,broken] of [['missing-pixels',full.subarray(0,full.length-16)],['early-end',Buffer.concat([full.subarray(0,full.length-16),Buffer.from([0xff,0xd9])])]]){const path=join(directory,name+'.jpg');await writeFile(path,broken);await assert.rejects(media.validateImage(path),e=>e.statusCode===422&&['IMAGE_TRUNCATED','IMAGE_INVALID_DATA','IMAGE_DECODE_FAILED'].includes(e.code));assert.deepEqual(await readFile(path),broken);}
+ const missing=join(directory,'not-present.jpg');await assert.rejects(media.validateImage(missing),e=>e.statusCode===503&&e.code==='ENOENT'&&e.image.phase==='read'&&!e.message.includes(directory));
+});
 async function setup(t) {
   const directory = await mkdtemp(join(tmpdir(), 'mirea-media-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

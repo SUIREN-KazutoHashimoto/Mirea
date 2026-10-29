@@ -11,6 +11,7 @@ import { isVideo } from './video-types.js';
 import { isAudio } from './audio-types.js';
 import { publishAudio } from './audio-publish.js';
 import { publishVideo } from './video-publish.js';
+import {imageBookFailure} from './media-failure.js';
 
 // Only fully verified media is published. An upload ID also becomes its item ID,
 // allowing a persisted job to recognize publication after an interrupted restart.
@@ -43,16 +44,22 @@ export async function publishStagedUpload(context, upload, authorize) {
         const { bytesRead } = await handle.read(head, 0, head.length, 0);
         head = head.subarray(0, bytesRead);
       } finally { await handle.close(); }
-      if (!matchesFileType(file.mime, head)) throw httpError(415, 'ファイルの内容と形式が一致しません。');
+      if (!matchesFileType(file.mime, head)) {const error=httpError(415,'ファイルの内容と形式が一致しません。');throw isBook?imageBookFailure(Object.assign(error,{code:'IMAGE_TYPE_MISMATCH'}),{page:index+1,pages:files.length,stage:'page-validation',phase:'read'}):error;}
       if (isBook) {
-        const metadata = await media.validateImage(source);
+        db.prepare('UPDATE upload_sessions SET processing_json=? WHERE id=?').run(JSON.stringify({stage:'image-validation',page:index+1,pages:files.length}),id);
+        let metadata;
+        try { metadata = await media.validateImage(source); }
+        catch(error) { throw imageBookFailure(error,{page:index+1,pages:files.length,stage:'page-validation'}); }
         await rename(source, join(stage, `${index + 1}.${imageExtension(file.mime)}`));
         pages.push({ ...metadata, ...file, number: index + 1 });
       }
       authorize();
     }
     const first = files[0];
-    const thumbnail = await media.thumbnail(join(stage, isBook ? `1.${imageExtension(first.mime)}` : 'raw-1'), first.mime, join(stage, 'thumbnail.jpg'), isEpub ? join(stage,'book.json') : undefined);
+    if(isBook)db.prepare('UPDATE upload_sessions SET processing_json=? WHERE id=?').run(JSON.stringify({stage:'thumbnail',page:1,pages:files.length}),id);
+    let thumbnail;
+    try { thumbnail = await media.thumbnail(join(stage, isBook ? `1.${imageExtension(first.mime)}` : 'raw-1'), first.mime, join(stage, 'thumbnail.jpg'), isEpub ? join(stage,'book.json') : undefined); }
+    catch(error) { throw isBook?imageBookFailure(error,{page:1,pages:files.length,stage:'thumbnail'}):error; }
     authorize();
     await moveStorage(join(stage, 'thumbnail.jpg'), finalThumbnail,{authorize});
     if (isBook) await rename(stage, join(booksDir, id));

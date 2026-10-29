@@ -1,6 +1,6 @@
 {
   "name": "mirea",
-  "version": "0.22.2-beta",
+  "version": "0.22.3-beta",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.25.0",
