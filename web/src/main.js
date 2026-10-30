@@ -94,7 +94,7 @@ const finishAppLaunch=showAppLaunch({native});
 const pwa=createPwaInstall({native,ensureWorker:ensureDownloadWorker});
 if(!native&&!import.meta.env.DEV)void pwa.prepare();
 let disposeAuthPwa;
-const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.23.0beta/mirea-0.23.0beta-android.apk';
+const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.24.0beta/mirea-0.24.0beta-android.apk';
 const currentApkUrl=()=>config.androidApkUrl?.startsWith('/api/v1/app-updates/')?absoluteUrl(config.androidApkUrl):config.androidApkUrl||defaultApkUrl;
 
 const root = document.querySelector('#app');
@@ -672,12 +672,12 @@ function deleteItem(item) {
     catch (error) { const box = node.querySelector('.form-error'); box.textContent = error.message; box.hidden = false; node.querySelector('#confirm-delete').disabled = false; }
   };
 }
-async function openViewer(item,{startAtBeginning=false,autoplay=false,background=false,playbackOrder,reuseScreen,playlistId=activePlaylist&&activePlaylist!=='index'?activePlaylist:null}={}) {
+async function openViewer(item,{startAtBeginning=false,autoplay=true,background=false,playbackOrder,reuseScreen,playlistId=activePlaylist&&activePlaylist!=='index'?activePlaylist:null}={}) {
   if(!item||item.offlineUnavailable)return;
   if(!item.shelfId){try{const cached=await(await offlineCatalog()).load(offlinePartition(getEndpoint(),getSession().user.id));const known=cached?.items?.find(i=>i.id===item.id);if(known)item={...known,...item,shelfId:known.shelfId};}catch{/* Content authorization still runs on the server. */}}
   const shelf=shelves.find(s=>s.id===item.shelfId);
   if(!shelf&&isOfflineSession()){toast('本棚情報が端末にありません。オンラインで一覧を同期してから開いてください。');return;}
-  try{await requirePrivateShelf(shelf,{force:activeShelf!==shelf?.id&&!autoplay});}catch(error){toast(error.message);return;}
+  try{await requirePrivateShelf(shelf,{force:activeShelf!==shelf?.id&&!reuseScreen});}catch(error){toast(error.message);return;}
   if(nativePlayerAvailable()&&isTimedKind(item.kind)){
     document.querySelectorAll('.viewer-screen').forEach(screen=>screen.close());
     const preparing=dialog('再生を準備しています','<div class="modal-body"><p class="native-playback-status" role="status">アクセス権・続き位置・端末の保存データを確認しています…</p></div>');
@@ -687,7 +687,7 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false,background
     catch(error){if(!cancelled){preparing.querySelector('.native-playback-status').textContent=error.message;}}
     return;
   }
-  const backgroundContinuation=background || autoplay&&Boolean(document.querySelector('.viewer-screen')?.isMinimized);
+  const backgroundContinuation=background || Boolean(reuseScreen?.isMinimized);
   const progressActor=getSession()?.user.id,progressServer=getEndpoint();
   const playbackScope=progressServer+'|'+progressActor;
   const order=isTimedKind(item.kind)?playbackOrder?.scope===playbackScope?playbackOrder:createPlaybackOrder({scope:playbackScope,modes:loadPlaybackModes(localStorage,playbackScope)}):null;
@@ -775,7 +775,7 @@ async function openViewer(item,{startAtBeginning=false,autoplay=false,background
       if(!validAsset()){discardUnclaimed();return;}
       let stream=adopted?.stream,stopNetworkQuality;
       const renew=previous=>api(`/items/${item.id}/playback-ticket`,{method:'POST',...(previous?{body:{ticket:new URL(previous.url,location.origin).searchParams.get('ticket')}}:{}),signal:AbortSignal.timeout(5000)});
-      const player=mountVideoPlayer(body,{onError,media:adopted?.video,focus:!reusing,kind:item.kind,title:item.title,assetId:item.id,playback:seriesNavigation,onNavigate:direction=>seriesNavigation.navigate(direction),editNavigation:()=>openNavigationEditor({item,api,dialog,esc}),reconnect:async()=>{body.querySelector('.viewer-error')?.remove();if(downloaded)return downloaded.reconnect();await stream.reconnect();return null;}});
+      const player=mountVideoPlayer(body,{onError,media:adopted?.video,focus:!reusing,kind:item.kind,title:item.title,assetId:item.id,preferencesScope:playbackScope,playback:seriesNavigation,onNavigate:direction=>seriesNavigation.navigate(direction),editNavigation:()=>openNavigationEditor({item,api,dialog,esc}),reconnect:async()=>{body.querySelector('.viewer-error')?.remove();if(downloaded)return downloaded.reconnect();await stream.reconnect();return null;}});
       let coverUrl;const coverRequest=new AbortController();
       // Artwork is optional: a slow thumbnail must never delay the media source,
       // progress binding, controls, or the viewer's cleanup registration.

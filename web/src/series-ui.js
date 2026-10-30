@@ -109,9 +109,9 @@ export function mountSeriesNavigation({node,body,meta,item,api,esc,open,isCurren
         bar.innerHTML=`<strong>${esc(series.title)}</strong><span>${currentIndex+1} / ${items.length} · ${esc(items[currentIndex].series.label)}</span><div><button class="button secondary series-prev">← 前のアセット</button><select aria-label="シリーズ内のアセット">${items.map((asset,index)=>`<option value="${esc(asset.id)}" ${asset.offlineUnavailable?'disabled':''} ${index===currentIndex?'selected':''}>${index+1}. ${esc(asset.series.label)} ${esc(asset.title)}</option>`).join('')}</select><button class="button secondary series-next">次のアセット →</button></div><div class="series-continuation"><label><input type="checkbox" class="series-continuous">連続再生・閲覧</label><span class="series-continuation-status" role="status"></span><button type="button" class="text-button series-cancel" hidden>自動移動を停止</button><button type="button" class="text-button series-now" hidden>今すぐ次へ</button></div>`;
         const details=document.createElement('details'),summary=document.createElement('summary');summary.append(bar.querySelector('strong'),bar.querySelector('span'));details.append(summary,...bar.querySelectorAll(':scope > div'));bar.append(details);
         setPlayerIcon(bar.querySelector('.series-prev'),'previous','前の作品');setPlayerIcon(bar.querySelector('.series-next'),'next','次の作品');
-        bar.querySelector('.series-prev').onclick=()=>core.navigate({direction:-1});
-        bar.querySelector('.series-next').onclick=()=>core.navigate();
-        bar.querySelector('select').onchange=e=>core.navigate({targetId:e.target.value});
+        bar.querySelector('.series-prev').onclick=()=>core.navigate({direction:-1,autoplay:Boolean(video&&!video.paused)});
+        bar.querySelector('.series-next').onclick=()=>core.navigate({autoplay:Boolean(video&&!video.paused)});
+        bar.querySelector('select').onchange=e=>core.navigate({targetId:e.target.value,autoplay:Boolean(video&&!video.paused)});
         bar.querySelector('input').onchange=e=>{onEnabled(e.target.checked);core.setEnabled(e.target.checked);};
         bar.querySelector('.series-cancel').onclick=()=>core.cancel('今回の自動移動を停止しました。');
         bar.querySelector('.series-now').onclick=()=>core.navigate({continuous:true,autoplay:true});
@@ -151,6 +151,7 @@ export function mountSeriesNavigation({node,body,meta,item,api,esc,open,isCurren
   })();
   return {
     ready,
+    get navigationState(){const {context,busy}=core.state;return {busy,hasPrevious:order?order.canMove(context,item.id,-1):Boolean(context?.items?.[context.currentIndex-1]),hasNext:order?order.canMove(context,item.id,1):Boolean(context?.items?.[context.currentIndex+1])};},
     preloadNext(){const context=core.state.context;if(enabled&&!order?.modes.shuffle)preload(context?.items?.[context.currentIndex+1]??(order?.modes.repeat==='series'?context?.items?.[0]:null));},
     get modeState(){return {...(order?.modes??{repeat:'off',shuffle:false}),hasSeries:Boolean(core.state.context?.series)};},
     setModes(value){if(!order)return;loopEpoch++;order.setModes(value);onModes(order.modes);onEnabled(true);core.setEnabled(true);},

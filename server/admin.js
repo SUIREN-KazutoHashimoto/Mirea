@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {hashPassword,httpError} from './security.js';
 import {transaction} from './database.js';
+import {createMediaUsage} from './storage-usage.js';
 
 export const adminPassword={type:'string',minLength:1,maxLength:128};
 export const adminBody=(properties={},required=Object.keys(properties))=>({type:'object',additionalProperties:false,properties:{currentPassword:adminPassword,...properties},required:['currentPassword',...required]});
@@ -9,7 +10,8 @@ const name={type:'string',minLength:1,maxLength:80};
 const password={type:'string',minLength:12,maxLength:128};
 const uuid={type:'string',pattern:'^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$'};
 
-export function registerAdmin(app,{db,adminAccess:a,uploads,rateLimit}) {
+export function registerAdmin(app,{db,adminAccess:a,uploads,rateLimit,dataDir,mediaDir=dataDir}) {
+  const mediaUsage=createMediaUsage({dataDir,mediaDir});app.addHook('onClose',async()=>mediaUsage.close());
   const auth={onRequest:async req=>a.requireAdmin(req),config:{rateLimit:rateLimit===false?false:{max:30,timeWindow:'1 minute'}}};
   const publicUser=user=>({id:user.id,name:user.name,email:user.email,createdAt:user.created_at,serverRole:a.role(user.id),disabled:!a.enabled(user.id),lastServerAdmin:a.lastAdmin(user.id)});
   app.get('/api/v1/admin/access',{onRequest:async req=>{try{a.requireAdmin(req);}catch(error){if(error.statusCode!==403)throw error;}}},async req=>({isServerAdmin:a.isAdmin(req.user.id)}));
@@ -19,10 +21,12 @@ export function registerAdmin(app,{db,adminAccess:a,uploads,rateLimit}) {
     assets:db.prepare('SELECT mime_type AS mimeType,COUNT(*) AS count,SUM(size) AS canonicalBytes FROM items GROUP BY mime_type').all(),
     uploads:db.prepare('SELECT state,COUNT(*) AS count FROM upload_sessions GROUP BY state').all(),
     jobs:db.prepare('SELECT kind,state,COUNT(*) AS count FROM admin_jobs GROUP BY kind,state').all(),
+    storage:mediaUsage.snapshot(),
     // Operational counts only: personal telemetry is accessible solely through
     // its owner endpoint, or the existing thresholded global aggregate API.
     schema:db.prepare('SELECT version FROM schema_version').get().version
   }));
+  app.get('/api/v1/admin/storage-usage',auth,async()=>mediaUsage.snapshot());
   app.get('/api/v1/admin/users',{...auth,schema:{querystring:{type:'object',additionalProperties:false,properties:{q:{type:'string',maxLength:100},after:uuid}}}},async req=>{
     const q='%'+(req.query.q??'').replaceAll('\\','\\\\').replaceAll('%','\\%').replaceAll('_','\\_')+'%';
     const rows=db.prepare("SELECT id,name,email,created_at FROM users WHERE id>? AND (name LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\') ORDER BY id LIMIT 101").all(req.query.after??'',q,q);

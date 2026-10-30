@@ -8,18 +8,23 @@ import { bindSeekInteraction } from './seek-interaction.js';
 import {playerKey} from './player-actions.js';
 import {mountVideoNavigation} from './video-navigation.js';
 import {setPlayerIcon,playerSelectMenu} from './player-icons.js';
+import {playerPreferences} from './player-preferences.js';
 
-let playbackPreferences={muted:false,volume:1,rate:1};
 export const formatVideoTime = value => {
   const seconds = Math.max(0, Math.floor(Number.isFinite(value) ? value : 0));
   const h = Math.floor(seconds / 3600), m = Math.floor(seconds % 3600 / 60), s = String(seconds % 60).padStart(2, '0');
   return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
 };
 export function seekVideo(video, value) { if (Number.isFinite(value) && Number.isFinite(video.duration) && video.duration > 0) video.currentTime = Math.min(video.duration, Math.max(0, value)); }
-export function mountVideoPlayer(container, { onError = () => {}, reconnect, kind = 'video', title = '', coverUrl, onNavigate=()=>{},editNavigation, playback, assetId='',media,focus=true, doc = document } = {}) {
+export function mountVideoPlayer(container, { onError = () => {}, reconnect, kind = 'video', title = '', coverUrl, onNavigate=()=>{},editNavigation, playback, assetId='',preferencesScope='',media,focus=true, doc = document } = {}) {
   const audioMode = kind === 'audio';
   container.innerHTML = `<div class="mirea-player" tabindex="0" aria-label="動画プレーヤー"><video playsinline preload="metadata" aria-label="本編動画"></video><div class="player-loading" role="status" hidden>読み込み中…</div><button class="player-center" type="button" aria-label="動画を再生">▶</button><div class="player-controls"><label class="player-scrubber"><span class="sr-only">再生位置</span><input class="player-seek" type="range" min="0" max="1" step="0.01" value="0" disabled></label><div class="player-control-row"><button class="player-play" type="button" aria-label="再生">▶</button><button class="player-backward" type="button" aria-label="10秒戻る">−10</button><button class="player-forward" type="button" aria-label="10秒進む">＋10</button><span class="player-time">0:00 / 0:00</span><div class="player-volume-controls"><button class="player-mute" type="button" aria-label="消音">♫</button><label><span class="sr-only">音量</span><input class="player-volume" type="range" min="0" max="1" step="0.05" value="1"></label></div><label class="player-speed"><span class="sr-only">再生速度</span><select aria-label="再生速度"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="1.75">1.75×</option><option value="2">2×</option></select></label><label class="player-quality" hidden><span class="sr-only">画質</span><select aria-label="画質"></select></label><button class="player-reconnect" type="button" aria-label="動画へ再接続">↻</button><button class="player-background" type="button" aria-label="ライブラリでバックグラウンド再生">バックグラウンド再生</button><button class="player-pip" type="button" aria-label="ピクチャーインピクチャー" hidden>▣</button><button class="player-fullscreen" type="button" aria-label="全画面を切り替える">⛶</button></div><p class="player-help">Space/K 再生 · J/L ±10秒 · ←/→ ±5秒 · 0–9 位置 · &lt;/&gt; 速度 · 停止中 ,/. コマ送り · F 全画面 · C 字幕</p></div></div>`;
   const root = container.querySelector('.mirea-player');
+  root.querySelector('.player-backward').after(root.querySelector('.player-play'));
+  for(const [name,icon,label,anchor]of [['previous','previous','前の作品','.player-backward'],['next','next','次の作品','.player-time']]){const button=doc.createElement('button');button.type='button';button.className='player-'+name;button.disabled=true;setPlayerIcon(button,icon,label);root.querySelector(anchor).before(button);}
+  root.querySelector('.player-previous').onclick=()=>onNavigate(-1);root.querySelector('.player-next').onclick=()=>onNavigate(1);
+  const updateNavigation=()=>{const state=playback?.navigationState??{};root.querySelector('.player-previous').disabled=!state.hasPrevious||state.busy;root.querySelector('.player-next').disabled=!state.hasNext||state.busy;};
+  const stopNavigationControls=playback?.subscribe(updateNavigation);updateNavigation();
   const heatmap=doc.createElement('div');heatmap.className='player-heatmap';heatmap.hidden=true;root.querySelector('.player-scrubber').prepend(heatmap);
   const boostLabel=doc.createElement('div');boostLabel.className='player-boost';boostLabel.textContent='▶▶ 2× 早送り';boostLabel.hidden=true;boostLabel.setAttribute('role','status');root.append(boostLabel);
   if(audioMode){
@@ -46,7 +51,8 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
   for(const [selector,icon,label]of [['.player-speed','speed','再生速度'],['.player-quality','quality','画質'],['.player-repeat','repeat','リピート']]){const control=root.querySelector(selector),wrapper=control.tagName==='SELECT'?control.parentElement:control,menu=playerSelectMenu(label,icon,doc);wrapper.before(menu);menu.append(wrapper);if(selector==='.player-quality'){menu.classList.add('player-quality-menu');menu.hidden=wrapper.hidden;}menu.addEventListener('toggle',()=>{if(menu.open)for(const other of root.querySelectorAll('details'))if(other!==menu)other.open=false;});control.addEventListener('change',()=>menu.open=false);}
   const help=root.querySelector('.player-help'),helpMenu=playerSelectMenu('キーボード操作','help',doc);help.before(helpMenu);helpMenu.append(help);helpMenu.classList.add('player-shortcuts');modeControls.append(helpMenu);updateModes();
   root.dispatchEvent(new CustomEvent('viewer:player-ready',{bubbles:true}));
-  video.controls = false;video.muted=playbackPreferences.muted;video.volume=playbackPreferences.volume;video.playbackRate=playbackPreferences.rate;
+  const preferences=playerPreferences(preferencesScope),savedPreferences=preferences.value;
+  video.controls = false;video.muted=savedPreferences.muted;video.volume=savedPreferences.volume;video.defaultPlaybackRate=savedPreferences.rate;video.playbackRate=savedPreferences.rate;
   const listeners = []; let disposed = false, timer, clickTimer, scrubbing = false, hasHeatmap = false,navigation;
   const controlsObserver=typeof ResizeObserver==='undefined'?null:new ResizeObserver(entries=>root.style.setProperty('--player-controls-height',entries[0].target.getBoundingClientRect().height+'px'));controlsObserver?.observe(root.querySelector('.player-controls'));
   const listen = (target, event, fn, options) => { target.addEventListener(event, fn, options); listeners.push(() => target.removeEventListener(event, fn, options)); };
@@ -55,7 +61,7 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
   const hold=audioMode?null:mountVideoHold(video,{document:doc,changed:active=>{boostLabel.hidden=!active;root.classList.toggle('hold-boost',active);showControls();}});
   const announceControls = visible => root.dispatchEvent(new CustomEvent('viewer:player-controls', { bubbles:true, detail:visible }));
   const setSeeking=active=>{scrubbing=active||Boolean(navigation?.precise);heatmap.hidden=!hasHeatmap||!scrubbing;navigation?.scrub(scrubbing);if(!scrubbing)update();showControls();};
-  const seekInteraction=bindSeekInteraction(seek,{document:doc,changed:setSeeking});
+  const seekInteraction=bindSeekInteraction(seek,{document:doc,changed:setSeeking,commit:target=>{if(!navigation?.precise)seekVideo(video,target);update();}});
   if(!audioMode)navigation=mountVideoNavigation(root,video,seek,{doc,format:formatVideoTime,seekTo:value=>seekVideo(video,value),seeking:setSeeking,onError,edit:editNavigation});
   function showControls() { root.classList.remove('controls-hidden'); announceControls(true); clearTimeout(timer); if (!audioMode && !video.paused) timer = setTimeout(() => { if (!scrubbing && !video.paused && root.closest('.viewer-screen')?.dataset.chromePinned!=='true'&&!root.querySelector('details[open]')&&!root.querySelector('.player-controls').contains(doc.activeElement)) { root.classList.add('controls-hidden'); announceControls(false); } }, 2600); }
   const play = async () => { try {const playing=video.paused||video.ended;video.dispatchEvent(new CustomEvent('mirea:playback-intent',{detail:{playing}}));if(playing){if(video.ended)seekVideo(video,0);await video.play();}else video.pause();}catch{if(!disposed)onError(new Error('再生を開始できません。再生ボタンを押すか、再接続してください。'));}};
@@ -83,7 +89,8 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
     try { const position = video.currentTime, playing = !video.paused, next = await reconnect(); if (disposed) return; if (!next) return; video.src = next; video.addEventListener('loadedmetadata', () => { if (!disposed) { seekVideo(video, position); if (playing) video.play().catch(() => {}); } }, { once: true }); video.load(); } catch (error) { if (!disposed) onError(error); } finally { if (!disposed) button.disabled = false; }
   };
   seek.oninput = () => { root.querySelector('.player-time').textContent = `${formatVideoTime(Number(seek.value))} / ${formatVideoTime(video.duration)}`;seek.style.setProperty('--played',`${Number(seek.value)/Math.max(1,video.duration)*100}%`); };
-  seek.onchange = () => { if(!navigation?.precise)seekVideo(video, Number(seek.value)); update(); };
+  listen(video,'volumechange',()=>preferences.save({volume:video.volume,muted:video.muted}));
+  listen(video,'ratechange',()=>{if(!hold?.active){if(video.defaultPlaybackRate!==video.playbackRate)video.defaultPlaybackRate=video.playbackRate;preferences.save({rate:video.playbackRate});}});
   for(const event of ['loadstart','emptied','error','enterpictureinpicture'])listen(video,event,()=>{navigation?.cancel();seekInteraction.cancel();});
   for (const event of ['timeupdate', 'loadedmetadata', 'durationchange', 'seeked','play', 'pause', 'ended', 'volumechange','ratechange']) listen(video, event, () => { update();if(event==='ratechange'&&!hold?.active)root.querySelector('.player-speed select').value=String(video.playbackRate);if(event!=='timeupdate')showControls(); });
   for (const event of ['waiting', 'seeking', 'loadstart']) listen(video, event, () => { root.querySelector('.player-loading').hidden = false; });
@@ -135,5 +142,5 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
     if(select.dataset.levels!==key){select.replaceChildren(...values.map(value=>{const option=doc.createElement('option');option.value=value.value;option.textContent=value.text;return option;}));select.dataset.levels=key;}
     else for(const value of values){const option=[...select.options].find(o=>o.value===value.value);if(option)option.textContent=value.text;}
     select.value=selected;select.onchange=()=>{hold?.cancel();choose(select.value);};
-  }, dispose() { controlsObserver?.disconnect();stopEqualizer();artObserver?.disconnect();stopAudioMotion?.();stopModes?.();hold?.dispose();navigation?.dispose();seekInteraction.dispose();playbackPreferences={muted:video.muted,volume:video.volume,rate:video.playbackRate};disposed = true;if(screen?.onReturn===leavePlayer)screen.onReturn=null; mediaSession.dispose(); clearTimeout(timer);clearTimeout(clickTimer); for (const remove of listeners) remove(); video.pause(); video.removeAttribute('src'); video.load(); root.remove(); } };
+  }, dispose() { disposed=true;controlsObserver?.disconnect();stopEqualizer();artObserver?.disconnect();stopAudioMotion?.();stopModes?.();stopNavigationControls?.();for(const remove of listeners)remove();hold?.dispose();navigation?.dispose();seekInteraction.dispose();if(screen?.onReturn===leavePlayer)screen.onReturn=null;mediaSession.dispose();clearTimeout(timer);clearTimeout(clickTimer);video.pause();video.removeAttribute('src');video.load();root.remove();} };
 }

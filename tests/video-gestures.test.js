@@ -37,3 +37,11 @@ test('seek cancellation, lost capture, blur, hidden/fullscreen and dispose canno
   assert.equal(binding.active,false,event);binding.dispose();pointer(seek,'pointerdown');assert.equal(binding.active,false,'disposed listener removed');
  }
 });
+
+test('the chosen playhead commits once before release can repaint it, including browsers suppressing change',()=>{
+ for(const release of ['pointerup','change']){
+  const seek=new Media(),win=new EventTarget(),commits=[];seek.value='3';const binding=bindSeekInteraction(seek,{window:win,document:new EventTarget(),commit:value=>commits.push(value),changed:active=>{if(!active)seek.value='3';}});
+  pointer(seek,'pointerdown');seek.value='72.5';pointer(seek,'input');pointer(release==='change'?seek:win,release);assert.deepEqual(commits,[72.5],release);pointer(seek,'change');pointer(win,'pointerup');assert.deepEqual(commits,[72.5],'release and change must not double seek');binding.dispose();
+ }
+ for(const release of ['pointercancel','lostpointercapture']){const seek=new Media(),commits=[],binding=bindSeekInteraction(seek,{window:new EventTarget(),document:new EventTarget(),commit:value=>commits.push(value)});pointer(seek,'pointerdown');seek.value='80';pointer(seek,'input');pointer(seek,release);pointer(seek,'change');assert.deepEqual(commits,[],'cancelled gestures discard the speculative destination');binding.dispose();}
+});

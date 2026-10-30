@@ -3,7 +3,8 @@ import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
 import ffmpeg from 'ffmpeg-static';
 
-export function makePdf() {
+export function makePdf(pageCount=1) {
+  if(!Number.isInteger(pageCount)||pageCount<1||pageCount>100)throw Error('Invalid synthetic page count');
   const text = 'BT /F1 24 Tf 50 700 Td (Mirea thumbnail test) Tj ET';
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
@@ -12,12 +13,14 @@ export function makePdf() {
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
     `<< /Length ${text.length} >>\nstream\n${text}\nendstream`
   ];
+  for(let page=1;page<pageCount;page++)objects.push(objects[2]);
+  objects[1]=`<< /Type /Pages /Kids [${[3,...Array.from({length:pageCount-1},(_,index)=>6+index)].map(id=>id+' 0 R').join(' ')}] /Count ${pageCount} >>`;
   let pdf = '%PDF-1.4\n';
   const offsets = [];
   for (const [index, object] of objects.entries()) { offsets.push(Buffer.byteLength(pdf)); pdf += `${index + 1} 0 obj\n${object}\nendobj\n`; }
   const xref = Buffer.byteLength(pdf);
-  pdf += `xref\n0 6\n0000000000 65535 f \n${offsets.map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}`;
-  return Buffer.from(`${pdf}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+  pdf += `xref\n0 ${objects.length+1}\n0000000000 65535 f \n${offsets.map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}`;
+  return Buffer.from(`${pdf}trailer\n<< /Size ${objects.length+1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
 }
 
 export async function makeMp4(filename, { duration = 0.2, width = 64, height = 64, audio = false, fps = 25, color = 'blue' } = {}) {
