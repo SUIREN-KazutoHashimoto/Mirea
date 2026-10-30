@@ -1,3 +1,5 @@
+/* Status-only notifications must never intercept controls below them. */
+.toast{pointer-events:none}
 .player-controls button svg,.player-option-menu>summary svg{width:22px;height:22px;flex:none;display:block}
 .player-control-row{align-items:center;gap:6px;flex-wrap:wrap}
 .player-control-row>button,.player-volume-controls>button,.player-mode-controls>button{width:40px;height:40px;min-width:40px;padding:8px;display:inline-flex;align-items:center;justify-content:center}
