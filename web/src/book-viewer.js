@@ -1,4 +1,5 @@
 import { swipeStep } from './book-gestures.js';
+import {bindSeekInteraction} from './seek-interaction.js';
 export function bookScale(width, height, availableWidth, availableHeight, zoom = 'fit', maxScale = 4) {
   return zoom === 'fit' ? Math.max(.01, Math.min((availableWidth - 8) / width, (availableHeight - 8) / height, maxScale)) : Number(zoom);
 }
@@ -17,7 +18,7 @@ export function createBookChrome(container, { kind, total, onError = () => {} })
   const zoom = container.querySelector('.book-zoom'), screen = container.closest('.viewer-screen');
   (container.assetTools??screen?.querySelector('.viewer-tools'))?.append(container.querySelector('.book-toolbar'));
   container.querySelector('.book-footer').setAttribute('data-viewer-chrome', '');
-  let state = { page: 1, total: total || 1, ready: false }, handlers = {}, disposed = false, pointer, lastSwipe = 0;
+  let state = { page: 1, total: total || 1, ready: false }, handlers = {}, disposed = false, pointer, lastSwipe = 0,loaded=false;
   const pointers = new Set();
   try { if (localStorage.getItem('mirea.book-direction') === 'rtl') direction.value = 'rtl'; } catch {}
   const listeners = []; const listen = (target, name, fn, options) => { target.addEventListener(name, fn, options); listeners.push(() => target.removeEventListener(name, fn, options)); };
@@ -31,7 +32,7 @@ export function createBookChrome(container, { kind, total, onError = () => {} })
   directory.onclick = () => { panel.hidden = !panel.hidden; directory.setAttribute('aria-expanded', String(!panel.hidden)); if (!panel.hidden) { pageList(); invoke(handlers.outline); } };
   direction.onchange = () => { try { localStorage.setItem('mirea.book-direction', direction.value); } catch {} stage.dataset.direction = direction.value; };
   slider.oninput = () => { container.querySelector('.book-percent').textContent = `${slider.value}ページ`; };
-  slider.onchange = () => invoke(() => handlers.go?.(Number(slider.value)));
+  const timeline=bindSeekInteraction(slider,{document:container.ownerDocument,window:container.ownerDocument.defaultView,commit:value=>invoke(()=>handlers.go?.(Math.round(value)))});
   listen(container, 'keydown', event => { if (['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'].includes(event.target.tagName) || event.ctrlKey || event.metaKey || event.altKey) return; const step = bookDirection(event.key, direction.value); if (step) { event.preventDefault(); navigate(step); } });
   listen(stage, 'pointerdown', event => {
     if (event.target.closest('a,button')) return;
@@ -55,8 +56,8 @@ export function createBookChrome(container, { kind, total, onError = () => {} })
   return {
     stage, direction, zoom,
     bind(value) { handlers = value; },
-    update(value) { if (disposed) return; state = { ...state, ...value }; slider.max = String(state.total || 1); slider.value = String(state.page); slider.disabled = !state.ready; container.querySelector('.book-percent').textContent = `${Math.round(state.page / Math.max(1, state.total) * 100)}%`; if (!panel.hidden) pageList(); },
+    update(value) { if (disposed) return; state = { ...state, ...value };loaded||=state.ready;slider.max = String(state.total || 1);if(!timeline.active)slider.value = String(state.page);slider.disabled = !loaded;if(!timeline.active)container.querySelector('.book-percent').textContent = `${Math.round(state.page / Math.max(1, state.total) * 100)}%`;if (!panel.hidden) pageList(); },
     outline(entries) { const list = panel.querySelector('.book-outline'); list.replaceChildren(); if (!entries.length) { list.textContent = '章の目次はありません。ページ番号から移動できます。'; return; } for (const entry of entries.slice(0, 200)) { const button = document.createElement('button'); button.type = 'button'; button.textContent = entry.title; button.onclick = () => { invoke(entry.go); panel.hidden = true; directory.setAttribute('aria-expanded', 'false'); }; list.append(button); } },
-    dispose() { disposed = true; pointers.clear(); listeners.forEach(remove => remove()); container.classList.remove('book-viewer'); }
+    dispose() { disposed = true;timeline.dispose();pointers.clear();listeners.forEach(remove => remove());container.classList.remove('book-viewer'); }
   };
 }

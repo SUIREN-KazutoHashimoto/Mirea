@@ -35,7 +35,7 @@ async function setup(t,extra={}){
 
 test('only enabled server admins see admin APIs; content ACL and personal telemetry isolation remain separate',async t=>{
   const c=await setup(t),asset=await c.asset();
-  for(const path of ['/admin/overview','/admin/jobs','/admin/users','/admin/shelves','/admin/backups','/admin/updates/status','/admin/audit']){
+  for(const path of ['/admin/overview','/admin/storage-usage','/admin/jobs','/admin/users','/admin/shelves','/admin/backups','/admin/updates/status','/admin/audit']){
     assert.equal((await c.req('GET',path,null)).statusCode,401,path);
     assert.equal((await c.req('GET',path,c.reader)).statusCode,403,path);
     assert.equal((await c.req('GET',path,c.admin)).statusCode,200,path);
