@@ -31,8 +31,8 @@ export async function registerAdminJobs(app,context) {
   let closing=false;const pending=new Map();
   const get=id=>db.prepare('SELECT * FROM admin_jobs WHERE id=?').get(id);
   const assetLabel=db.prepare('SELECT i.title,s.name AS shelf FROM items i JOIN shelves s ON s.id=i.shelf_id WHERE i.id=?');
-  const safe=row=>{const item=row.asset_id?assetLabel.get(row.asset_id):null;return {id:row.id,...jobTiming(db,row.id),kind:row.kind,assetId:row.asset_id,title:item?.title??null,shelf:item?.shelf??null,state:row.state,progress:JSON.parse(row.progress_json),error:row.error,createdAt:row.created_at,updatedAt:row.updated_at};};
-  const uploadSafe=row=>({id:row.id,...jobTiming(db,row.id,'upload'),title:row.title,state:row.state,error:row.error,processing:JSON.parse(row.processing_json),createdAt:row.created_at,assetExists:Boolean(db.prepare('SELECT 1 FROM items WHERE id=?').get(row.id))});
+  const safe=row=>{const item=row.asset_id?assetLabel.get(row.asset_id):null,source=db.prepare('SELECT 1 FROM media_tasks WHERE id=?').get(row.id)?'media':'admin';return {id:row.id,source,manual:context.jobPool.isManual(row.id),canStart:row.state==='queued'&&(source==='media'?context.mediaPipeline.canForce(row.id):row.kind!=='repair'||!isTimedMime(db.prepare('SELECT mime_type FROM items WHERE id=?').get(row.asset_id)?.mime_type??'')),...jobTiming(db,row.id),kind:row.kind,assetId:row.asset_id,title:item?.title??null,shelf:item?.shelf??null,state:row.state,progress:JSON.parse(row.progress_json),error:row.error,createdAt:row.created_at,updatedAt:row.updated_at};};
+  const uploadSafe=row=>({id:row.id,source:'upload',manual:context.jobPool.isManual(row.id),canStart:row.state==='processing'&&!context.mediaPipeline.has(row.id)&&context.jobPool.lane('ingest').canStart(row.id),...jobTiming(db,row.id,'upload'),title:row.title,state:row.state,error:row.error,processing:JSON.parse(row.processing_json),createdAt:row.created_at,assetExists:Boolean(db.prepare('SELECT 1 FROM items WHERE id=?').get(row.id))});
   const report=(id,value)=>db.prepare('UPDATE admin_jobs SET progress_json=?,updated_at=? WHERE id=?').run(JSON.stringify(value),Date.now(),id);
   // Persist the complete asset snapshot, but keep only a bounded execution
   // window in memory. Queued work is recovered from the database on restart.
@@ -178,7 +178,8 @@ export async function registerAdminJobs(app,context) {
     if(db.prepare("SELECT 1 FROM admin_jobs WHERE asset_id=? AND state IN ('queued','running')").get(item.id)||db.prepare("SELECT 1 FROM media_tasks WHERE asset_id=? AND state IN ('queued','running')").get(item.id))throw httpError(409,'このアセットの後処理を実行中です。完了後に再生成してください。');
     const id=randomUUID(),now=Date.now();db.prepare("INSERT INTO admin_jobs(id,kind,asset_id,state,requested_by,created_at,updated_at) VALUES(?,'owner_thumbnail',?,'queued',?,?,?)").run(id,item.id,req.user.id,now,now);a.audit(req,'media.thumbnail.owner',item.id,{jobId:id});pump();return reply.code(202).send({job:safe(get(id))});
   });
-  app.get('/api/v1/admin/jobs',auth,async()=>({
+  app.get('/api/v1/admin/jobs',auth,async req=>({
+    manualSlot:context.jobPool.manualFor(req.user.id),
     currentSummary:db.prepare(`SELECT SUM(state='running') AS running,SUM(state='queued') AS queued FROM (SELECT state FROM admin_jobs WHERE state IN ('queued','running') UNION ALL SELECT state FROM media_tasks WHERE state IN ('queued','running') UNION ALL SELECT CASE state WHEN 'uploading' THEN 'running' ELSE 'queued' END FROM upload_sessions WHERE state='processing' AND NOT EXISTS(SELECT 1 FROM media_ingest WHERE asset_id=upload_sessions.id) OR state='uploading' AND expires_at>?)`).get(Date.now()),
     jobs:[...db.prepare("SELECT * FROM admin_jobs ORDER BY created_at DESC LIMIT 100").all(),...db.prepare('SELECT * FROM media_tasks ORDER BY created_at DESC LIMIT 100').all()].map(safe),
     currentJobs:[...db.prepare("SELECT * FROM admin_jobs WHERE state IN ('queued','running') ORDER BY CASE state WHEN 'running' THEN 0 ELSE 1 END,created_at,id LIMIT 100").all(),...db.prepare("SELECT * FROM media_tasks WHERE state IN ('queued','running') ORDER BY CASE state WHEN 'running' THEN 0 ELSE 1 END,created_at,id LIMIT 100").all()].map(safe),
@@ -188,6 +189,23 @@ export async function registerAdminJobs(app,context) {
     uploads:db.prepare('SELECT id,title,state,error,processing_json,created_at,files_json FROM upload_sessions ORDER BY created_at DESC LIMIT 100').all().map(row=>({id:row.id,title:row.title,state:row.state,error:row.error,processing:JSON.parse(row.processing_json),createdAt:row.created_at,assetExists:Boolean(db.prepare('SELECT 1 FROM items WHERE id=?').get(row.id)),retryable:row.state==='failed'&&isTimedMime(JSON.parse(row.files_json)[0]?.mime)})),
     previews:context.videoPreviews.inspect().map(row=>({...row,id:row.assetId,automatic:true,title:'自動動画プレビュー'})),thumbnails:context.ensureThumbnail.inspect().map(row=>({...row,id:row.assetId,automatic:true,title:'自動サムネイル'})),processors:media.inspect?.()??[],lanes:context.jobPool.inspect?.()
   }));
+  app.post('/api/v1/admin/jobs/:id/start',{...auth,schema:{params:{type:'object',required:['id'],properties:{id:{type:'string',format:'uuid'}}},body:retryBody({source:{enum:['admin','media','upload']}})}},async(req,reply)=>{
+    if(maintenance.locked)throw httpError(409,'保守処理中です。');
+    if(context.jobPool.manualFor(req.user.id))throw httpError(409,'手動開始の追加枠は使用中です。管理者1アカウントにつき同時に1件までです。');
+    const source=req.body.source;let result;
+    if(source==='media')result=context.mediaPipeline.forceStart(req.params.id,req.user.id);
+    else if(source==='upload')result=uploads.forceStart(req.params.id,req.user.id);
+    else{
+      const row=get(req.params.id);
+      if(!row)throw httpError(404,'ジョブが見つかりません。');
+      if(row.state!=='queued')throw httpError(409,'待機中のジョブを選んでください。');
+      if(row.kind==='navigation')result=context.navigation.forceStart(row.id,req.user.id);
+      else{if(!['thumbnail','owner_thumbnail','transcode','preview','repair'].includes(row.kind))throw httpError(409,'このジョブは手動開始できません。');schedule(row.id);result=context.jobPool.forceStart(row.id,req.user.id);}
+    }
+    if(!result.started)throw httpError(409,result.reason==='busy'?'手動開始の追加枠は使用中です。':'すでに開始済みか、先行ジョブの完了待ちです。更新して確認してください。');
+    a.audit(req,'job.manual.start',req.params.id,{source});
+    return reply.code(202).send({started:true,id:req.params.id});
+  });
   app.get('/api/v1/admin/assets',{...auth,schema:{querystring:{type:'object',additionalProperties:false,properties:{q:{type:'string',maxLength:100},after:{type:'string',maxLength:36}}}}},async req=>{
     const rows=db.prepare('SELECT i.id,i.title,i.mime_type AS mimeType,s.name AS shelf FROM items i JOIN shelves s ON s.id=i.shelf_id WHERE i.id>? AND instr(lower(i.title),lower(?))>0 ORDER BY i.id LIMIT 101').all(req.query.after??'',req.query.q??'');
     return {assets:rows.slice(0,100).map(item=>({...item,hasHls:Boolean(videoMetadata(db,item.id)),originalRetained:Boolean(videoMetadata(db,item.id)?.originalRetained)})),nextCursor:rows.length>100?rows[99].id:null};

@@ -94,7 +94,7 @@ const finishAppLaunch=showAppLaunch({native});
 const pwa=createPwaInstall({native,ensureWorker:ensureDownloadWorker});
 if(!native&&!import.meta.env.DEV)void pwa.prepare();
 let disposeAuthPwa;
-const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.24.0beta/mirea-0.24.0beta-android.apk';
+const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.25.0beta/mirea-0.25.0beta-android.apk';
 const currentApkUrl=()=>config.androidApkUrl?.startsWith('/api/v1/app-updates/')?absoluteUrl(config.androidApkUrl):config.androidApkUrl||defaultApkUrl;
 
 const root = document.querySelector('#app');
@@ -320,7 +320,7 @@ function renderShell() {
   const seriesContext=document.createElement('div');seriesContext.className='series-context';seriesContext.hidden=true;document.querySelector('.collection-caption').before(seriesContext);
   document.querySelector('#add-series').onclick=()=>manageSeries(true);
   document.querySelector('#recent-history').onclick=openRecentHistory;
-  document.querySelector('#transfer-center').onclick=()=>{const ctx=catalogContext();return openTransferCenter({dialog,esc,onDownloads:openDownloadManager,api,isCurrent:ctx.current});};
+  document.querySelector('#transfer-center').onclick=()=>{const ctx=catalogContext();return openTransferCenter({dialog,esc,onDownloads:openDownloadManager,onDestination:openTransferDestination,api,isCurrent:ctx.current});};
   updateTransferCount();
   const adminAnchor=document.querySelector('#nav-settings'),actor=getSession();
   if(!isOfflineSession())api('/admin/access',{signal:AbortSignal.timeout(2500)}).then(access=>{
@@ -578,6 +578,18 @@ function renderItems(animate=false) {
   videoPreviews.setPaused('native', !nativeAppActive);
 }
 
+async function openTransferDestination(destination){
+  const ctx=catalogContext();
+  let shelf=shelves.find(s=>s.id===destination.shelfId);
+  if(!shelf){await refresh();shelf=shelves.find(s=>s.id===destination.shelfId);}
+  if(!ctx.current()||!shelf)throw Error('追加先の本棚が見つからないか、閲覧権限が変更されています。');
+  await requirePrivateShelf(shelf,{force:true});if(!ctx.current())return;
+  historyMode=false;historyRows=[];activePlaylist='';playlistDraft=null;activeShelf=shelf.id;activeSeries='';seriesReturnView=null;filter='all';search='';document.querySelector('#search').value='';
+  const result=offlineLibrary?(applyOfflineShelf(),renderNav(),renderItems(true),{status:'updated'}):await refresh();
+  if(!ctx.current())return;
+  if(result?.status!=='updated'&&result?.status!=='offline')throw Error('追加先を開けませんでした。もう一度お試しください。');
+  if(destination.seriesId){if(!series.some(s=>s.id===destination.seriesId&&s.shelfId===shelf.id))throw Error('追加先シリーズは移動または削除されています。');openLibrarySeries(destination.seriesId);}
+}
 function openLibrarySeries(id){
   if(!activeSeries)seriesReturnView={filter,search,sort};
   activeSeries=id;sort='series';filter='all';search='';document.querySelector('#search').value='';renderItems(true);document.querySelector('.series-folder-name h2')?.focus({preventScroll:true});document.querySelector('.collection')?.scrollIntoView({block:'start'});

@@ -1,4 +1,6 @@
 import {jobTiming} from './job-timing.js';
+import {registerManualUploads,requireUploadSlot,manualUploadSlot} from './manual-uploads.js';
+import {transferDestination} from './transfer-destination.js';
 import {transaction} from './database.js';
 import {registerTransferQueue,linkQueuedUpload} from './transfer-queue.js';
 import {assertUploadName} from './name-integrity.js';
@@ -34,10 +36,11 @@ export async function registerResumableUploads(app, context) {
   const auth = { onRequest: async req => authenticate(req) };
   const get = id => db.prepare('SELECT * FROM upload_sessions WHERE id=?').get(id);
   registerTransferQueue(app,context);
+  registerManualUploads(app,context);
   // Failed sources remain retryable, but are not running work. Use the same
   // admission rule for new transfers, multipart and both retry entry points.
   const activeCount=userId=>db.prepare("SELECT COUNT(*) AS n FROM upload_sessions WHERE user_id=? AND (state='processing' OR (state='uploading' AND expires_at>?))").get(userId,Date.now()).n;
-  function requireSlot(userId){if(db.prepare("SELECT COUNT(*) n FROM upload_sessions WHERE user_id=? AND state='uploading' AND expires_at>?").get(userId,Date.now()).n>=(context.processingSettings?.value.maxConcurrentUploads??3))throw httpError(429,'同時送信数の上限です。キューで待機して自動的に再開します。');}
+  const requireSlot=(userId,queueId)=>requireUploadSlot(db,userId,context.processingSettings?.value.maxConcurrentUploads??3,queueId);
   function owned(req) {
     const upload = get(req.params.id);
     if (!upload || upload.user_id !== req.user.id) throw httpError(404, 'アップロードが見つかりません。');
@@ -205,12 +208,11 @@ export async function registerResumableUploads(app, context) {
       if(candidates.length===1){transaction(db,()=>linkQueuedUpload(db,req.body.clientTransferId,candidates[0]));return reply.code(200).send(status(candidates[0]));}
     }
     context.jobPool.prioritizeTransfers?.();
-    requireSlot(req.user.id);
     const id = randomUUID(), now = Date.now();
     try {
       // Count and reserve synchronously before filesystem I/O: concurrent
       // requests cannot all pass the per-user active-upload limit.
-      transaction(db,()=>{assertUploadName(db,{id,shelf_id:req.params.id,title,target_series_id:req.body.seriesId??null,series_requested:Boolean(req.body.seriesId)});
+      transaction(db,()=>{requireSlot(req.user.id,req.body.clientTransferId);assertUploadName(db,{id,shelf_id:req.params.id,title,target_series_id:req.body.seriesId??null,series_requested:Boolean(req.body.seriesId)});
       db.prepare(`INSERT INTO upload_sessions(id,shelf_id,user_id,session_id,title,files_json,chunk_size,state,created_at,expires_at,retain_original)
         VALUES(?,?,?,?,?,?,?,'uploading',?,?,?)`).run(id, req.params.id, req.user.id, req.session.id, title,
         JSON.stringify(files.map(file => ({ ...file, filename: file.filename.replaceAll('\\', '/').split('/').pop() || 'file' }))), chunkSize, now, now + UPLOAD_TTL_MS, req.body.retainOriginal && isTimedMime(files[0].mime)?1:0);
@@ -232,9 +234,9 @@ export async function registerResumableUploads(app, context) {
       ORDER BY queue_rank,u.created_at DESC,u.id DESC LIMIT 101`).all(req.user.id,Date.now(),rank,rank,rank,before,before,after);
     const queue=cursor?[]:db.prepare(`SELECT q.*,u.state,u.processing_json,u.error,(SELECT COALESCE(SUM(size),0) FROM upload_parts p WHERE p.upload_id=q.upload_id) AS received_bytes FROM upload_queue q JOIN memberships m ON m.shelf_id=q.shelf_id AND m.user_id=q.user_id LEFT JOIN upload_sessions u ON u.id=q.upload_id WHERE q.user_id=? AND m.role IN ('owner','editor') AND (q.upload_id IS NULL AND q.expires_at>? OR u.state IN ('uploading','processing') AND (u.state!='uploading' OR u.expires_at>?)) ORDER BY q.created_at,q.id`).all(req.user.id,Date.now(),Date.now()).map(row=>({id:row.upload_id,...(row.upload_id?jobTiming(db,row.upload_id,'upload'):{}),clientTransferId:row.id,title:row.title,shelfId:row.shelf_id,seriesId:row.series_id,state:row.state??'queued',createdAt:row.created_at,totalBytes:row.total_bytes,receivedBytes:row.state==='processing'?row.total_bytes:row.received_bytes,processing:JSON.parse(row.processing_json??'{}'),...(row.error?{error:row.error}:{})}));
     if(!cursor)for(const row of db.prepare("SELECT u.* FROM upload_sessions u JOIN memberships m ON m.shelf_id=u.shelf_id AND m.user_id=u.user_id WHERE u.user_id=? AND m.role IN ('owner','editor') AND (u.state='processing' OR u.state='uploading' AND u.expires_at>?) AND NOT EXISTS(SELECT 1 FROM upload_queue q WHERE q.upload_id=u.id)").all(req.user.id,Date.now())){const value=status(row,false),totalBytes=JSON.parse(row.files_json).reduce((n,f)=>n+f.size,0);queue.push({...value,createdAt:row.created_at,totalBytes,receivedBytes:row.state==='processing'?totalBytes:value.receivedBytes});}
-    return {queue,uploads:rows.slice(0,100).map(row=>{
+    return {manualStartSupported:true,manualSlot:manualUploadSlot(db,req.user.id),queue:queue.map(row=>({...row,destination:transferDestination(db,row.shelfId,row.seriesId)})),uploads:rows.slice(0,100).map(row=>{
       const totalBytes=JSON.parse(row.files_json).reduce((n,f)=>n+f.size,0),value=status(row,false);
-      return {...value,clientTransferId:row.client_transfer_id,createdAt:row.created_at,totalBytes,receivedBytes:row.state==='uploading'||row.state==='cancelled'?value.receivedBytes:totalBytes};
+      return {...value,destination:transferDestination(db,row.shelf_id,row.target_series_id),clientTransferId:row.client_transfer_id,createdAt:row.created_at,totalBytes,receivedBytes:row.state==='uploading'||row.state==='cancelled'?value.receivedBytes:totalBytes};
     }),nextCursor:rows.length>100?`${rows[99].queue_rank}:${rows[99].created_at}:${rows[99].id}`:null};
   });
   app.post('/api/v1/transfers/uploads/clear-attention',auth,async req=>{
@@ -356,6 +358,7 @@ export async function registerResumableUploads(app, context) {
         db.prepare("UPDATE upload_sessions SET state='processing',error=NULL,processing_json='{}' WHERE id=?").run(id);if(!context.mediaPipeline?.retry(id))schedule(id);
       });
     },
+    forceStart(id,userId){const row=get(id);if(row?.state!=='processing'||context.mediaPipeline?.has(id))throw httpError(409,'送信後の処理待ちを選んでください。');schedule(id);return context.jobPool.forceStart(id,userId);},
     get busy(){return jobs.size>0||locked.size>0||partTransfers.size>0||sweeping;},
     // Compatibility API: multipart clients enter the same durable, serialized
     // processing path as resumable uploads; they cannot bypass normalization.

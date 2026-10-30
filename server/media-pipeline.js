@@ -103,8 +103,11 @@ export async function createMediaPipeline(app,context){
   try{
    for(const row of failedPreviews.all()){db.prepare("UPDATE media_tasks SET state='failed',error=?,updated_at=? WHERE id=?").run('先に動画のトランスコードを再実行してください。',Date.now(),row.id);finish(row.asset_id).catch(error=>app.log.error({err:error},'Media task finalization failed'));}
    const rows=[];for(const kind of ['thumbnail','transcode','preview']){const cap=Math.min(16,Math.max(2,(jobPool.inspect?.()[kind]?.limit??8)*2));if((counts.get(kind)??0)<cap)rows.push(...readyTasks.all(kind,cap));}
-   for(const row of rows){
-    if(active.has(row.id)||(counts.get(row.kind)??0)>=16)continue;
+   for(const row of rows)if((counts.get(row.kind)??0)<16)scheduleTask(row);
+  }finally{pumping=false;}
+ }
+ function scheduleTask(row){
+    if(active.has(row.id)||closing)return;
     counts.set(row.kind,(counts.get(row.kind)??0)+1);const promise=jobPool.run(async()=>{
      if(closing)return;const current=task(row.id);if(!current||current.state!=='queued')return;
      db.prepare("UPDATE media_tasks SET state='running',updated_at=? WHERE id=?").run(Date.now(),row.id);
@@ -112,15 +115,23 @@ export async function createMediaPipeline(app,context){
      catch(error){if(task(row.id)?.state==='running')db.prepare('UPDATE media_tasks SET state=?,error=?,updated_at=? WHERE id=?').run(closing||error.code==='SERVER_CLOSING'?'queued':'failed',closing||error.code==='SERVER_CLOSING'?null:'後処理を完了できませんでした。原本は保持されています。',Date.now(),row.id);if(!closing&&error.code!=='SERVER_CLOSING')app.log.error({err:error,jobId:row.id},'Media pipeline failed');}
      finally{await finish(row.asset_id);}
     },row.id,row.kind).finally(()=>{reports.delete(row.id);active.delete(row.id);activeAssets.delete(row.id);counts.set(row.kind,counts.get(row.kind)-1);pump();});active.set(row.id,promise);activeAssets.set(row.id,row.asset_id);
-   }
-  }finally{pumping=false;}
  }
+ function canForce(id){
+  const row=task(id);if(row?.state!=='queued')return false;
+  if(row.kind==='thumbnail')return true;
+  const previous=taskFor(row.asset_id,row.kind==='transcode'?'thumbnail':'transcode');
+  if(previous&&(['queued','running'].includes(previous.state)||row.kind==='preview'&&previous.state!=='complete'))return false;
+  return row.kind!=='preview'||!['queued','running'].includes(taskFor(row.asset_id,'thumbnail')?.state);
+ }
+ const taskFor=(id,kind)=>db.prepare('SELECT * FROM media_tasks WHERE asset_id=? AND kind=?').get(id,kind);
  const stopAvailability=jobPool.onAvailable?.(()=>{try{pump();}catch(error){app.log.error({err:error},'Media queue replenishment failed');}});
  db.prepare("UPDATE media_tasks SET state='queued' WHERE state='running'").run();pump();
  const timer=setInterval(()=>reapSources().catch(error=>app.log.error({err:error},'Original retention cleanup failed')),60000);timer.unref();
  app.addHook('onClose',async()=>{closing=true;stopAvailability?.();clearInterval(timer);for(const row of db.prepare("SELECT id FROM media_tasks WHERE state IN ('queued','running')").all())jobPool.cancel(row.id);await Promise.allSettled([...active.values()]);db.prepare("UPDATE media_tasks SET state='queued' WHERE state='running'").run();});
  return {
-  has:id=>Boolean(ingest(id)),pump,get busy(){return active.size>0;},
+  has:id=>Boolean(ingest(id)),pump,canForce,
+  forceStart(id,userId){if(!canForce(id))throw httpError(409,'先行ジョブの完了待ちか、すでに開始済みです。');scheduleTask(task(id));return jobPool.forceStart(id,userId);},
+  get busy(){return active.size>0;},
   async accept(upload,authorizeUpload){
    if(ingest(upload.id)){pump();return item(upload.id);}
    const first=JSON.parse(upload.files_json)[0],raw=join(stagingDir,upload.id,'raw-1'),video=first.mime.startsWith('video/');

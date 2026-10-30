@@ -56,28 +56,62 @@ export function validateUploadPlan(jobs,{maxUploadBytes,maxBookPages,maxImageByt
 // Transfer slots are released at server acceptance; completion is monitored separately.
 // A failed file is not silently retried/re-created; completed jobs are never resent.
 export function createUploadBatch(jobs,{start,concurrency=3,isCurrent=()=>true,changed=()=>{},eager=false,progressIntervalMs=0}) {
-  const monitors=[];
-  const rows=jobs.map(job=>({job,state:'queued',percent:0,processing:null,error:''})),active=new Map();
-  let next=0,cancelled=false,halted=false;const cancelledKeys=new Set();
-  let emission;
-  const emit=(force=false)=>{if(force||!progressIntervalMs){clearTimeout(emission);emission=null;changed(rows.map(row=>({...row})));}else if(!emission)emission=setTimeout(()=>{emission=null;changed(rows.map(row=>({...row})));},progressIntervalMs);};
-  function cancel({detachProcessing=false}={}){if(cancelled)return;cancelled=true;for(const row of rows)if(row.state==='queued')row.state='cancelled';for(const [row,task]of active){row.state=detachProcessing&&task.processing?'detached':'cancelled';try{detachProcessing&&task.processing?task.detach():task.abort();}catch{} }emit(true);}
-  async function worker(){
-    while(!cancelled&&!halted&&isCurrent()&&next<rows.length){
-      const row=rows[next++];if(cancelledKeys.has(row.job.key))continue;row.state='uploading';emit();
-      if(!isCurrent())cancel();if(cancelled||halted){row.state='cancelled';emit();break;}
-      let settled=false,task;
-      try {
-        task=start(row.job,(percent,processing)=>{if(settled||cancelled||cancelledKeys.has(row.job.key))return;row.uploadId??=task?.uploadId;if(!isCurrent()){cancel();return;}row.percent=Math.max(0,Math.min(100,Number(percent)||0));row.processing=processing;row.state=row.percent===100?'processing':'uploading';emit();});
-        active.set(row,task);if(cancelled||!isCurrent()){row.state='cancelled';try{task.abort();}catch{}}const monitoring=task.promise.then(result=>{row.warning=result?.seriesWarning??'';row.item=result?.item;if(!cancelled&&!cancelledKeys.has(row.job.key)&&isCurrent()){row.state=result?.accepted?'processing':'complete';row.uploadId??=result?.uploadId;row.percent=100;if(!result?.accepted)row.processing=null;}emit();},error=>{if(!cancelled&&!cancelledKeys.has(row.job.key)&&isCurrent()){row.state='failed';row.error=error.message;emit();}}).finally(()=>{settled=true;active.delete(row);});monitors.push(monitoring);
-        const accepted=await (task.transferred??task.promise);row.uploadId=accepted?.id??accepted?.uploadId??row.uploadId;
-        if(!cancelled&&!cancelledKeys.has(row.job.key)&&isCurrent()&&task.transferred&&!['complete','failed'].includes(row.state)){row.state='processing';emit();}
-      } catch(error) {
-        if(!cancelled&&!cancelledKeys.has(row.job.key)&&isCurrent()){row.state='failed';row.error=error.message||'アップロードに失敗しました。';if([401,403].includes(error.status))halted=true;}
-      } finally {if(!isCurrent())cancel();emit();}
-    }
+ const rows=jobs.map(job=>({job,state:'queued',percent:0,processing:null,error:''})),active=new Map(),transferring=new Set(),monitors=[],cancelledKeys=new Set();
+ const limit=Math.min(eager?rows.length:32,Math.max(1,Math.floor(concurrency)||1));
+ let cancelled=false,halted=false,finished=false,emission,resolveTransferred;
+ const transferred=new Promise(resolve=>{resolveTransferred=resolve;});
+ const emit=(force=false)=>{if(force||!progressIntervalMs){clearTimeout(emission);emission=null;changed(rows.map(row=>({...row})));}else if(!emission)emission=setTimeout(()=>{emission=null;changed(rows.map(row=>({...row})));},progressIntervalMs);};
+ const result=()=>({rows:rows.map(row=>({...row})),cancelled,halted});
+ function finish(){if(!finished&&!transferring.size&&(cancelled||halted||!rows.some(r=>r.state==='queued'))){finished=true;emit(true);resolveTransferred(result());}}
+ function cancel({detachProcessing=false}={}){
+  if(cancelled)return;cancelled=true;
+  for(const row of rows)if(row.state==='queued')row.state='cancelled';
+  for(const [row,task]of active){row.state=detachProcessing&&task.processing?'detached':'cancelled';try{detachProcessing&&task.processing?task.detach():task.abort();}catch{}}
+  emit(true);finish();
+ }
+ async function launch(row){
+  transferring.add(row);row.state='uploading';emit();
+  let settled=false,task;
+  try{
+   if(!isCurrent()){cancel();return;}
+   task=start(row.job,(percent,processing)=>{
+    if(settled||cancelled||cancelledKeys.has(row.job.key))return;
+    row.uploadId??=task?.uploadId;if(!isCurrent()){cancel();return;}
+    row.percent=Math.max(0,Math.min(100,Number(percent)||0));row.processing=processing;row.state=row.percent===100?'processing':'uploading';emit();
+   });
+   active.set(row,task);if(cancelled||!isCurrent()){row.state='cancelled';try{task.abort();}catch{}}
+   const monitoring=task.promise.then(value=>{
+    row.warning=value?.seriesWarning??'';row.item=value?.item;
+    if(!cancelled&&!cancelledKeys.has(row.job.key)&&isCurrent()){row.state=value?.accepted?'processing':'complete';row.uploadId??=value?.uploadId;row.percent=100;if(!value?.accepted)row.processing=null;}emit();
+   },error=>{if(!cancelled&&!cancelledKeys.has(row.job.key)&&isCurrent()){row.state='failed';row.error=error.message;emit();}}).finally(()=>{settled=true;active.delete(row);});
+   monitors.push(monitoring);
+   const accepted=await(task.transferred??task.promise);row.uploadId=accepted?.id??accepted?.uploadId??row.uploadId;
+   if(!cancelled&&!cancelledKeys.has(row.job.key)&&isCurrent()&&task.transferred&&!['complete','failed'].includes(row.state)){row.state='processing';emit();}
+  }catch(error){
+   if(!cancelled&&!cancelledKeys.has(row.job.key)&&isCurrent()){row.state='failed';row.error=error.message||'アップロードに失敗しました。';if([401,403].includes(error.status))halted=true;}
+  }finally{transferring.delete(row);if(!isCurrent())cancel();emit();pump();}
+ }
+ function pump(){
+  if(finished)return;
+  if(!isCurrent())cancel();
+  while(!cancelled&&!halted&&[...transferring].filter(r=>!r.manual).length<limit){
+   const row=rows.find(r=>r.state==='queued'&&!cancelledKeys.has(r.job.key));if(!row)break;void launch(row);
   }
-  const transferred=Promise.resolve().then(async()=>{emit();await Promise.all(Array.from({length:Math.min(eager?rows.length:32,Math.max(1,Math.floor(concurrency)||1),rows.length)},worker));if(!isCurrent())cancel();emit(true);return {rows:rows.map(row=>({...row})),cancelled,halted};});
-  const promise=transferred.then(async()=>{await Promise.all(monitors);emit(true);return {rows:rows.map(row=>({...row})),cancelled,halted};});
-  return {promise,transferred,cancel,cancelAsset(key,{detachProcessing=false}={}){const row=rows.find(r=>r.job.key===key);if(!row||['complete','failed'].includes(row.state))return;cancelledKeys.add(key);const task=active.get(row);row.state=detachProcessing&&task?.processing?'detached':'cancelled';try{if(task)detachProcessing&&task.processing?task.detach():task.abort();}finally{emit(true);}}};
+  finish();
+ }
+ const promise=transferred.then(async()=>{await Promise.all(monitors);emit(true);return result();});
+ queueMicrotask(pump);
+ return {promise,transferred,cancel,
+  forceStart(key){
+   if(finished||cancelled||halted||!isCurrent())return false;
+   const row=rows.find(r=>r.job.key===key);if(!row||!['queued','uploading'].includes(row.state)||cancelledKeys.has(key))return false;
+   if([...transferring].some(r=>r.manual&&r!==row))return false;
+   row.manual=true;if(row.state==='queued')void launch(row);pump();return true;
+  },
+  cancelAsset(key,{detachProcessing=false}={}){
+   const row=rows.find(r=>r.job.key===key);if(!row||['complete','failed'].includes(row.state))return;
+   cancelledKeys.add(key);const task=active.get(row);row.state=detachProcessing&&task?.processing?'detached':'cancelled';
+   try{if(task)detachProcessing&&task.processing?task.detach():task.abort();}finally{emit(true);pump();}
+  }
+ };
 }

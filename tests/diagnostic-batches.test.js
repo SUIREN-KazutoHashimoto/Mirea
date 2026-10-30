@@ -16,5 +16,5 @@ test('diagnostic batches strip private fields, require authentication/admin righ
  db.prepare("INSERT INTO user_access(user_id,server_role,disabled) VALUES(?,'admin',0) ON CONFLICT(user_id) DO UPDATE SET server_role='admin'").run(user.user.id);
  const inbox=await call('GET','/admin/diagnostics',user);assert.equal(inbox.statusCode,200,inbox.body);assert.equal(inbox.json().batches.length,1);assert(!inbox.body.includes(user.user.id));assert(!inbox.body.includes(user.user.email));
  assert.equal((await call('POST','/diagnostics/batches',user,{id:randomUUID(),reports:[{message:'raw'}]})).statusCode,400);assert.equal((await call('POST','/diagnostics/batches',user,{id:randomUUID(),reports:Array(21).fill(report)})).statusCode,400);
- await app.close();app=await createApp({dataDir,rateLimit:false});assert.equal((await call('GET','/admin/diagnostics',user)).json().batches.length,1);assert.equal(db.prepare('SELECT version FROM schema_version').get().version,24);
+ await app.close();app=await createApp({dataDir,rateLimit:false});assert.equal((await call('GET','/admin/diagnostics',user)).json().batches.length,1);assert.equal(db.prepare('SELECT version FROM schema_version').get().version,25);
 });

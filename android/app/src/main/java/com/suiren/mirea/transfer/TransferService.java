@@ -15,7 +15,7 @@ import java.util.concurrent.*;
 public final class TransferService extends Service {
     public static final String EVENT="com.suiren.mirea.TRANSFER_CHANGED";private static final String CHANNEL="mirea-transfers-v1";private static final int NOTICE=120;
     private static final Map<String,TransferEngine.Job> jobs=new LinkedHashMap<>();public static volatile TransferService current;
-    private final ExecutorService workers=Executors.newFixedThreadPool(3);private final ScheduledExecutorService monitors=Executors.newSingleThreadScheduledExecutor();private final Handler main=new Handler(Looper.getMainLooper());private PowerManager.WakeLock wake;private long lastNotice,reservedUntil;private boolean destroying,changeQueued;
+    private final ExecutorService workers=Executors.newFixedThreadPool(4);private final ScheduledExecutorService monitors=Executors.newSingleThreadScheduledExecutor();private final Handler main=new Handler(Looper.getMainLooper());private PowerManager.WakeLock wake;private long lastNotice,reservedUntil;private boolean destroying,changeQueued;
     public static synchronized String offer(TransferEngine.Job job){if(jobs.values().stream().filter(TransferEngine.Job::active).count()>=10000)throw new IllegalStateException("Queue full");jobs.entrySet().removeIf(e->!e.getValue().active()&&jobs.size()>10200);jobs.put(job.id,job);return job.id;}
     public static synchronized void discard(String id){TransferEngine.Job j=jobs.remove(id);if(j!=null)j.cancel();}
     public static synchronized JSONArray status(String partition)throws Exception{JSONArray result=new JSONArray();for(TransferEngine.Job j:jobs.values())if(j.api.partition.equals(partition))result.put(j.snapshot());return result;}
@@ -23,15 +23,51 @@ public final class TransferService extends Service {
     public static synchronized void cancel(String id,String partition,boolean cleanup){for(TransferEngine.Job j:jobs.values())if(j.api.partition.equals(partition)&&(id==null||j.id.equals(id)))j.cancel(cleanup);if(current!=null)current.changed();}
     public static synchronized void cancelAsset(String partition,String asset){for(TransferEngine.Job j:jobs.values())if(j.direction.equals("download")&&j.api.partition.equals(partition)&&asset.equals(j.data.optString("assetId")))j.cancel();if(current!=null)current.changed();}
     private static synchronized List<TransferEngine.Job> snapshot(){return new ArrayList<>(jobs.values());}
-    @Override public void onCreate(){super.onCreate();current=this;monitors.scheduleWithFixedDelay(()->{for(TransferEngine.Job job:snapshot())if(job.state.equals("processing"))new TransferEngine(this,this::changed).poll(job);},1500,1500,TimeUnit.MILLISECONDS);getSystemService(NotificationManager.class).createNotificationChannel(new NotificationChannel(CHANNEL,"アップロード・ダウンロード",NotificationManager.IMPORTANCE_LOW));}
+    @Override public void onCreate(){super.onCreate();current=this;monitors.scheduleWithFixedDelay(()->{for(TransferEngine.Job job:snapshot())if(job.state.equals("processing"))new TransferEngine(this,this::changed).poll(job);pollManualStarts();},1500,1500,TimeUnit.MILLISECONDS);getSystemService(NotificationManager.class).createNotificationChannel(new NotificationChannel(CHANNEL,"アップロード・ダウンロード",NotificationManager.IMPORTANCE_LOW));}
     @Override public int onStartCommand(Intent intent,int flags,int startId){
         if(intent==null){stopSelf();return START_NOT_STICKY;}
         if("cancel".equals(intent.getAction())){reservedUntil=0;for(TransferEngine.Job j:snapshot())j.cancel(true);changed();return START_NOT_STICKY;}
         if("reserve".equals(intent.getAction())){reservedUntil=SystemClock.elapsedRealtime()+60000;UpdateEngine.setTransferBusy(true);startForegroundNow();main.postDelayed(this::changed,60000);return START_NOT_STICKY;}
         reservedUntil=0;UpdateEngine.setTransferBusy(true);startForegroundNow();String id=intent.getStringExtra("id");TransferEngine.Job job;
         synchronized(TransferService.class){job=jobs.get(id);}
-        if(job!=null&&job.state.equals("queued")){job.state="running";workers.submit(()->new TransferEngine(this,this::changed).run(job));}
+        if(job!=null&&job.state.equals("queued"))pump();
         changed();return START_NOT_STICKY;
+    }
+    // Server authorization reserves the single account-wide extra slot. The
+    // source service polls it independently of WebView/dialog lifetime.
+    private void pollManualStarts(){
+        Map<String,TransferEngine.Job> accounts=new HashMap<>();
+        for(TransferEngine.Job job:snapshot())if(job.direction.equals("upload")&&job.active()&&!job.state.equals("processing"))accounts.putIfAbsent(job.api.partition,job);
+        for(TransferEngine.Job source:accounts.values()){
+            com.suiren.mirea.playback.PlaybackApi monitor=null;
+            try{
+                monitor=source.api.fork();JSONObject value=monitor.json("/transfers/manual-upload","GET",null),slot=value.optJSONObject("slot");String selected=slot==null?"":slot.optString("transferId");
+                applyManualStart(snapshot(),source.api.partition,selected);
+            }catch(Exception ignored){/* Existing transfer retry/auth handling remains authoritative. */}
+            finally{if(monitor!=null)monitor.close();}
+        }
+        pump();
+    }
+    private synchronized void pump(){
+        if(destroying)return;
+        for(TransferEngine.Job job:dispatchCandidates(snapshot())){
+            job.executing=true;job.state="running";
+            workers.submit(()->{try{new TransferEngine(this,this::changed).run(job);}finally{job.executing=false;main.post(this::pump);}});
+        }
+    }
+    static void applyManualStart(List<TransferEngine.Job> jobs,String partition,String selected){
+        for(TransferEngine.Job job:jobs)if(job.direction.equals("upload")&&job.api.partition.equals(partition))job.manual=!selected.isEmpty()&&selected.equals(job.data.optString("clientTransferId"));
+    }
+    static List<TransferEngine.Job> dispatchCandidates(List<TransferEngine.Job> all){
+        long normal=all.stream().filter(j->j.executing&&!j.manual).count();
+        List<TransferEngine.Job> sorted=new ArrayList<>(all),selected=new ArrayList<>();
+        sorted.sort(Comparator.comparing(j->!j.manual));
+        for(TransferEngine.Job job:sorted){
+            if(job.cancelled||job.executing||!(job.state.equals("queued")||job.state.equals("running")))continue;
+            if(!job.manual&&normal>=3)continue;
+            if(!job.manual)normal++;selected.add(job);
+        }
+        return selected;
     }
     private void startForegroundNow(){
         ServiceCompat.startForeground(this,NOTICE,notice(),android.os.Build.VERSION.SDK_INT>=29?ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC:0);

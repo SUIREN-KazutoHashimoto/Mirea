@@ -90,5 +90,5 @@ export async function registerVideoNavigation(app,context){
     db.prepare('UPDATE video_navigation SET revision=revision+1,chapters_json=?,chapters_manual=?,captions_json=?,updated_at=? WHERE item_id=?').run(JSON.stringify(chapters),body.chapters!==undefined?1:row.chapters_manual,JSON.stringify(captions),Date.now(),item.id);return publicData(item,req.user.id);
   });
   app.addHook('onClose',async()=>{closing=true;for(const c of controllers)c.abort();await Promise.allSettled([...pending.values()]);});
-  return {get busy(){return pending.size>0;}};
+  return {forceStart(id,userId){const row=db.prepare("SELECT * FROM video_navigation WHERE job_id=? AND state='queued'").get(id);if(!row)throw httpError(409,'準備待ちのジョブを選んでください。');schedule(row);return context.jobPool.forceStart(id,userId);},get busy(){return pending.size>0;}};
 }
