@@ -80,7 +80,7 @@ export function openDatabase(filename) {
         UPDATE schema_version SET version = 2;
       `));
     } finally { db.exec('PRAGMA foreign_keys = ON'); }
-  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,21,22,23,24].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
+  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,21,22,23,24,25].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
   if (version < 10) {
     // v10 adds EPUB while retaining v9's nullable uploader attribution.
     // Account deletion removes attribution, not another member's shared assets.
@@ -477,6 +477,11 @@ export function openDatabase(filename) {
       ON CONFLICT(scope,id) DO UPDATE SET started_at=CASE WHEN NEW.state='${running}' THEN COALESCE(job_timings.started_at,excluded.started_at) ELSE job_timings.started_at END,finished_at=excluded.finished_at;END;
     CREATE TRIGGER IF NOT EXISTS ${table}_timing_delete AFTER DELETE ON ${table} BEGIN DELETE FROM job_timings WHERE scope='${scope}' AND id=OLD.id;END;
   `);
+  db.exec(`CREATE TABLE IF NOT EXISTS manual_upload_starts(
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    queue_id TEXT NOT NULL UNIQUE REFERENCES upload_queue(id) ON DELETE CASCADE,
+    requested_at INTEGER NOT NULL,expires_at INTEGER NOT NULL);
+    UPDATE schema_version SET version=25;`);
   if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Database foreign key validation failed');
   return db;
 }

@@ -69,4 +69,8 @@ details.manager-note summary{cursor:pointer;color:var(--text);min-height:24px}.m
 .setting-override{display:block;grid-column:1/-1;font-size:11px;line-height:1.6;color:var(--muted);overflow-wrap:anywhere}
 .job-elapsed,.transfer-timing{font-size:10px;color:var(--muted);line-height:1.7;overflow-wrap:anywhere}
 .transfer-timing{margin:0}
+.transfer-destination-label{margin:0;color:var(--muted);font-size:11px;line-height:1.7;overflow-wrap:anywhere}
+.transfer-row-actions{flex-wrap:wrap}.transfer-manual-status{line-height:1.8;overflow-wrap:anywhere}
+.job-start{display:block;margin-top:8px;min-height:36px;font-size:10px}.job-start[hidden]{display:none}.job-manual-note{line-height:1.8}
+@media(max-width:760px){.transfer-row-actions .button{flex:1 1 130px}.job-start{min-height:44px}}
 @media(max-width:760px){.admin-panel .server-settings{padding:16px}.transfer-filters{flex-wrap:wrap}.transfer-filters button{min-width:70px}}

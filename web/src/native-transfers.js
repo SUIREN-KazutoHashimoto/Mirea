@@ -26,7 +26,7 @@ export async function requestTransferNotifications(){
   return {granted:globalThis.Notification?.permission==='granted'};
 }
 export function nativeUpload(context,shelfId,files,title,onProgress,{retainOriginal=true,seriesId=null,protocolVersion=1,monitorProcessing=true,clientTransferId}={}){
-  return nativeTransferTask(context,'upload',{shelfId,files,title,retainOriginal,protocolVersion,monitorProcessing,...(clientTransferId?{clientTransferId}:{}),...(seriesId?{seriesId}:{})},row=>onProgress(row.state==='processing'||row.state==='complete'?100:Math.min(99,row.percent),row.state==='processing'?{stage:'processing'}:undefined));
+  return nativeTransferTask(context,'upload',{shelfId,files,title,retainOriginal,protocolVersion,monitorProcessing,...(clientTransferId?{clientTransferId}:{}),...(seriesId?{seriesId}:{})},row=>onProgress(row.state==='processing'||row.state==='complete'?100:Math.min(99,row.percent),row.state==='processing'?{stage:'processing'}:row.state==='queued'?{stage:'waiting-slot'}:undefined));
 }
 export function nativeTransferTask(context,direction,job,update=()=>{}){
   let id,uploadId,stopped=false,processing=false,transferredResolve,transferredReject;

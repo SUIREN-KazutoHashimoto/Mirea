@@ -50,6 +50,24 @@ public class TransferTest {
  @Test public void inputChunksAreBoundedAndDetectTruncatedSelections()throws Exception{
   assertArrayEquals(new byte[]{1,2,3},TransferEngine.readPart(new ByteArrayInputStream(new byte[]{1,2,3}),3));assertThrows(EOFException.class,()->TransferEngine.readPart(new ByteArrayInputStream(new byte[]{1,2}),3));
  }
+ @Test public void manualDispatchAddsOneSelectedUploadWithoutReplacingNormalTransfersAndIsolatesAccounts()throws Exception{
+  PlaybackApi account=api(),other=api();List<TransferEngine.Job> jobs=new ArrayList<>();
+  try{
+   for(int n=0;n<6;n++){TransferEngine.Job job=new TransferEngine.Job("upload",account,new JSONObject().put("clientTransferId","q"+n));if(n<3){job.executing=true;job.state="running";}jobs.add(job);}
+   TransferEngine.Job foreign=new TransferEngine.Job("upload",other,new JSONObject().put("clientTransferId","q5"));jobs.add(foreign);
+   assertTrue(TransferService.dispatchCandidates(jobs).isEmpty());
+   TransferService.applyManualStart(jobs,account.partition,"q5");
+   assertEquals(Collections.singletonList(jobs.get(5)),TransferService.dispatchCandidates(jobs));
+   assertFalse(foreign.manual);assertFalse(jobs.get(3).manual);
+   jobs.get(5).executing=true;jobs.get(5).state="running";
+   assertTrue(TransferService.dispatchCandidates(jobs).isEmpty());
+   jobs.get(5).executing=false;jobs.get(5).state="complete";
+   TransferService.applyManualStart(jobs,account.partition,"q0");
+   assertEquals(Collections.singletonList(jobs.get(3)),TransferService.dispatchCandidates(jobs));
+   jobs.get(3).cancelled=true;
+   assertEquals(Collections.singletonList(jobs.get(4)),TransferService.dispatchCandidates(jobs));
+  }finally{account.close();other.close();}
+ }
  @Test public void parallelUploadBuffersFitSmallHeapsAndRespectServerBounds(){
   int chunk=8*1024*1024;
   assertEquals(4,TransferEngine.parallelParts(chunk,4,256L*1024*1024));

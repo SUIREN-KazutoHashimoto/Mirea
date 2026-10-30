@@ -15,7 +15,7 @@ public final class TransferEngine {
         public final String id=UUID.randomUUID().toString(),direction,title;
         public final PlaybackApi api;public final JSONObject data;public volatile String state="queued",error="";public volatile long received,total;public volatile int status;
         public final Set<HttpURLConnection> connections=ConcurrentHashMap.newKeySet();
-        public volatile boolean cancelled;public volatile HttpURLConnection connection;public volatile JSONObject result;
+        public volatile boolean cancelled,executing,manual;public volatile HttpURLConnection connection;public volatile JSONObject result;
         public Job(String direction,PlaybackApi api,JSONObject data)throws Exception{this.direction=direction;this.api=api;this.data=data;title=data.optString("title","Mirea");if(title.length()>200)throw new IllegalArgumentException();}
         public boolean active(){return state.equals("queued")||state.equals("running")||state.equals("processing");}
         public void cancel(){cancel(false);}
@@ -23,7 +23,7 @@ public final class TransferEngine {
             String upload=data.optString("uploadId");if(cleanupSource&&direction.equals("upload")&&PlaybackApi.uuid(upload)&&!state.equals("complete"))try{PlaybackApi cleanup=api.fork();new Thread(()->{try{cleanup.json("/uploads/"+upload,"DELETE",null);}catch(Exception ignored){}finally{cleanup.close();}},"Mirea-cancel").start();}catch(Exception ignored){}
             api.close();HttpURLConnection c=connection;if(c!=null)c.disconnect();for(HttpURLConnection active:connections)active.disconnect();if(active())state="cancelled";}
         public void check()throws IOException{if(cancelled||api.closed||Thread.currentThread().isInterrupted())throw new InterruptedIOException("Transfer stopped");}
-        public JSONObject snapshot()throws Exception{return new JSONObject().put("id",id).put("direction",direction).put("title",title).put("state",state).put("received",received).put("total",total).put("percent",total>0?Math.min(100,received*100/total):0).put("status",status).put("error",error).put("uploadId",data.optString("uploadId")).put("result",result==null?JSONObject.NULL:result);}
+        public JSONObject snapshot()throws Exception{return new JSONObject().put("id",id).put("direction",direction).put("title",title).put("state",state).put("received",received).put("total",total).put("percent",total>0?Math.min(100,received*100/total):0).put("status",status).put("manual",manual).put("error",error).put("uploadId",data.optString("uploadId")).put("result",result==null?JSONObject.NULL:result);}
     }
     interface ConnectionFactory{HttpURLConnection open(PlaybackApi api,String path,String method)throws IOException;}
     private final ConnectionFactory transport;private final TransferLease leases;
@@ -82,7 +82,7 @@ public final class TransferEngine {
     private InputStream input(JSONObject f)throws Exception{return context.getContentResolver().openInputStream(Uri.parse(f.getString("uri")));}
     static byte[] readPart(InputStream input,int length)throws IOException{byte[] bytes=new byte[length];int offset=0;while(offset<length){int n=input.read(bytes,offset,length-offset);if(n<0)throw new EOFException("Source file changed");offset+=n;}return bytes;}
     static int parallelParts(int chunk,int advertised,long maxHeap){
-        // Three transfer workers may run together. Limit each file's buffers to
+        // Three normal transfers and one account-wide manual transfer may run together. Limit each file's buffers to
         // one eighth of the app heap, retaining room for playback and the UI.
         if(chunk<1||chunk>16777216)return 1;
         return Math.max(1,Math.min(advertised,(int)Math.max(1,Math.min(4,maxHeap/8/chunk))));
