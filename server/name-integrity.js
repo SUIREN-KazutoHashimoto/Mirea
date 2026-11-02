@@ -2,13 +2,13 @@ import {orderSeriesItems} from './series-order.js';
 import {canonicalName,nameKey,duplicateNameGroups,libraryNameConflicts} from './name-rules.js';
 import {httpError} from './security.js';
 import {transaction} from './database.js';
+export const MAX_SERIES_ASSETS=100000;
 
 export function uploadSeriesDestination(db,upload){
   const row=db.prepare('SELECT target_series_id,series_requested FROM upload_sessions WHERE id=?').get(upload.id)??upload;
   if(!row.series_requested&&!row.target_series_id)return {seriesId:null,warning:''};
   const series=db.prepare('SELECT id,shelf_id FROM series WHERE id=?').get(row.target_series_id);
   if(!series||series.shelf_id!==upload.shelf_id)return {seriesId:null,warning:'追加先のシリーズが変更・削除されたため、単独のアセットとして保存しました。'};
-  if(db.prepare('SELECT COUNT(*) n FROM series_items WHERE series_id=?').get(series.id).n>=1000)return {seriesId:null,warning:'シリーズの上限に達したため、単独のアセットとして保存しました。'};
   return {seriesId:series.id,warning:''};
 }
 export function assertSeriesChanges(db,shelfId,changes){
@@ -32,7 +32,15 @@ export function assertAssetChanges(db,shelfId,changes,{uploadId,checkPending=tru
   const reserved=new Set(pending.map(row=>nameKey(shelfId,uploadSeriesDestination(db,row).seriesId,row.title)));
   if(changed.some(row=>reserved.has(nameKey(shelfId,row.parentId,row.title))))throw httpError(409,'同じ階層・タイトルのアップロードが処理中または再試行待ちです。完了・整理してから追加してください。');
 }
-export function assertUploadName(db,upload){const destination=uploadSeriesDestination(db,upload);assertAssetChanges(db,upload.shelf_id,[{id:upload.id,title:upload.title,parentId:destination.seriesId}],{uploadId:upload.id});return destination;}
+export function assertUploadName(db,upload){
+ const destination=uploadSeriesDestination(db,upload);
+ if(destination.seriesId){
+  const count=db.prepare('SELECT COUNT(*) n FROM series_items WHERE series_id=? AND asset_id!=?').get(destination.seriesId,upload.id).n;
+  const reserved=db.prepare("SELECT COUNT(*) n FROM upload_sessions u WHERE target_series_id=? AND id!=? AND (state IN ('processing','failed') OR state='uploading' AND expires_at>?) AND NOT EXISTS(SELECT 1 FROM items i WHERE i.id=u.id)").get(destination.seriesId,upload.id,Date.now()).n;
+  if(count+reserved>=MAX_SERIES_ASSETS)throw httpError(409,'追加先のシリーズは100,000件の上限に達しています。別のシリーズを選んでください。');
+ }
+ assertAssetChanges(db,upload.shelf_id,[{id:upload.id,title:upload.title,parentId:destination.seriesId}],{uploadId:upload.id});return destination;
+}
 
 export function registerNameIntegrity(app,{db,authenticate,membership,findItem,publicItem}){
   const auth={onRequest:async req=>authenticate(req)};

@@ -1,4 +1,5 @@
 import {requestError,recordClientError} from './error-diagnostics.js';
+import {transferRetryDelay} from './transfer-retry.js';
 const hex = bytes => Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, '0')).join('');
 const digest = async bytes => hex(await crypto.subtle.digest('SHA-256', bytes));
 const abortError = () => new Error('アップロードをキャンセルしました。');
@@ -23,8 +24,10 @@ export function createResumableUpload({ endpoint, token, shelfUnlock='',userId, 
       if (signal.aborted) throw abortError();
       try { return await work(); } catch (error) {
         if (signal.aborted) throw abortError();
-        if (attempt >= 3 || !transient(error.status)) throw error;
-        await sleep(500 * 2 ** attempt + Math.random() * 200);
+        if(!isCurrent())throw new Error('ログイン先が変更されました。受信済みのデータは保持されています。');
+        const wait=transferRetryDelay(error,attempt);
+        if(wait===null&&(attempt>=3||!transient(error.status)))throw error;
+        await sleep(wait??(500 * 2 ** attempt + Math.random() * 200));
       }
     }
   }
@@ -40,7 +43,7 @@ export function createResumableUpload({ endpoint, token, shelfUnlock='',userId, 
     const result = response.status === 204 ? null : await response.json().catch(() => ({}));
     if (!response.ok) {
       if (response.status === 401) unauthorized();
-      throw requestError(result,response.status,{record:false,defer:isCurrent()});
+      throw Object.assign(requestError(result,response.status,{record:false,defer:isCurrent()}),{retryAfter:response.headers.get('Retry-After')});
     }
     return result;
   }
@@ -58,7 +61,7 @@ export function createResumableUpload({ endpoint, token, shelfUnlock='',userId, 
         let result = {};
         try { result = JSON.parse(xhr.responseText); } catch { /* proxy HTML error */ }
         if (xhr.status === 401) unauthorized();
-        reject(requestError({...result,error:result.error||'分割データを送信できませんでした。再試行してください。'},xhr.status,{record:false,defer:isCurrent()}));
+        reject(Object.assign(requestError({...result,error:result.error||'分割データを送信できませんでした。再試行してください。'},xhr.status,{record:false,defer:isCurrent()}),{retryAfter:xhr.getResponseHeader?.('Retry-After')}));
       };
       xhr.onerror = xhr.ontimeout = () => {xhrs.delete(xhr);reject(Object.assign(new Error('通信が途切れました。同じファイルを選んで再試行できます。'), { status: 0 }));};
       xhr.onabort = () => {xhrs.delete(xhr);reject(abortError());};
@@ -92,7 +95,7 @@ export function createResumableUpload({ endpoint, token, shelfUnlock='',userId, 
       for(;;){try{state = await request(`/shelves/${shelfId}/uploads`, 'POST', {
         title, retainOriginal, ...(clientTransferId?{clientTransferId}:{}), ...(protocolVersion>=2?{resume:true}:{}), ...(seriesId?{seriesId}:{}), files: files.map(file => ({ filename: file.name, mime: file.type, size: file.size }))
       });
-      break;}catch(error){if(error.status!==429)throw error;onProgress(0,{stage:'waiting-slot'});await sleep(2000);}}
+      break;}catch(error){if(error.status!==429)throw error;onProgress(0,{stage:'waiting-slot'});await sleep(transferRetryDelay(error,0)??2000);}}
       save({ id: state.id, expiresAt: state.expiresAt });
     }
     uploadId = state.id;

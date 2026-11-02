@@ -1,68 +1,65 @@
-# ストア外Androidアプリの更新（0.2.3beta）
+# Androidアプリの導入と更新
 
-## 利用者向け
+このページは、署名付きAPKを使う利用者と、その更新情報を配信するサーバー管理者向けです。独自APKを作る場合は[フォーク開発](development/fork.md)と[リリース手順](development/release.md)へ進んでください。アプリ内に同梱する画面は、サーバーだけを更新しても新しくなりません。
 
-専用署名版の初回インストール後は、アプリ起動時と約12時間ごとに接続先のMireaサーバーへ更新を確認します。自動確認・取得・適用は初期ON、取得はWi-Fiなど非従量制回線のみが初期ONです。Androidの省電力・ジョブ制御により時刻や実行は保証されません。強制停止後はアプリを再度開いてください。
+## 初めてインストールする
 
-「設定 → Androidアプリ」、またはログイン画面の「アプリの更新」から設定・手動確認・取得再開・適用を操作できます。ログイン前でも、HTTPSのサーバーURLを保存すれば利用できます。インストール済みの版はネイティブAPKから取得し、接続先サーバーの版とは区別します。
+1. [公式リリース一覧](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases)から、利用するサーバーと対応する版の配布署名APKを選びます。ベータ版には試験中の機能が含まれます。開発用のdebug APKは通常利用向けではありません。
+2. AndroidでAPKを開き、OSの案内に従ってインストールします。端末や組織のポリシーで許可されていない場合は管理者に確認します。
+3. アプリを開き、管理者から案内されたHTTPSのサーバーURLを入力します。[証明書の準備](install/https.md)と[初回利用](user/first-steps.md)も参照してください。
+4. ログイン後に「設定 → Androidアプリ」を開き、インストール済みの版と更新設定を確認します。
 
-更新をインストールするには、利用者がAndroidの「この提供元のアプリを許可」をMireaに対して許可する必要があります。アプリは許可を勝手に変更しません。Android 12以降はOSの条件を満たす場合のみ無操作の自己更新を要求します。Android 10／11、初回更新、OSやメーカーの制約などでは「Androidの更新確認を開く」から最後の確認を行います。ストア外での完全なサイレント更新を全端末に保証する機能ではありません。[Androidの仕様](https://developer.android.com/reference/android/content/pm/PackageInstaller.SessionParams#setRequireUserAction(int))
+既存アプリの更新で署名不一致と表示された場合は、削除して入れ直す前に配布元とAPKの署名を確認してください。アンインストールすると端末に保存した作品、接続設定、未送信の記録が失われます。初期の0.2.0betaのCIデバッグ署名と、後の専用配布署名は別です。同じアプリ名でも上書きできない場合があります。[Androidの署名と更新の要件](https://developer.android.com/studio/publish/app-signing#considerations)
 
-自動適用はアプリがバックグラウンドで、閲覧・動画再生・アップロード・端末ダウンロードを行っていない場合に限ります。フォアグラウンドでは取得・準備まで行い、適用は明示操作か後のバックグラウンドジョブに委ねます。取得中に閲覧・転送を開始すると一時停止し、次の実行でRange取得を再開します。同時処理は参照カウントで追跡するため、1件の終了で他の処理のロックは解除されません。
+## ふだんの更新
 
-## 旧APKからの初回移行
+アプリ起動時と約12時間ごとに、保存した接続先へ更新を確認します。自動確認・取得・適用は初期状態で有効です。取得は初期状態ではWi-Fiなどの非従量制回線に限定します。Androidの省電力制御などで実行が遅れるため、時刻どおりの実行は保証されません。
 
-既存0.2.0betaのCIデバッグ署名と新しい専用鍵は別です。そのまま上書きできる保証はなく、旧版にはこの更新機能自体がありません。初回は手動インストールが必要です。署名違いの際にアプリを自動アンインストールする処理はありません。[署名と更新の要件](https://developer.android.com/studio/publish/app-signing#considerations)
+手動で確認する場合は「設定 → Androidアプリ」、ログイン前なら「アプリの更新」を開きます。サーバーよりアプリが古いと起動時にも案内します。メジャーバージョンが異なる接続先は互換性検査で接続を止めます。
 
-アンインストールすると端末内の暗号化ダウンロード・接続先設定・未送信の記録は失われます。移行前にオンラインで閲覧記録・続き位置を同期し、必要な作品は移行後に再ダウンロードしてください。サーバー上のアカウント・本棚・同期済みの記録は、アプリの入れ替えだけでは削除されません。[0.2.3betaの専用署名APK](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/tag/v0.2.3beta)を初回導入に利用してください。
+自動適用はアプリがバックグラウンドで、閲覧・再生・転送をしていないときに限ります。利用中は取得・準備まで行い、適用を保留します。取得途中で利用を始めた場合は中断し、後で受信済み部分から再開します。
 
-## 配信と検証
+初回やOSの条件によっては、Androidの「この提供元のアプリを許可」と更新の最終確認が必要です。アプリが許可設定を勝手に変えることはありません。「Androidの更新確認を開く」が表示されたら、その操作からOSの画面を開きます。Android 12以降でも、無操作の更新ができるかはOSの条件やメーカーの制約によります。[PackageInstallerの確認条件](https://developer.android.com/reference/android/content/pm/PackageInstaller.SessionParams#setRequireUserAction(int))
 
-- 更新先は保存済みのMirea HTTPSオリジン。認証トークンは更新リクエストに付けません。公開GET／HEAD APIはアカウント情報を返しません。
-- `GET /api/v1/app-updates/android/manifest` は署名付き更新情報、`GET /api/v1/app-updates/android/apk/<versionCode>` はAPK（Range対応）です。未設定・未配置は404、署名・期限・ハッシュ等の不正は503で閉じます。
-- APK内に固定したECDSA P-256公開鍵で更新情報を検証し、APK全体のSHA-256・サイズ・packageName・versionCode・versionName・minSdk・APK署名証明書を検証してからPackageInstallerへ渡します。APK署名は現在インストール済みの署名と一致する必要があります。
-- versionCodeの後退、同じ番号で異なるAPK、任意パッケージのインストール、HTTP、ユーザー情報付きURLを拒否します。APKは512 MiB以下。途中ファイルはアプリ専用noBackup領域に置き、共有ストレージや外部インストール用の任意パスは公開しません。
-- 更新情報の有効期間は最大7日です。期限切れ時は、同一APK・番号・ハッシュのまま更新情報を再署名する必要があります。端末の日時が大きくずれていても検証に失敗します。
-- HTTPSの証明書・ホスト名検証は無効化しません。LANのルートCAを利用する場合は端末側で明示的に信頼設定してください。
-- OSが返す確認IntentはセッションID・ランダムnonceを照合した非公開Receiverで受け、システムの確認先だけを利用者の明示操作で開きます。確認画面をバックグラウンドから強制表示しません。
+## 更新が見つからない・失敗する
 
-署名された不正な新バージョンまで防ぐ仕組みではありません。配布者の署名鍵とビルド環境を厳重に保護してください。鍵ローテーションはこの版の自動処理の対象外です。
+| 表示・状況 | 確認すること |
+| --- | --- |
+| サーバーは新しいがアプリは古い | 接続先の版に対応するAPKと有効な更新情報が公開されているか、管理者へ確認します。サーバーだけの公開ではAPKを更新できません。 |
+| 取得が始まらない | 更新設定の回線制限、端末の空き、閲覧・転送中でないかを確認します。強制停止したアプリは一度開き直します。 |
+| 期限・署名の検証に失敗 | 端末の日時を確認します。正しい場合は配布者が更新情報を再発行する必要があります。検証を無効にしないでください。 |
+| 証明書エラー | URLと証明書の名前・期限・信頼元を管理者に確認します。HTTPへ変えて回避しません。 |
+| Androidの確認待ち | アプリの更新画面からOSの確認を開きます。 |
+| Play Protectが警告 | 更新JSONの期限切れとは別の判定です。対象APKの版・入手元と警告を配布者へ連絡します。機能を無効にして回避する手順は提供しません。 |
 
-## ビルド・発行者向け
+更新の画面にはAndroidが返した区分と数値コードを表示します。生のシステムメッセージや他アプリ名・保存パスは出しません。拒否コードだけからPlay Protectが原因とは断定できません。[OSの結果コード](https://developer.android.com/reference/android/content/pm/PackageInstaller#STATUS_FAILURE_BLOCKED)
 
-JDK 21、Android SDK platform 36／build-tools 36.0.0が必要です。署名用PKCS12と設定はリポジトリの外に置きます。設定例（値は自分の保管庫で管理し、コミット・チャットへ貼り付けない）：
+安全な診断の共有は[困ったとき](user/help.md)、判定と安全性の調査記録は[Play Protect点検](security/play-protect.md)を参照してください。
 
-```properties
-storeFile=C:/secure/Mirea-Signing/mirea-release.p12
-storeType=PKCS12
-storePassword=<secret>
-keyAlias=mirea-release
-keyPassword=<secret>
-```
+## サーバー管理者：配信元を選ぶ
 
-```sh
-pnpm android:sync
-cd android
-./gradlew testDebugUnitTest lintDebug assembleRelease -PmireaSigningPropertiesFile=/secure/Mirea-Signing/signing.properties
-```
+通常起動で `APP_UPDATES_DIR` が未指定なら、サーバーと同じ公開リリースの署名付き `mirea-android-update.json` を公式GitHubリリースから取得します。全リリース中の最新版を無条件で配るものではありません。有効な検証済みキャッシュが残る場合は取得失敗時も利用できます。
 
-Windowsでは`gradlew.bat`を使用します。未設定時の開発ビルドに配布鍵は使われません。CIはデバッグビルド・Java単体テスト・lintまでを行い、配布秘密鍵を必要としません。CIデバッグAPKを自動更新用に公開しないでください。
+| 設定 | 配信元 |
+| --- | --- |
+| `APP_UPDATES_DIR` 未指定、外部取得有効 | 対応する公式リリースの更新情報とAPK |
+| `APP_UPDATES_DIR` を指定 | 指定フォルダーの公開バンドル。相対パスはインストール先基準 |
+| `APP_UPDATES_SOURCE=disabled`、バンドル未指定 | APK更新の配信を停止。通常の閲覧は動作 |
 
-APK署名用PKCS12と、更新情報署名用の別のEC P-256秘密鍵を保管します。対応する公開鍵だけを`server/update-signing-public.pem`と`android/app/src/main/assets/update-signing-public.pem`に同じ内容で格納します。**秘密鍵、パスワード設定はGitHub、サーバーパッケージ、コンテナ、APP_UPDATES_DIRへ入れません。** 鍵・パスワードを暗号化した別媒体へバックアップしてください。ローカルのアクセス制限だけはオフホストのバックアップではありません。
+独自フォークを配布する場合は、公式のAPK更新元をそのまま使わないでください。Androidのパッケージ名・配布署名・更新情報の公開鍵・配信元を[フォーク設計](development/fork.md)に沿って管理します。
 
-```sh
-node scripts/sign-android-update.mjs --apk=/build/app-release.apk --apk-url=https://mirea.example/api/v1/app-updates/android/apk/4 --private-key=/secure/Mirea-Signing/metadata-private.pem --output=/distribution/mirea-updates --sdk=/android-sdk --java=/jdk/bin/java
-```
+公開バンドルを使うコンテナでは `compose.app-updates.yaml` の読み取り専用マウントを利用できます。基になるComposeファイルは現在の導入方法に合わせ、公開ファイル用フォルダーだけをマウントしてください。秘密鍵や署名設定を配信先へ置いてはいけません。
 
-実APKをapksignerで検証し、aapt2から版・最小SDKを読み、デバッグ署名を拒否してから`manifest.json`と`mirea-android-4.apk`を生成します。公開鍵が対応しない秘密鍵を拒否します。versionCodeは更新のたびに単調増加させます。同一番号のAPKを差し替えず、有効期限の更新だけを同じコマンドで行います（最大168時間、`--validity-hours=`で短縮可）。署名用端末上の公開ファイル用ディレクトリへ生成した後、公開ファイルだけをサーバーへ転送し、APK→manifestの順で反映してください。GitHubへの公開・鍵のSecrets登録・自動転送はこのスクリプトでは行いません。
+更新情報は最大7日間有効です。配布者は期限を監視し、通常は残り4日以下で同じAPKの情報を再署名します。最大7日の期限は延長時にも検証します。APK本体・番号・ハッシュ・署名者を変える作業ではありません。保守の仕組みは[リリース手順](development/release.md#更新jsonの期限保守)にまとめています。
 
-0.16.0betaから、通常起動で`APP_UPDATES_DIR`が未指定なら同じ公開リリースの署名付き`mirea-android-update.json`をGitHubから取得します。署名・期限・リリースURLの一致を検証し、取得不能・期限切れは503です。明示的なバンドル配信では`.env`の`APP_UPDATES_DIR`に公開ファイルだけのディレクトリを指定します。相対パスはインストール先基準です。`APP_UPDATES_SOURCE=disabled`で外部取得を無効にした場合の未配置は404です。Web／アセット閲覧は更新配信が未設定でも動作します。
+## 配信APIと検証契約
 
-コンテナでは公開バンドルを読み取り専用マウントします。
+- `GET /api/v1/app-updates/android/manifest`：署名付き更新情報。
+- `GET /api/v1/app-updates/android/apk/<versionCode>`：APK。HEADとRangeに対応。
+- 公開APIにアカウント情報は含めず、更新リクエストに認証トークンは付けません。ローカルバンドル未配置・配信停止時は404です。公式リリースからの取得では、対応JSONの未公開や取得失敗も503になります。署名・期限・整合性の不正も503で拒否します。
 
-```sh
-# .env: APP_UPDATES_HOST_DIR=/distribution/mirea-updates
-docker compose -f compose.yaml -f compose.app-updates.yaml up -d --build
-```
+アプリは固定したECDSA P-256公開鍵で更新情報を検証し、取得したAPKのSHA-256、サイズ、packageName、versionCode、versionName、minSdk、APK署名証明書を確認します。APK署名はインストール済みの署名と一致しなければなりません。APKは512MiB以下で、版番号の後退、同じ番号の異なるAPK、任意パッケージ、HTTP、URL内のユーザー情報を拒否します。
 
-発行後はHTTPS経由のmanifest・APKハッシュ、同じ署名の旧版→新版の更新、閲覧中の保留、OS確認が必要な端末、ネットワーク中断後の再開を実機で確認してください。Java／サーバーの自動テストやAPKビルド成功だけで、全メーカーの実機更新が成功したとは判断しません。
+APKはアプリ専用のnoBackup領域に保存します。接続先変更時には古い取得・確認を中断し、新しい接続先での検証前には適用しません。OS確認は非公開ReceiverでセッションIDとnonceを照合し、システムの確認先だけを明示操作から開きます。署名された配布物自体の欠陥を完全に防ぐ仕組みではないため、署名鍵とビルド環境の保護が必要です。
+
+実装は[Android設計](design/android.md)、[API一覧](api.md)、[セキュリティ設計](design/security.md)を参照してください。

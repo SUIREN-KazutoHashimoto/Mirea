@@ -71,7 +71,7 @@ test('all UI details use textContent and escaped static markup; no local storage
   for(const forbidden of ['localStorage','sessionStorage','innerHTML','fetch(','error.stack','error.message'])assert(!source.includes(forbidden),forbidden);
   assert(source.includes('navigator.clipboard.writeText(diagnosticText(report))'));assert(source.includes("dialog[open]:not(.diagnostic-modal)"));
   const api=await readFile(new URL('../web/src/api.js',import.meta.url),'utf8');assert(api.includes('clearDiagnostics();session=null'));assert(api.includes('clearDiagnostics();authRevision++'));
-  assert.match(api.split('export async function authenticatedBlob')[1],/const token = session\?\.token,context=authRevision;/);
+  assert.match(api.split('export async function authenticatedBlob')[1],/const token = session\?\.token,context=authRevision,origin=endpoint;/);
 });
 test('every shared server module imported by the client is available in the container build stage',async()=>{
   const base=new URL('../web/src/',import.meta.url),docker=(await readFile(new URL('../Dockerfile',import.meta.url),'utf8')).split(' AS dependencies')[0];

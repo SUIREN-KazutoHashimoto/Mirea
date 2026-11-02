@@ -22,6 +22,7 @@ import {normalizeDiagnostic} from './error-diagnostic-schema.js';
 import packageInfo from '../package.json' with {type:'json'};
 
 const UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
+const FAILED_BOOK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MIME_TYPES = ['application/pdf', EPUB_MIME, ...VIDEO_TYPES, ...AUDIO_TYPES, ...IMAGE_TYPES];
 const integer = { type: 'integer', minimum: 0 };
 
@@ -53,8 +54,8 @@ export async function registerResumableUploads(app, context) {
     const delegated=db.prepare('SELECT * FROM admin_upload_retries WHERE upload_id=?').get(upload.id);
     if(delegated && !context.adminAccess.isAdmin(delegated.admin_id))throw httpError(403,'再試行を要求した管理者の権限が解除されました。');
     if(!context.adminAccess.enabled(upload.user_id))throw httpError(403,'アップロード者のアカウントは停止中です。');
-    const session = db.prepare('SELECT 1 FROM sessions WHERE id=? AND user_id=? AND expires_at>?').get(delegated?.session_id??upload.session_id, delegated?.admin_id??upload.user_id, Date.now());
-    if (!session) throw httpError(401, 'ログインの有効期限が切れました。');
+    // Completion accepted the bytes as a durable job. Logout must not erase that
+    // work; the live account, shelf role and explicit cancellation still govern it.
     membership(upload.shelf_id, upload.user_id, ['owner', 'editor']);
   }
   function status(upload,detail=true) {
@@ -67,7 +68,8 @@ export async function registerResumableUploads(app, context) {
       seriesId:upload.target_series_id,seriesWarning:upload.series_warning,
       title: upload.title, retainOriginal: Boolean(upload.retain_original), processing,
       ...(diagnostic?{diagnostic}:{}),...(file?{failedFile:{page,filename:file.filename}}:{}),
-      sourceRetained: upload.state === 'failed' && isTimedMime(JSON.parse(upload.files_json)[0].mime),
+      sourceRetained: upload.state === 'failed' && (isTimedMime(JSON.parse(upload.files_json)[0].mime)||upload.expires_at>Date.now()),
+      ...(!isTimedMime(JSON.parse(upload.files_json)[0].mime)&&upload.state==='failed'?{sourceExpiresAt:upload.expires_at}:{}),
       receivedBytes: detail?parts.reduce((sum,part)=>sum+part.size,0):db.prepare('SELECT COALESCE(SUM(size),0) n FROM upload_parts WHERE upload_id=?').get(upload.id).n,
       files: detail?JSON.parse(upload.files_json).map((file, index) => {
         const received = parts.filter(part => part.file_index === index);
@@ -92,6 +94,7 @@ export async function registerResumableUploads(app, context) {
   }
   function schedule(id) {
     if (jobs.has(id) || closing) return jobs.get(id);
+    db.prepare("UPDATE upload_sessions SET processing_json=json_set(processing_json,'$.stage','queued') WHERE id=? AND state='processing'").run(id);
     const job = context.jobPool.run(async () => {
       const upload = get(id);
       if (!upload || upload.state !== 'processing') { if (upload?.state === 'cancelled') await discard(id); return; }
@@ -104,6 +107,7 @@ export async function registerResumableUploads(app, context) {
       }
       try {
         authorizeJob(upload);
+        db.prepare("UPDATE upload_sessions SET processing_json=json_set(processing_json,'$.stage','assembling') WHERE id=? AND state='processing'").run(id);
         await removeItemDirectory(stagingDir, id);
         const stage = join(stagingDir, id);
         await mkdir(stage, { mode: 0o700 });
@@ -139,12 +143,14 @@ export async function registerResumableUploads(app, context) {
         const processing={...JSON.parse(current.processing_json),stage:'failed',diagnostic};
         db.prepare("UPDATE upload_sessions SET state='failed',error=?,processing_json=? WHERE id=? AND state='processing'").run(
           uploadErrorMessage(error), JSON.stringify(processing), id);
+        if(!isTimedMime(JSON.parse(upload.files_json)[0].mime))db.prepare("UPDATE upload_sessions SET expires_at=? WHERE id=? AND state='failed'").run(Date.now()+FAILED_BOOK_TTL_MS,id);
         app.log.error({ err: error, uploadId: id, errorId:diagnostic.errorId }, 'Upload processing failed');
       } finally {
         // A failed timed-media job remains retryable indefinitely. Never sweep its source
         // just because the 24-hour *transfer* deadline elapsed.
         const state=get(id)?.state;
-        if (!state || state==='complete' || state==='cancelled' || state==='failed'&&!isTimedMime(JSON.parse(upload.files_json)[0].mime)) await discard(id);
+        if (!state || state==='complete' || state==='cancelled') await discard(id);
+        else if(state==='failed'&&!isTimedMime(JSON.parse(upload.files_json)[0].mime))await removeItemDirectory(stagingDir,id);
       }
     },id).catch(error => { app.log.error({ err: error, uploadId: id }, 'Upload cleanup failed'); });
     jobs.set(id, job);
@@ -252,7 +258,8 @@ export async function registerResumableUploads(app, context) {
   app.post('/api/v1/uploads/:id/retry', auth, async(req,reply)=>{
     await exclusive(req.params.id,async()=>{
       const upload=owned(req);
-      if(upload.state!=='failed'||!isTimedMime(JSON.parse(upload.files_json)[0].mime))throw httpError(409,'再試行できる動画・音声ではありません。');
+      if(upload.state!=='failed')throw httpError(409,'再試行できる失敗したジョブではありません。');
+      if(!isTimedMime(JSON.parse(upload.files_json)[0].mime)&&upload.expires_at<=Date.now())throw httpError(410,'原本の再試行期限（7日間）が切れました。ファイルを選択し直してください。');
       if(jobs.has(upload.id))throw httpError(409,'直前の処理を終了しています。少し待って再試行してください。');
       requireSlot(upload.user_id);
       db.prepare('DELETE FROM admin_upload_retries WHERE upload_id=?').run(upload.id);
@@ -349,7 +356,8 @@ export async function registerResumableUploads(app, context) {
     async adminRetry(id,adminId,sessionId){
       await exclusive(id,async()=>{
         const upload=get(id);
-        if(!upload||upload.state!=='failed'||!isTimedMime(JSON.parse(upload.files_json)[0]?.mime))throw httpError(409,'再試行できる失敗した動画・音声ジョブではありません。');
+        if(!upload||upload.state!=='failed')throw httpError(409,'再試行できる失敗したジョブではありません。');
+        if(!isTimedMime(JSON.parse(upload.files_json)[0]?.mime)&&upload.expires_at<=Date.now())throw httpError(410,'原本の再試行期限（7日間）が切れました。ファイルを選択し直してください。');
         if(jobs.has(id))throw httpError(409,'処理の終了を待ってください。');
         if(!context.adminAccess.isAdmin(adminId)||!context.adminAccess.enabled(upload.user_id))throw httpError(403,'アカウントの権限を確認してください。');
         membership(upload.shelf_id,upload.user_id,['owner','editor']);

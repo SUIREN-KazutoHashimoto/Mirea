@@ -9,12 +9,11 @@ import {createLoginStore} from './session-store.js';
 import { createResumableUpload } from './resumable-upload.js';
 import { beginUpdateActivity } from './update-busy.js';
 import {nativeTransfersAvailable,nativeUpload,configureNativeTransfers,invalidateTransfers} from './native-transfers.js';
-import {ciphertextHash} from './download-core.js';
 import {stopTransfers,clearTransferRecords} from './transfer-manager.js';
 import {clearShelfUnlocks,shelfUnlockValue,unlockRequiredShelf} from './private-shelves.js';
 
 configureNativeTransfers(()=>session?.token?{origin:endpoint,token:session.token,userId:session.user.id,shelfUnlock:shelfUnlockValue()}:null);
-function invalidateTransferContext(){stopTransfers();clearTransferRecords();if(session?.user.id)ciphertextHash(new TextEncoder().encode((endpoint||location.origin)+'|'+session.user.id)).then(invalidateTransfers).catch(()=>{});}
+function invalidateTransferContext(){stopTransfers();clearTransferRecords();if(session?.user.id)invalidateTransfers({origin:endpoint||location.origin,userId:session.user.id}).catch(()=>{});}
 export const native = Capacitor.isNativePlatform();
 let savedEndpoint;try{savedEndpoint=localStorage.getItem('mirea.server');}catch{}
 let endpoint = native ? (savedEndpoint || import.meta.env.VITE_API_URL || '') : '';
@@ -23,8 +22,9 @@ let compatibleEndpoint,compatibility={majorMismatch:false};
 function checkCompatibility(path){if(native&&compatibleEndpoint===endpoint&&compatibility.majorMismatch&&path!=='/config'&&!path.startsWith('/app-updates/')&&path!=='/auth/logout')throw Object.assign(new Error('サーバーとアプリのメジャーバージョンが異なります。アプリを更新するか、対応するサーバーを選択してください。'),{code:'APP_VERSION_INCOMPATIBLE'});}
 export const requireCompatibleServer=()=>checkCompatibility('/content');
 export const sessionRevision=()=>authRevision;
+function assertRequestContext(revision,origin){if(revision!==authRevision||origin!==endpoint)throw new DOMException('接続先またはアカウントが変更されました。','AbortError');}
 export const isOfflineSession=()=>session?.offline===true;
-export async function markSessionOffline(){if(session&&await offlineIdentity(endpoint,session.user.id))session={...session,offline:true};}
+export async function markSessionOffline(){const previous=session,revision=authRevision,origin=endpoint;if(previous&&await offlineIdentity(origin,previous.user.id)&&revision===authRevision&&origin===endpoint&&session===previous)session={...previous,offline:true};}
 export async function rememberOfflineConfig(config){if(session&&!session.offline)try{await(await offlineVault()).saveIdentity(endpoint,session,rememberChoice,config);}catch{/* Offline storage is optional for online viewing. */}}
 export async function reconnectSession({signal}={}){
   if(!session)return false;
@@ -39,18 +39,21 @@ export async function reconnectSession({signal}={}){
 }
 async function offlineLoggedOut(origin){try{return await(await offlineVault()).loggedOut(origin);}catch{return false;}}
 async function sessionRequest(path,options={}){
-  const context=authRevision;let response;try{response=await fetch(`/api/v1${path}`,{...options,signal:options.signal??AbortSignal.timeout(10000),credentials:'same-origin',cache:'no-store',headers:{...(options.body?{'Content-Type':'application/json'}:{}),...options.headers},body:options.body?JSON.stringify(options.body):undefined});}catch{throw new Error('サーバーに接続できません。ログイン保持は解除していません。');}
-  options.signal?.throwIfAborted();
-  if(!response.ok){const data=await response.json().catch(()=>({}));throw requestError({...data,error:'保持されたログインを確認できません。'},response.status,{record:response.status>=500&&context===authRevision});}const value=response.status===204?null:await response.json();options.signal?.throwIfAborted();return value;
+  const context=authRevision,origin=endpoint;let response;try{response=await fetch(`/api/v1${path}`,{...options,signal:options.signal??AbortSignal.timeout(10000),credentials:'same-origin',cache:'no-store',headers:{...(options.body?{'Content-Type':'application/json'}:{}),...options.headers},body:options.body?JSON.stringify(options.body):undefined});}catch{assertRequestContext(context,origin);options.signal?.throwIfAborted();throw new Error('サーバーに接続できません。ログイン保持は解除していません。');}
+  assertRequestContext(context,origin);options.signal?.throwIfAborted();
+  if(!response.ok){const data=await response.json().catch(()=>({}));assertRequestContext(context,origin);options.signal?.throwIfAborted();throw requestError({...data,error:'保持されたログインを確認できません。'},response.status,{record:response.status>=500&&context===authRevision});}
+  let value;try{value=response.status===204?null:await response.json();}finally{assertRequestContext(context,origin);options.signal?.throwIfAborted();}return value;
 }
 const loginStore=createLoginStore({native,temporary:()=>{try{return sessionStorage;}catch{return null;}},secure:registerPlugin('MireaSession'),request:sessionRequest});
 export async function initializeSession({signal}={}){
-  const budget=signal?null:connectionBudget();signal??=budget.signal;
+  const revision=++authRevision,origin=endpoint;let budget;
+  if(!signal){const cached=await offlineIdentity(origin);if(authRevision!==revision||origin!==endpoint)return;budget=connectionBudget({ms:cached?1200:10000});signal=budget.signal;}
   try {
-  const revision=++authRevision,origin=endpoint;let loaded;
+  let loaded;
   try{loaded=await loginStore.load(origin,{signal});
-    if(await offlineLoggedOut(origin)){if(loaded?.value?.token&&!native){await fetch('/api/v1/auth/logout',{method:'POST',headers:{Authorization:'Bearer '+loaded.value.token},cache:'no-store',signal}).catch(()=>{});await loginStore.clear(origin,loaded.value.token,{signal});}session=null;return;}
-  }catch(error){if(authRevision!==revision||origin!==endpoint)return;if([401,403].includes(error.status)){await forgetOfflineIdentity(origin);session=null;return;}const cached=await offlineIdentity(origin);if(!cached)throw error;loaded={value:{...cached,token:'',offline:true},remember:true};}if(authRevision!==revision||origin!==endpoint)return;
+    if(authRevision!==revision||origin!==endpoint)return;const loggedOut=await offlineLoggedOut(origin);if(authRevision!==revision||origin!==endpoint)return;
+    if(loggedOut){if(loaded?.value?.token&&!native){await fetch('/api/v1/auth/logout',{method:'POST',headers:{Authorization:'Bearer '+loaded.value.token},cache:'no-store',signal}).catch(()=>{});await loginStore.clear(origin,loaded.value.token,{signal});}if(authRevision===revision&&origin===endpoint)session=null;return;}
+  }catch(error){if(authRevision!==revision||origin!==endpoint)return;if([401,403].includes(error.status)){await forgetOfflineIdentity(origin);if(authRevision===revision&&origin===endpoint)session=null;return;}const cached=await offlineIdentity(origin);if(authRevision!==revision||origin!==endpoint)return;if(!cached)throw error;loaded={value:{...cached,token:'',offline:true},remember:true};}if(authRevision!==revision||origin!==endpoint)return;
   if(!loaded){session=null;await forgetOfflineIdentity(origin);return;}session=loaded.value;rememberChoice=loaded.remember;
   if(session.offline)return;
   let current;
@@ -58,11 +61,18 @@ export async function initializeSession({signal}={}){
     // A newer login/server selection wins over an older in-flight validation.
     // api() already clears the matching current session on a 401.
     if(authRevision!==revision||origin!==endpoint)return;
-    if([401,403].includes(error.status)){await loginStore.clear(origin,loaded.value.token,{signal});await forgetOfflineIdentity(origin,loaded.value.user.id);if(authRevision===revision)session=null;return;}let cached=await offlineIdentity(origin,session?.user.id);if(!cached&&nativeTransfersAvailable()){await import('./downloads.js').then(m=>m.syncNativeDownloads()).catch(()=>{});cached=await offlineIdentity(origin,session?.user.id);}if(cached){session={...session,offline:true};return;}throw error;
+    if([401,403].includes(error.status)){await loginStore.clear(origin,loaded.value.token,{signal});if(authRevision!==revision||origin!==endpoint)return;await forgetOfflineIdentity(origin,loaded.value.user.id);if(authRevision===revision&&origin===endpoint)session=null;return;}
+    let cached=await offlineIdentity(origin,loaded.value.user.id);if(authRevision!==revision||origin!==endpoint)return;
+    if(!cached&&nativeTransfersAvailable()){
+      const downloads=await import('./downloads.js');if(authRevision!==revision||origin!==endpoint)return;
+      await downloads.syncNativeDownloads().catch(()=>{});if(authRevision!==revision||origin!==endpoint)return;
+      cached=await offlineIdentity(origin,loaded.value.user.id);if(authRevision!==revision||origin!==endpoint)return;
+    }
+    if(cached){session={...loaded.value,offline:true};return;}throw error;
   }
   if(authRevision!==revision||origin!==endpoint)return;
   if(current.user.id!==loaded.value.user.id){await setSession(null);return;}
-  session={...session,user:{id:current.user.id,name:current.user.name,email:current.user.email}};
+  session={...session,user:current.user};
   if(loaded.legacy)await loginStore.save(origin,session,rememberChoice);
   } finally {budget?.dispose();}
 }
@@ -99,11 +109,12 @@ export const absoluteUrl = path => `${endpoint}${path}`;
 export const authHeaders = () => ({ Authorization: `Bearer ${session?.token ?? ''}`,...(shelfUnlockValue()?{'X-Mirea-Shelf-Unlock':shelfUnlockValue()}:{}) });
 
 export async function api(path, options = {}) {
-  const recordErrors=options.diagnostics!==false;const {diagnostics,...requestOptions}=options;options=requestOptions;
+  const recordErrors=options.diagnostics!==false;const {diagnostics,allowNotModified,...requestOptions}=options;options=requestOptions;
   if (native && !endpoint) throw new Error('接続先のサーバーURLを設定してください。');
   checkCompatibility(path);
-  const token = session?.token,context=authRevision;
+  const token = session?.token,context=authRevision,origin=endpoint;
   if(session?.offline&&!token&&!path.startsWith('/auth/login')&&!path.startsWith('/auth/register')&&path!=='/config')throw new Error('オフラインです。接続後に自動同期します。');
+  options={...options,signal:options.signal??AbortSignal.timeout(options.method&&options.method!=='GET'?60000:30000)};
   options.signal?.throwIfAborted();
   let response;
   try {
@@ -113,37 +124,43 @@ export async function api(path, options = {}) {
       body: options.body ? JSON.stringify(options.body) : undefined,
       cache: 'no-store'
     });
-  } catch { options.signal?.throwIfAborted();throw requestError({error:'サーバーに接続できません。接続先とネットワークを確認してください。'},0,{network:true,record:recordErrors&&context===authRevision}); }
-  options.signal?.throwIfAborted();
+  } catch { assertRequestContext(context,origin);options.signal?.throwIfAborted();throw requestError({error:'サーバーに接続できません。接続先とネットワークを確認してください。'},0,{network:true,record:recordErrors&&context===authRevision}); }
+  assertRequestContext(context,origin);options.signal?.throwIfAborted();
+  if(response.status===304&&allowNotModified){
+    const serverTime=Number(response.headers.get('X-Mirea-Server-Time'));
+    return {notModified:true,etag:response.headers.get('ETag'),serverTime:Number.isFinite(serverTime)&&serverTime>0?serverTime:undefined};
+  }
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    options.signal?.throwIfAborted();
+    assertRequestContext(context,origin);options.signal?.throwIfAborted();
     if(response.status===423&&data.shelfUnlockRequired&&!options.shelfRetried&&recordErrors){await unlockRequiredShelf(data.shelfUnlockRequired);if(context!==authRevision)throw Error('アカウントが変更されました。');return api(path,{...options,shelfRetried:true});}
     const error = requestError(data,response.status,{record:recordErrors&&context===authRevision});
+    const retryAfter=response.headers.get('Retry-After');if(retryAfter)error.retryAfter=retryAfter;
     if (response.status === 401 && session && session.token === token && !path.startsWith('/auth/login')) {
       setSession(null);
       window.dispatchEvent(new Event('mirea:unauthorized'));
     }
     throw error;
   }
-  const result=response.status===204?null:await response.json();options.signal?.throwIfAborted();if(native&&path==='/config'){compatibleEndpoint=endpoint;compatibility=compareVersions(packageInfo.version,result?.version);window.dispatchEvent(new CustomEvent('mirea:server-version',{detail:{...compatibility,version:result?.version}}));}return result;
+  let result;try{result=response.status===204?null:await response.json();}finally{assertRequestContext(context,origin);options.signal?.throwIfAborted();}if(native&&path==='/config'){compatibleEndpoint=endpoint;compatibility=compareVersions(packageInfo.version,result?.version);window.dispatchEvent(new CustomEvent('mirea:server-version',{detail:{...compatibility,version:result?.version}}));}return result;
 }
 
 export async function authenticatedBlob(path, signal) {
   checkCompatibility(path);
-  const token = session?.token,context=authRevision;
+  const token = session?.token,context=authRevision,origin=endpoint;
   if(session?.offline&&!token)throw new Error('オフラインです。');
-  const response = await fetch(absoluteUrl(path), { headers: authHeaders(), signal, cache: 'no-store' });
+  let response;try{response = await fetch(absoluteUrl(path), { headers: authHeaders(), signal, cache: 'no-store' });}catch(error){assertRequestContext(context,origin);signal?.throwIfAborted();throw error;}
+  assertRequestContext(context,origin);signal?.throwIfAborted();
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    signal?.throwIfAborted();
+    assertRequestContext(context,origin);signal?.throwIfAborted();
     if (response.status === 401 && session?.token === token) {
       setSession(null);
       window.dispatchEvent(new Event('mirea:unauthorized'));
     }
     throw requestError(data,response.status,{record:context===authRevision});
   }
-  return response.blob();
+  let blob;try{blob=await response.blob();}finally{assertRequestContext(context,origin);signal?.throwIfAborted();}return blob;
 }
 
 export function upload(shelfId, files, title, onProgress, options) {

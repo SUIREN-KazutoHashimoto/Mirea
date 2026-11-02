@@ -13,8 +13,8 @@ android {
         applicationId "com.suiren.mirea"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 52
-        versionName "0.25.0beta"
+        versionCode 53
+        versionName "1.0.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -57,6 +57,11 @@ dependencies {
     implementation project(':capacitor-android')
     implementation 'androidx.media3:media3-exoplayer:1.11.1'
     implementation 'androidx.media3:media3-exoplayer-hls:1.11.1'
+    constraints {
+        implementation('com.google.guava:guava:33.7.2-android') {
+            because 'Includes the deserialization allocation fix (GHSA-xxph-c9ww-hj94) beyond Media3\'s transitive version'
+        }
+    }
     testImplementation "junit:junit:$junitVersion"
     testImplementation 'org.json:json:20250517'
     testImplementation 'org.robolectric:robolectric:4.16'
@@ -66,4 +71,5 @@ dependencies {
 }
 
 apply from: 'capacitor.build.gradle'
+apply from: '../third-party-notices.gradle'
 

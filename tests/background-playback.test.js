@@ -46,6 +46,29 @@ test('old viewer disposal never clears a newer OS media session; delayed artwork
   first.setArtwork('blob:old');first.dispose();assert.equal(session.metadata.title,'Current');assert.equal(typeof actions.get('play'),'function');second.setArtwork('blob:current');assert.equal(session.metadata.artwork[0].src,'blob:current');second.dispose();assert.equal(session.metadata,null);
 });
 
+test('a hidden candidate owns no OS actions until committed, and cancellation keeps the current player',()=>{
+  const actions=new Map(),session={setActionHandler:(key,value)=>actions.set(key,value)},nav={mediaSession:session},Metadata=class{constructor(value){Object.assign(this,value);}},doc={};
+  const current=mountMediaSession(new Media(),{title:'Current',navigator:nav,MediaMetadata:Metadata,document:doc});const play=actions.get('play');
+  const discarded=mountMediaSession(new Media(),{title:'Discarded',active:false,navigator:nav,MediaMetadata:Metadata,document:doc});discarded.setArtwork('blob:discarded');discarded.dispose();
+  assert.equal(session.metadata.title,'Current');assert.equal(actions.get('play'),play);
+  const next=mountMediaSession(new Media(),{title:'Next',active:false,navigator:nav,MediaMetadata:Metadata,document:doc});next.setArtwork('blob:next');assert.equal(session.metadata.title,'Current');
+  current.dispose();next.activate();assert.equal(session.metadata.title,'Next');assert.equal(session.metadata.artwork[0].src,'blob:next');assert.equal(typeof actions.get('play'),'function');next.dispose();
+});
+
+test('PiP media session handoff retains the pinned element and explicit final close exits it',async()=>{
+  const media=new Media();let exits=0;const doc={pictureInPictureEnabled:true,pictureInPictureElement:media,async exitPictureInPicture(){exits++;this.pictureInPictureElement=null;}};
+  media.requestPictureInPicture=async()=>{doc.pictureInPictureElement=media;};
+  const old=mountMediaSession(media,{document:doc,navigator:{}});old.dispose({preserveMedia:true});assert.equal(exits,0);assert.equal(doc.pictureInPictureElement,media);
+  const next=mountMediaSession(media,{active:false,document:doc,navigator:{}});next.activate();assert.equal(exits,0);next.dispose();assert.equal(exits,1);
+});
+
+test('a late PiP request survives an explicit media handoff but does not minimize the disposed viewer',async()=>{
+  const media=new Media();let finish,exits=0;const doc={pictureInPictureEnabled:true,pictureInPictureElement:null,async exitPictureInPicture(){exits++;this.pictureInPictureElement=null;}};
+  media.requestPictureInPicture=()=>new Promise(resolve=>{finish=()=>{doc.pictureInPictureElement=media;resolve();};});
+  const binding=mountMediaSession(media,{document:doc,navigator:{}}),pending=binding.background(()=>assert.fail('old viewer must not minimize'));
+  binding.dispose({preserveMedia:true});finish();await pending;assert.equal(exits,0);assert.equal(doc.pictureInPictureElement,media);
+});
+
 test('Safari PiP toggles back inline and restoring presentation exits PiP without pausing',async()=>{
   const media=new Media();await media.play();media.webkitPresentationMode='inline';media.webkitSupportsPresentationMode=()=>true;media.webkitSetPresentationMode=value=>{media.webkitPresentationMode=value;};
   const binding=mountMediaSession(media,{document:{},navigator:{}});await binding.pip();assert.equal(media.webkitPresentationMode,'picture-in-picture');await binding.pip();assert.equal(media.webkitPresentationMode,'inline');await binding.pip();binding.exitPip();assert.equal(media.webkitPresentationMode,'inline');assert.equal(media.paused,false);binding.dispose();

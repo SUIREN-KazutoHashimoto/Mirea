@@ -27,7 +27,7 @@ final class PlaybackPreload implements AutoCloseable {
         }else{
             JSONObject ticket=api.json("/items/"+id+"/playback-ticket","POST",null);size=ticket.optLong("size",item.getLong("size"));path=ticket.optBoolean("original")?ticket.getString("url"):"/api/v1/items/"+id+"/content";
             if(item.optString("kind").equals("video")){JSONObject info=api.json("/items/"+id+"/video","GET",null);qualities=info.optJSONArray("renditions");if(qualities==null)qualities=new JSONArray();quality=PlaybackQuality.resolve(qualities,selected);if(!quality.equals("legacy")){generation=info.optString("generation","base");if(!generation.equals("base")&&!PlaybackApi.uuid(generation))throw new IOException("Invalid preload generation");}}
-            if(generation==null&&(size<1||size>8589934592L))throw new IOException("Invalid preload length");
+            if(generation==null&&(size<1||size>PlaybackLimits.MAX_ASSET_BYTES))throw new IOException("Invalid preload length");
         }
         return new PlaybackPreload(api,item,request,generation,path,size,quality,qualities,source);
     }
@@ -46,6 +46,7 @@ final class PlaybackPreload implements AutoCloseable {
     }
     void transfer(){transferred=true;}
     boolean isReady(){return ready&&!failed&&!closed;}
+    boolean isFailed(){return failed||closed;}
     AdaptivePlayback takeAdaptive(){AdaptivePlayback value=adaptive;adaptive=null;return value;}
     MediaPlayer takePlayer(){MediaPlayer value=player;player=null;return value;}
     @Override public void close(){if(closed||transferred)return;closed=true;api.close();if(adaptive!=null){adaptive.player.release();adaptive=null;}if(player!=null){try{player.release();}catch(Exception ignored){}player=null;}if(source!=null)source.close();}

@@ -23,7 +23,7 @@ export function registerProgress(app,{db,authenticate,findItem,options}) {
     config:{rateLimit:options.rateLimit===false?false:{hook:'preHandler',max:240,timeWindow:'1 minute',keyGenerator:req=>req.user.id}},
     schema:{body:{type:'object',additionalProperties:false,required:['revision','updateId'],properties:{
       revision:{type:'integer',minimum:0,maximum:2147483646},updateId:uuid,
-      positionMs:millis,durationMs:{...millis,minimum:1},page:{type:'integer',minimum:1,maximum:1000000},scrollX:fraction,scrollY:fraction,zoom:{enum:['fit','1','1.5','2']}
+      positionMs:millis,durationMs:{...millis,minimum:1},page:{type:'integer',minimum:1,maximum:1000000},scrollX:fraction,scrollY:fraction,zoom:{enum:['fit','width','0.5','0.75','1','1.25','1.5','2','3']},completed:{type:'boolean'}
     }}}
   },async req=>{
     const item=findItem(req.params.id,req.user.id),input=req.body;
@@ -31,7 +31,7 @@ export function registerProgress(app,{db,authenticate,findItem,options}) {
     if(video){
       if(input.positionMs===undefined || input.durationMs===undefined || input.positionMs>input.durationMs || ['page','scrollX','scrollY','zoom'].some(key=>input[key]!==undefined)) throw httpError(422,'動画・音声の再開位置が不正です。');
     }else if(input.page===undefined || input.page>item.page_count || input.positionMs!==undefined || input.durationMs!==undefined) throw httpError(422,'本の再開位置が不正です。');
-    const state=video?{positionMs:input.positionMs,durationMs:input.durationMs}:{page:input.page,scrollX:input.scrollX??0,scrollY:input.scrollY??0,zoom:input.zoom??'fit'};
+    const state=video?{positionMs:input.positionMs,durationMs:input.durationMs}:{page:input.page,scrollX:input.scrollX??0,scrollY:input.scrollY??0,zoom:input.zoom??'fit',...(input.completed===undefined?{}:{completed:input.completed})};
     const hash=createHash('sha256').update(JSON.stringify({revision:input.revision,...state})).digest('hex');
     return transaction(db,()=>{
       const previous=get.get(req.user.id,item.id);
@@ -40,7 +40,7 @@ export function registerProgress(app,{db,authenticate,findItem,options}) {
         return {progress:publicProgress(previous)};
       }
       if((previous?.revision??0)!==input.revision) throw httpError(409,'別の画面で進行度が更新されました。開き直して最新の続き位置を取得してください。');
-      const completed=video && input.positionMs>=input.durationMs ? 1:0;
+      const completed=video ? Number(input.positionMs>=input.durationMs) : Number(input.completed===true);
       db.prepare(`INSERT INTO asset_progress(user_id,asset_id,revision,update_id,payload_hash,position_ms,duration_ms,page_number,scroll_x,scroll_y,zoom,completed,updated_at)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,asset_id) DO UPDATE SET revision=excluded.revision,update_id=excluded.update_id,payload_hash=excluded.payload_hash,
         position_ms=excluded.position_ms,duration_ms=excluded.duration_ms,page_number=excluded.page_number,scroll_x=excluded.scroll_x,scroll_y=excluded.scroll_y,zoom=excluded.zoom,completed=excluded.completed,updated_at=excluded.updated_at`)

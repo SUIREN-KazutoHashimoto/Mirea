@@ -19,7 +19,7 @@ import com.suiren.mirea.auth.MireaSessionPlugin;
 import com.suiren.mirea.auth.MireaBiometricPlugin;
 
 public class MainActivity extends BridgeActivity {
-    @Override public void onCreate(Bundle state){UpdateEngine.setBusy(true);registerPlugin(MireaUpdaterPlugin.class);registerPlugin(MireaPlaybackPlugin.class);registerPlugin(MireaFileExportPlugin.class);registerPlugin(MireaSessionPlugin.class);registerPlugin(MireaBiometricPlugin.class);registerPlugin(MireaAppearancePlugin.class);registerPlugin(MireaTransferPlugin.class);super.onCreate(state);installLibraryInsets();applyAppearance(savedAppearance());}
+    @Override public void onCreate(Bundle state){UpdateEngine.setBusy(true);registerPlugin(MireaWebGuardPlugin.class);registerPlugin(MireaUpdaterPlugin.class);registerPlugin(MireaPlaybackPlugin.class);registerPlugin(MireaFileExportPlugin.class);registerPlugin(MireaSessionPlugin.class);registerPlugin(MireaBiometricPlugin.class);registerPlugin(MireaAppearancePlugin.class);registerPlugin(MireaTransferPlugin.class);super.onCreate(state);installLibraryInsets();applyAppearance(savedAppearance());}
     private void installLibraryInsets(){
         // Keep the entire WebView outside system bars, not just the first page
         // position. CSS body padding scrolls away and cannot protect sticky UI.

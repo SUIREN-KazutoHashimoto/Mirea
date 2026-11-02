@@ -10,6 +10,7 @@ test('container context is source-only and excludes attachments, keys, productio
  for(const path of ['container/launcher.c','scripts/prepare-media-storage.mjs','web/src/main.js','web/public/brand/orbit-icon.svg','server/app.js','package.json','pnpm-lock.yaml','Dockerfile'])assert(allowed(path),path);
  for(const path of ['.git/config','.env','.local/signing.properties','.codex-remote-attachments/file.mp4','data/mirea.sqlite','releases/package.apk','android/keystore.p12','certificate.key','dist/index.html'])assert(!allowed(path),path);
  assert(allowed('scripts/pwa-icons.mjs'));assert((await read('Dockerfile')).includes('COPY scripts/pwa-icons.mjs ./scripts/pwa-icons.mjs'));
+ assert(allowed('patches/@capacitor__android@8.5.3.patch'));assert.equal((await read('Dockerfile')).match(/COPY patches \.\/patches/g)?.length,2,'both dependency install stages need the pinned package patch');
  const docker=await read('Dockerfile');for(const v of ['USER 1000:1000','server/healthcheck.mjs','fonts-noto-cjk ffmpeg','org.opencontainers.image.revision','mkdir -p /data /media'])assert(docker.includes(v));assert(!docker.includes('COPY . '));assert(docker.includes('org.opencontainers.image.licenses="Apache-2.0"'));assert((await read('LICENSE')).includes('Apache License'));
 });
 test('release and TrueNAS configurations pin image, isolate data and avoid privileged updates',async()=>{

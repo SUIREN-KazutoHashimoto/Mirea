@@ -26,8 +26,8 @@ export function mediaContentSource(db,item,{uploadDir,originalDir},{raw=false}={
 // A published immutable source and durable tasks are independent of transfer
 // parts. Each asset has ordered dependencies; different lanes run concurrently.
 export async function createMediaPipeline(app,context){
- const {db,media,videoTranscoder,audioTranscoder,jobPool,originalDir,uploadDir,thumbnailDir,previewDir,videoDir,stagingDir,adminAccess}=context;
- const active=new Map(),activeAssets=new Map(),counts=new Map();let closing=false,pumping=false;
+ const {db,media,videoTranscoder,audioTranscoder,jobPool,originalDir,uploadDir,thumbnailDir,previewDir,videoDir,stagingDir,adminAccess,maintenance}=context;
+ const active=new Map(),activeAssets=new Map(),counts=new Map();let closing=false,pumping=false,reaping;
  const ingest=id=>db.prepare('SELECT * FROM media_ingest WHERE asset_id=?').get(id);
  const task=id=>db.prepare('SELECT * FROM media_tasks WHERE id=?').get(id);
  const item=id=>db.prepare('SELECT * FROM items WHERE id=?').get(id);
@@ -47,12 +47,16 @@ export async function createMediaPipeline(app,context){
   const failed=rows.some(r=>r.state==='failed'),pending=rows.some(r=>r.state==='queued'||r.state==='running');
   if(!pending){if(!rows.some(r=>r.state==='cancelled'))await removeItemDirectory(stagingDir,id);await reapSources();db.prepare("UPDATE upload_sessions SET state=?,error=?,processing_json=? WHERE id=? AND state!='cancelled'").run(failed?'failed':'complete',failed?'一部の後処理に失敗しました。原本と公開済みアセットは保持されています。':null,JSON.stringify({stage:failed?'failed':'complete',percent:100}),id);}
  }
- async function reapSources(){
-  for(const row of db.prepare(`SELECT * FROM media_ingest m WHERE retain_original=0 AND canonical_ready=1 AND source_removed=0
+ function reapSources(){
+  if(reaping)return reaping;
+  if(closing)return Promise.resolve();
+  const release=maintenance.tryReserve();if(!release)return Promise.resolve();
+  reaping=(async()=>{for(const row of db.prepare(`SELECT * FROM media_ingest m WHERE retain_original=0 AND canonical_ready=1 AND source_removed=0
    AND NOT EXISTS(SELECT 1 FROM media_tasks t WHERE t.asset_id=m.asset_id AND t.state!='complete')
    AND NOT EXISTS(SELECT 1 FROM playback_tickets p JOIN playback_generations g ON g.token_hash=p.token_hash WHERE p.item_id=m.asset_id AND g.generation='source' AND p.expires_at>?)`).all(Date.now())){
    await unlink(join(originalDir,row.asset_id)).catch(error=>{if(error.code!=='ENOENT')throw error;});db.prepare('UPDATE media_ingest SET source_removed=1 WHERE asset_id=?').run(row.asset_id);
-  }
+  }})().finally(()=>{reaping=null;release();});
+  return reaping;
  }
  async function execute(row){
   const source=ingest(row.asset_id);if(!source)return;const asset=authorize(row.asset_id),raw=join(originalDir,asset.id),work=join(stagingDir,asset.id,row.id);
@@ -127,11 +131,11 @@ export async function createMediaPipeline(app,context){
  const stopAvailability=jobPool.onAvailable?.(()=>{try{pump();}catch(error){app.log.error({err:error},'Media queue replenishment failed');}});
  db.prepare("UPDATE media_tasks SET state='queued' WHERE state='running'").run();pump();
  const timer=setInterval(()=>reapSources().catch(error=>app.log.error({err:error},'Original retention cleanup failed')),60000);timer.unref();
- app.addHook('onClose',async()=>{closing=true;stopAvailability?.();clearInterval(timer);for(const row of db.prepare("SELECT id FROM media_tasks WHERE state IN ('queued','running')").all())jobPool.cancel(row.id);await Promise.allSettled([...active.values()]);db.prepare("UPDATE media_tasks SET state='queued' WHERE state='running'").run();});
+ app.addHook('onClose',async()=>{closing=true;stopAvailability?.();clearInterval(timer);for(const row of db.prepare("SELECT id FROM media_tasks WHERE state IN ('queued','running')").all())jobPool.cancel(row.id);await Promise.allSettled([...active.values(),reaping]);db.prepare("UPDATE media_tasks SET state='queued' WHERE state='running'").run();});
  return {
   has:id=>Boolean(ingest(id)),pump,canForce,
   forceStart(id,userId){if(!canForce(id))throw httpError(409,'先行ジョブの完了待ちか、すでに開始済みです。');scheduleTask(task(id));return jobPool.forceStart(id,userId);},
-  get busy(){return active.size>0;},
+  get busy(){return active.size>0||Boolean(reaping);},
   async accept(upload,authorizeUpload){
    if(ingest(upload.id)){pump();return item(upload.id);}
    const first=JSON.parse(upload.files_json)[0],raw=join(stagingDir,upload.id,'raw-1'),video=first.mime.startsWith('video/');

@@ -51,4 +51,9 @@ public final class TransferCache {
         for(File child:Objects.requireNonNull(f.listFiles()))if(child.isFile()&&child.getName().matches("[0-9]+-[0-9]+\\.(chunk|sha256)|manifest\\.json|complete|transfer\\.part"))Files.deleteIfExists(child.toPath());
         Files.deleteIfExists(f.toPath());
     }
+    public void clear(String partition)throws Exception{
+        if(!partition.matches("[0-9a-f]{64}"))throw new IllegalArgumentException();File parent=new File(root,partition);File[] folders=parent.listFiles();if(folders==null)return;
+        for(File folder:folders)if(PlaybackApi.uuid(folder.getName()))remove(partition,folder.getName());
+        Files.deleteIfExists(parent.toPath());
+    }
 }

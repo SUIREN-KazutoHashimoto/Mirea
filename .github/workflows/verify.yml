@@ -27,6 +27,7 @@ jobs:
           node-version: 24.19.0
       - run: npm install --global pnpm@11.25.0
       - run: pnpm install --frozen-lockfile
+      - run: pnpm test:docs
       - run: pnpm test
       - run: pnpm build
       - run: pnpm test:startup

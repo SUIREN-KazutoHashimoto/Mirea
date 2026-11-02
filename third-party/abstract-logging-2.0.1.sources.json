@@ -1,0 +1,15 @@
+{
+  "rendering": "Static license paragraphs with the upstream copyright owner; no year inferred and no upstream script executed.",
+  "package": "abstract-logging@2.0.1",
+  "licenseDeclaration": "package.json license=MIT; published README links jsumners.mit-license.org",
+  "template": "<!DOCTYPE html>\n<html id=\"home\" lang=\"en\">\n<%- include('components/header') %>\n\n<body>\n  <article>\n    <%- gravatar %>\n    <h1>The MIT License (MIT)</h1>\n\n    <p>Copyright © <%- info %></p>\n\n    <p>Permission is hereby granted, free of charge, to any person obtaining a copy\n      of this software and associated documentation files (the “Software”), to deal\n      in the Software without restriction, including without limitation the rights\n      to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n      copies of the Software, and to permit persons to whom the Software is\n      furnished to do so, subject to the following conditions:</p>\n\n    <p>The above copyright notice and this permission notice shall be included in\n      all copies or substantial portions of the Software.</p>\n\n    <p>THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n      IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n      FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n      AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n      LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n      OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN\n      THE SOFTWARE.</p>\n  </article>\n  <%- include('components/footer') %>\n</body>\n\n</html>\n",
+  "ownerUrl": "https://github.com/remy/mit-license/blob/master/users/jsumners.json",
+  "owner": {
+    "copyright": "James Sumners",
+    "url": "http://jrfom.com",
+    "email": "james.sumners@gmail.com",
+    "gravatar": true,
+    "theme": "friendly"
+  },
+  "templateUrl": "https://github.com/remy/mit-license/blob/master/licenses/MIT.ejs"
+}

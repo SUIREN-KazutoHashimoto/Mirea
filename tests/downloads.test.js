@@ -89,6 +89,20 @@ test('missing master key with existing packages fails safely rather than silentl
   assert.equal((await c.create()).statusCode,200);
 });
 
+test('renaming an asset preserves ciphertext identity, key and received chunks while refreshing its title',async t=>{
+  const c=await setup(t),manifest=(await c.create()).json().manifest,first=(await c.open(manifest.id)).json(),chunk=(await c.part(manifest.id)).rawPayload;
+  c.db.prepare('UPDATE items SET title=? WHERE id=?').run('Renamed on another device',c.video);
+  const opened=await c.open(manifest.id);assert.equal(opened.statusCode,200,opened.body);
+  assert.equal(opened.json().manifest.title,'Renamed on another device');assert.equal(opened.json().key,first.key);
+  assert.equal((await c.create()).json().manifest.id,manifest.id);
+  assert.deepEqual(Buffer.from(await decryptDownloadChunk(await importDownloadKey(opened.json().key),opened.json().manifest,0,0,chunk)),c.bytes.subarray(0,1048576));
+  c.db.prepare('UPDATE items SET title=? WHERE id=?').run('Another metadata edit',c.video);
+  assert.equal((await c.create()).json().manifest.id,manifest.id,'creating first after a rename must also reuse the package');
+  assert.equal((await c.open(manifest.id)).json().manifest.title,'Another metadata edit');
+  await writeFile(join(c.dataDir,'uploads',c.video),Buffer.from('replacement media'));
+  assert.equal((await c.open(manifest.id)).statusCode,409,'real source changes are still rejected');
+});
+
 test('thirty-day login and seven-day download leases are server-anchored, capped by legacy session expiry and never renewed by ciphertext reads',async t=>{
   const c=await setup(t),now=Date.now();
   assert.ok(c.viewer.expiresAt-now>29*86400000&&c.viewer.expiresAt-now<=30*86400000);

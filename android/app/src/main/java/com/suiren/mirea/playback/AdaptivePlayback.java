@@ -17,7 +17,7 @@ import org.json.*;
 /** Bounded ahead buffering for authenticated HLS and progressive media. No disk cache. */
 @androidx.annotation.OptIn(markerClass=androidx.media3.common.util.UnstableApi.class)
 final class AdaptivePlayback {
-    interface Events {void ready();void buffering(boolean value);void ended();void failed();void changed();void seeked();default void audioSession(int id){}}
+    interface Events {void ready();void buffering(boolean value);void ended();void failed();default void failed(Throwable error){failed();}void changed();void seeked();default void audioSession(int id){}}
     final ExoPlayer player;
     private final JSONArray qualities;
     private final DefaultTrackSelector selector;
@@ -36,7 +36,7 @@ final class AdaptivePlayback {
         player.setWakeMode(C.WAKE_MODE_LOCAL);
         player.addListener(new Player.Listener(){
             public void onPlaybackStateChanged(int state){events.buffering(state==Player.STATE_BUFFERING);if(state==Player.STATE_READY&&!announced){announced=true;events.ready();}if(state==Player.STATE_ENDED)events.ended();events.changed();}
-            public void onPlayerError(PlaybackException error){events.failed();}
+            public void onPlayerError(PlaybackException error){events.failed(error);}
             public void onVideoSizeChanged(VideoSize size){events.changed();}
             public void onTracksChanged(Tracks tracks){events.changed();}
             public void onAudioSessionIdChanged(int id){events.audioSession(id);}
@@ -55,7 +55,7 @@ final class AdaptivePlayback {
     static int bufferBytes(long heap){return (int)Math.max(8L*1024*1024,Math.min(64L*1024*1024,heap/8));}
     void quality(String mode){
         DefaultTrackSelector.Parameters.Builder b=selector.buildUponParameters().clearVideoSizeConstraints().setMinVideoSize(0,0).setForceHighestSupportedBitrate(false).setForceLowestBitrate(false).setExceedVideoConstraintsIfNecessary(false);
-        if("higher".equals(mode))b.setForceHighestSupportedBitrate(true);
+        if("higher".equals(mode))b.setForceHighestSupportedBitrate(false); // Retain ABR when bandwidth falls.
         else if("data".equals(mode)){JSONObject limit=null;for(int n=0;n<qualities.length();n++){JSONObject r=qualities.optJSONObject(n);if(r==null)continue;int h=Math.min(r.optInt("width"),r.optInt("height")),old=limit==null?Integer.MAX_VALUE:Math.min(limit.optInt("width"),limit.optInt("height"));if(limit==null||old>480&&h<old||h<=480&&old<=480&&h>old)limit=r;}if(limit!=null)b.setMaxVideoSize(limit.optInt("width"),limit.optInt("height"));}
         else for(int n=0;n<qualities.length();n++){JSONObject r=qualities.optJSONObject(n);if(r!=null&&mode.equals(r.optString("quality"))){int w=r.optInt("width"),h=r.optInt("height");b.setMinVideoSize(w,h).setMaxVideoSize(w,h);break;}}
         selector.setParameters(b.build());
@@ -83,7 +83,7 @@ final class AdaptivePlayback {
         private final PlaybackApi api;private final String path;private final long size;private final ConnectionFactory connections;private HttpURLConnection connection;private InputStream input;private Uri uri;private long remaining;private boolean started;
         ProgressiveSource(PlaybackApi api,String id,String path,long size){this(api,id,path,size,p->api.connection(p,"GET"));}
         ProgressiveSource(PlaybackApi api,String id,String path,long size,ConnectionFactory connections){super(true);this.api=api;this.path=path;this.size=size;this.connections=connections;
-            if(!PlaybackApi.uuid(id)||size<1||size>8589934592L||path==null||!path.matches("/api/v1/items/"+java.util.regex.Pattern.quote(id)+"/content(?:\\?ticket=[A-Za-z0-9_-]{43})?"))throw new IllegalArgumentException("Invalid progressive resource");}
+            if(!PlaybackApi.uuid(id)||size<1||size>PlaybackLimits.MAX_ASSET_BYTES||path==null||!path.matches("/api/v1/items/"+java.util.regex.Pattern.quote(id)+"/content(?:\\?ticket=[A-Za-z0-9_-]{43})?"))throw new IllegalArgumentException("Invalid progressive resource");}
         static void validateRange(long position,long requested,long size,int status,long length,String range)throws IOException{
             if(position<0||position>=size||requested==0||requested<C.LENGTH_UNSET)throw new IOException("Invalid media range");
             boolean ranged=position>0||requested!=C.LENGTH_UNSET;long expected=requested==C.LENGTH_UNSET?size-position:Math.min(requested,size-position);

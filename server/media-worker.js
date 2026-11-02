@@ -32,6 +32,11 @@ try {
     catch(error) { await retryJpegEndMarker(source,error,metadata,imageOptions,async()=>{}); }
     const swap = [5, 6, 7, 8].includes(metadata.orientation);
     parentPort.postMessage({ width: swap ? metadata.height : metadata.width, height: swap ? metadata.width : metadata.height, size: (await stat(source)).size });
+  } else if (mode === 'page-display') {
+    const metadata=await sharp(source,imageOptions).metadata();
+    const render=path=>sharp(path,imageOptions).rotate().resize({width:2400,height:2400,fit:'inside',withoutEnlargement:true}).webp({quality:85,effort:3}).toFile(destination);
+    let result;try{result=await render(source);}catch(error){await retryJpegEndMarker(source,error,metadata,imageOptions,async path=>{result=await render(path);});}
+    parentPort.postMessage({width:result.width,height:result.height,size:result.size});
   } else if (mode === 'image-thumbnail') {
     await stat(source);image.phase = 'metadata';
     const metadata = await sharp(source, imageOptions).metadata();

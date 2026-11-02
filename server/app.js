@@ -2,7 +2,9 @@ import Fastify from 'fastify';
 import {createErrorDiagnostic} from './error-diagnostics.js';
 import {registerLibraryCatalog} from './library-catalog.js';
 import {registerPlaylists} from './playlists.js';
-import {registerCustomThumbnails,customThumbnailRevision} from './custom-thumbnails.js';
+import {registerCustomThumbnails} from './custom-thumbnails.js';
+import {registerImageDisplays,pageDisplayInfo} from './page-display.js';
+import {registerUploadPreview} from './upload-preview.js';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
@@ -39,7 +41,7 @@ import { registerAppUpdates } from './app-updates.js';
 import {createAdminAccess} from './admin-access.js';
 import {registerAdmin} from './admin.js';
 import {registerAdminJobs} from './admin-jobs.js';
-import {mediaProcessingState} from './media-recovery.js';
+import {createPublicItemSerializer} from './public-items.js';
 import {playbackSource} from './playback-source.js';
 import {createMaintenanceGate} from './maintenance-gate.js';
 import {registerAdminBackups} from './admin-backups.js';
@@ -95,10 +97,7 @@ export async function createApp(options = {}) {
   let mediaPipeline;
   const ensureThumbnail=async item=>{if(!mediaPipeline?.has(item.id))return legacyThumbnail(item);const path=await mediaPipeline.ensureThumbnail(item);try{await access(path);return path;}catch(error){if(error.code!=='ENOENT')throw error;if(db.prepare('SELECT canonical_ready FROM media_ingest WHERE asset_id=?').get(item.id)?.canonical_ready)return legacyThumbnail(item);throw httpError(503,'サムネイルを準備しています。');}};
   ensureThumbnail.inspect=()=>legacyThumbnail.inspect();
-  const coverRevision=db.prepare('SELECT image_id,updated_at FROM thumbnail_overrides WHERE asset_id=?');
-  const videoCoverRevision=db.prepare('SELECT updated_at FROM video_thumbnail_state WHERE asset_id=?');
-  const jobCoverRevision=db.prepare("SELECT MAX(updated_at) updated_at FROM admin_jobs WHERE asset_id=? AND kind IN ('thumbnail','owner_thumbnail','repair') AND state='complete'");
-  const publicItem=i=>{const stamp=Math.max(videoCoverRevision.get(i.id)?.updated_at??0,jobCoverRevision.get(i.id)?.updated_at??0),generated=stamp?{updated_at:stamp}:null;const row=coverRevision.get(i.id),image=row?customThumbnailRevision(row):generated?customThumbnailRevision({image_id:i.id,updated_at:generated.updated_at}):null;const source=db.prepare('SELECT canonical_ready,source_mime,metadata_json FROM media_ingest WHERE asset_id=?').get(i.id);return {...basePublicItem(i),...(source?{...(!source.canonical_ready?{mimeType:source.source_mime}:{}),processingState:mediaProcessingState(db,i.id,source.canonical_ready),originalPlayback:!source.canonical_ready,downloadReady:Boolean(source.canonical_ready),mediaInfo:JSON.parse(source.metadata_json),processingTasks:db.prepare('SELECT kind,state FROM media_tasks WHERE asset_id=?').all(i.id)}:{}),...(image?{thumbnailUrl:'/api/v1/items/'+i.id+'/thumbnail?revision='+image}:{})};};
+  const publicItem=createPublicItemSerializer(db,basePublicItem);
   const maxUploadBytes = Number(options.maxUploadBytes ?? operationalSettings.value.maxUploadBytes);
   if (!Number.isSafeInteger(maxUploadBytes) || maxUploadBytes <= 0) throw new Error('Invalid MAX_UPLOAD_BYTES');
   const chunkSize = Number(options.chunkSize ?? operationalSettings.value.uploadChunkBytes);
@@ -112,8 +111,8 @@ export async function createApp(options = {}) {
   await app.register(cors, {
     origin: (origin, cb) => cb(null, Boolean(origin && allowedOrigins.includes(origin))),
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
-    allowedHeaders: ['Authorization', 'Content-Type', 'Range', 'X-Chunk-SHA256','X-Mirea-Shelf-Unlock'],
-    exposedHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length', 'X-Next-Cursor','X-Chunk-SHA256'],
+    allowedHeaders: ['Authorization', 'Content-Type', 'Range', 'X-Chunk-SHA256','X-Mirea-Shelf-Unlock','If-None-Match'],
+    exposedHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length', 'X-Next-Cursor','X-Chunk-SHA256','Retry-After','ETag','X-Mirea-Server-Time'],
     maxAge: 600
   });
   await app.register(rateLimit, { global: false, max: 10, timeWindow: '1 minute' });
@@ -181,7 +180,7 @@ export async function createApp(options = {}) {
   const adminAccess=createAdminAccess(db,options,authenticate);
   registerDiagnosticReports(app,{db,authenticate,adminAccess,rateLimit:options.rateLimit});
   registerOperationalSettings(app,{settings:operationalSettings,processingSettings,adminAccess});
-  registerPrivateShelves(app,{db,authenticate,membership,rateLimit:options.rateLimit});
+  const {requireUnlock:requireShelfUnlock}=registerPrivateShelves(app,{db,authenticate,membership,rateLimit:options.rateLimit});
   registerProcessingSettings(app,{processingSettings,jobPool,adminAccess});
   registerHistoryRemoval(app,{db,authenticate,findItem});
   registerRememberSessions(app,{db,authenticate,enabled:adminAccess.enabled,rateLimit:options.rateLimit});
@@ -191,7 +190,7 @@ export async function createApp(options = {}) {
   registerAppUpdates(app, { directory: updatesPath ? resolve(PROJECT_ROOT, updatesPath) : undefined,releaseVersion:options.remoteUpdates?packageInfo.version:undefined });
   let analytics;
   app.get('/api/v1/config', async () => ({ allowRegistration, ...processingSettings.value, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadProtocol:2, maxUploadFiles:1000, uploadSessionHours: 24, analytics,
-    version: packageInfo.version, transferQueue:true, manualTransferStart:true, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':`https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v${packageInfo.version.replace('-beta','beta')}/mirea-${packageInfo.version.replace('-beta','beta')}-android.apk` }));
+    version: packageInfo.version, transferQueue:true, manualTransferStart:true, uploadPreview:true, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':`https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v${packageInfo.version.replace('-beta','beta')}/mirea-${packageInfo.version.replace('-beta','beta')}-android.apk` }));
   app.post('/api/v1/auth/register', { ...authLimits, schema: { body: object({ email, password, name: text(80),remember:{type:'boolean',default:true} },['email','password','name']) } }, async (req, reply) => {
     if (!allowRegistration) throw httpError(403, '新規登録は現在停止しています。');
     const normalizedEmail = req.body.email.trim().toLowerCase();
@@ -214,7 +213,11 @@ export async function createApp(options = {}) {
     return loginResult(user,reply,req.body.remember);
   });
   app.get('/api/v1/auth/me', auth, async req => ({ user: req.user }));
-  app.get('/api/v1/history',auth,async req=>({items:db.prepare(`SELECT i.*,s.name AS shelfName,m.role,MAX(v.last_received_at) AS lastSeenAt FROM analytics_views v JOIN items i ON i.id=v.asset_id JOIN shelves s ON s.id=i.shelf_id JOIN memberships m ON m.shelf_id=i.shelf_id AND m.user_id=? WHERE v.user_id=? AND s.private=0 AND v.context='viewer' AND v.counted=1 AND v.first_received_at>COALESCE((SELECT hidden_at FROM history_hidden h WHERE h.user_id=v.user_id AND h.asset_id=v.asset_id),0) GROUP BY i.id ORDER BY lastSeenAt DESC,i.id LIMIT 1000`).all(req.user.id,req.user.id).map(item=>({...publicItem(item),shelfName:item.shelfName,role:item.role,lastSeenAt:item.lastSeenAt,progress:publicProgress(db.prepare('SELECT * FROM asset_progress WHERE user_id=? AND asset_id=?').get(req.user.id,item.id))}))}));
+  app.get('/api/v1/history',auth,async req=>{
+    const rows=db.prepare(`SELECT i.*,s.name AS shelfName,m.role,MAX(v.last_received_at) AS lastSeenAt FROM analytics_views v JOIN items i ON i.id=v.asset_id JOIN shelves s ON s.id=i.shelf_id JOIN memberships m ON m.shelf_id=i.shelf_id AND m.user_id=? WHERE v.user_id=? AND s.private=0 AND v.context='viewer' AND v.counted=1 AND v.first_received_at>COALESCE((SELECT hidden_at FROM history_hidden h WHERE h.user_id=v.user_id AND h.asset_id=v.asset_id),0) GROUP BY i.id ORDER BY lastSeenAt DESC,i.id LIMIT 1000`).all(req.user.id,req.user.id);
+    const progress=new Map(db.prepare('SELECT * FROM asset_progress WHERE user_id=? AND asset_id IN (SELECT value FROM json_each(?))').all(req.user.id,JSON.stringify(rows.map(row=>row.id))).map(row=>[row.asset_id,publicProgress(row)]));
+    return {items:publicItem.batch(rows).map((item,index)=>({...item,shelfName:rows[index].shelfName,role:rows[index].role,lastSeenAt:rows[index].lastSeenAt,progress:progress.get(item.id)??null}))};
+  });
   app.post('/api/v1/auth/logout', auth, async (req, reply) => {
     db.prepare('DELETE FROM sessions WHERE id=?').run(req.session.id);
     clearRememberCookie(reply);
@@ -268,10 +271,11 @@ export async function createApp(options = {}) {
     const shelf = db.prepare('SELECT * FROM shelves WHERE id=?').get(req.params.id);
     const progress=new Map(db.prepare(`SELECT p.* FROM asset_progress p JOIN items i ON i.id=p.asset_id WHERE p.user_id=? AND i.shelf_id=?`).all(req.user.id,req.params.id).map(row=>[row.asset_id,publicProgress(row)]));
     const series=shelfSeriesMembership(db,req.params.id);
-    return { shelf: { ...shelf, role }, pendingUploads:pendingShelfUploads(db,req.params.id), series:shelfSeries(db,req.params.id), items: db.prepare('SELECT * FROM items WHERE shelf_id=? ORDER BY created_at DESC, id').all(req.params.id).map(item=>({...publicItem(item),series:series.get(item.id)??null,progress:progress.get(item.id)??null})) };
+    return { shelf: { ...shelf, role }, pendingUploads:pendingShelfUploads(db,req.params.id), series:shelfSeries(db,req.params.id), items:publicItem.batch(db.prepare('SELECT * FROM items WHERE shelf_id=? ORDER BY created_at DESC, id').all(req.params.id)).map(item=>({...item,series:series.get(item.id)??null,progress:progress.get(item.id)??null})) };
   });
   await registerCustomThumbnails(app,{db,thumbnailDir,media,authenticate,findItem,membership});
-  mediaPipeline=await createMediaPipeline(app,{db,media,videoTranscoder,audioTranscoder,jobPool,originalDir,uploadDir,thumbnailDir,previewDir,videoDir,stagingDir,adminAccess});
+  registerImageDisplays(app,{db,authenticate,findItem,requireShelfUnlock,booksDir,media});
+  mediaPipeline=await createMediaPipeline(app,{db,media,videoTranscoder,audioTranscoder,jobPool,originalDir,uploadDir,thumbnailDir,previewDir,videoDir,stagingDir,adminAccess,maintenance});
   const uploads = await registerResumableUploads(app, {
     db, media, videoTranscoder, audioTranscoder, uploadDir, stagingDir, booksDir, thumbnailDir, videoDir, originalDir, previewDir, authenticate, membership, maxUploadBytes, chunkSize, publicItem,adminAccess,maintenance,processingSettings,jobPool,mediaPipeline
   });
@@ -300,6 +304,7 @@ export async function createApp(options = {}) {
   registerProgress(app,{db,authenticate,findItem,options});
   registerSeries(app,{db,authenticate,membership,findItem,publicItem,removeAssetFiles,uploads});
   registerNameIntegrity(app,{db,authenticate,membership,findItem,publicItem});
+  registerUploadPreview(app,{db,authenticate,membership});
   registerPlaylists(app,{db,authenticate,findItem,publicItem});
   try{await registerDownloads(app,{db,dataDir,uploadDir,booksDir,videoDir,authenticate,findItem,options});}catch(error){await app.close();throw error;}
   app.post('/api/v1/shelves/:id/items', auth, async (req, reply) => {
@@ -418,7 +423,7 @@ export async function createApp(options = {}) {
     const item = findItem(req.params.id, req.user.id);
     if (item.mime_type !== IMAGE_BOOK_MIME) throw httpError(400, '画像の本ではありません。');
     return { item: publicItem(item), pages: db.prepare('SELECT * FROM image_pages WHERE item_id=? ORDER BY page_number').all(item.id).map(page => ({
-      number: page.page_number, filename: page.filename, mimeType: page.mime_type, size: page.size, width: page.width, height: page.height,
+      number: page.page_number, filename: page.filename, mimeType: page.mime_type, size: page.size, width: page.width, height: page.height,...pageDisplayInfo(item.id,page),
       url: `/api/v1/items/${item.id}/pages/${page.page_number}/content`
     })) };
   });

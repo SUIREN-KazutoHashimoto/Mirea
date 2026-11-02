@@ -62,6 +62,26 @@ test('manual navigation still works with continuous mode off, preserves resume a
   h.fresh=context(['a','b']);assert.equal(await h.c.navigate({targetId:'c'}),false);assert.equal(h.moves.length,1);h.c.dispose();
 });
 
+test('player track changes start audio and video at zero, including manual skips and selections',async()=>{
+ for(const kind of ['audio','video'])for(const navigation of [{direction:1},{direction:-1},{targetId:'c'},{continuous:true,autoplay:true}]){
+  const ctx={...context(['a','b','c'],'series','b'),items:['a','b','c'].map(id=>({id,kind}))};
+  const moves=[],core=createSeriesContinuation({assetId:'b',loadContext:async()=>ctx,move:async(target,options,allowed)=>{if(allowed())moves.push({target,options});}});
+  core.setContext(ctx);assert.equal(await core.navigate(navigation),true);
+  assert.equal(moves.length,1);assert.equal(moves[0].options.startAtBeginning,true,kind+' '+JSON.stringify(navigation));core.dispose();
+ }
+ const ctx={...context(),items:['a','b','c'].map(id=>({id,kind:'image-book'}))},moves=[];
+ const book=createSeriesContinuation({assetId:'a',loadContext:async()=>ctx,move:async(target,options)=>moves.push(options)});book.setContext(ctx);
+ await book.navigate({targetId:'b'});assert.equal(moves[0].startAtBeginning,false,'explicit book selections keep their saved page');book.dispose();
+});
+
+test('cancelling during viewer preparation leaves the shuffle plan unconsumed',async()=>{
+ const ctx={...context(),items:['a','b','c'].map(id=>({id,kind:'audio'}))};
+ const order=createPlaybackOrder({modes:{shuffle:true},random:()=>0}),target=order.plan(ctx,'a').target.id;
+ let release,entered;const preparing=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);
+ const core=createSeriesContinuation({assetId:'a',order,loadContext:async()=>ctx,move:async(item,options,allowed)=>{assert(allowed());entered();await gate;return allowed.commit();}});
+ core.setContext(ctx);const moving=core.navigate({continuous:true,autoplay:true});await preparing;core.cancel();release();assert.equal(await moving,false);assert.equal(order.plan(ctx,'a').target.id,target);core.dispose();
+});
+
 test('books advance pages normally and cross the final boundary only on an explicit ready next action',()=>{
   const pages=[];let moves=0;const continuation={canContinue:true,nextBook:()=>moves++},go=page=>pages.push(page);
   advanceBook({ready:false,page:2,total:2,go,continuation});assert.equal(moves,0);

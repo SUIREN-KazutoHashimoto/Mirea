@@ -1,6 +1,6 @@
 import {orderSeriesItems} from './series-order.js';
 import {canonicalName} from './name-rules.js';
-import {assertAssetChanges,assertSeriesChanges} from './name-integrity.js';
+import {assertAssetChanges,assertSeriesChanges,MAX_SERIES_ASSETS} from './name-integrity.js';
 import {registerSeriesActions} from './series-actions.js';
 import { randomUUID } from 'node:crypto';
 import { transaction } from './database.js';
@@ -37,7 +37,7 @@ function validateNames(rows,previous=[]){
   const before=count(previous);for(const [key,n]of count(rows))if(n>1&&n>(before.get(key)??0))throw httpError(409,'同じ階層に同じ名前のシリーズがあります。');
 }
 export function shelfSeriesMembership(db,shelfId){
-  return new Map(db.prepare(`SELECT si.*,s.title,(SELECT COUNT(*) FROM series_items other WHERE other.series_id=si.series_id AND other.position<=si.position) ordinal FROM series_items si JOIN series s ON s.id=si.series_id WHERE s.shelf_id=?`)
+  return new Map(db.prepare(`SELECT si.*,s.title,ROW_NUMBER() OVER(PARTITION BY si.series_id ORDER BY si.position) ordinal FROM series_items si JOIN series s ON s.id=si.series_id WHERE s.shelf_id=?`)
     .all(shelfId).map(s=>[s.asset_id,{id:s.series_id,title:s.title,position:s.ordinal,label:s.label}]));
 }
 export function registerSeries(app,{db,authenticate,membership,findItem,publicItem,removeAssetFiles,uploads}){
@@ -49,10 +49,11 @@ export function registerSeries(app,{db,authenticate,membership,findItem,publicIt
     const role=membership(row.shelf_id,userId,roles);
     return {...row,role};
   };
-  const detail=(series,userId)=>({children:shelfSeries(db,series.shelf_id).filter(s=>s.parentId===series.id),series:{...publicSeries(series),role:series.role},items:db.prepare(`SELECT i.*,si.position,si.label FROM series_items si JOIN items i ON i.id=si.asset_id WHERE si.series_id=? ORDER BY si.position`).all(series.id).map((row,index)=>({
-    ...publicItem(row),series:{id:series.id,title:series.title,position:index+1,label:row.label},
-    progress:publicProgress(db.prepare('SELECT * FROM asset_progress WHERE user_id=? AND asset_id=?').get(userId,row.id))
-  }))});
+  const detail=(series,userId)=>{
+    const rows=db.prepare('SELECT i.*,si.position,si.label FROM series_items si JOIN items i ON i.id=si.asset_id WHERE si.series_id=? ORDER BY si.position').all(series.id);
+    const progress=new Map(db.prepare('SELECT p.* FROM asset_progress p JOIN series_items si ON si.asset_id=p.asset_id WHERE p.user_id=? AND si.series_id=?').all(userId,series.id).map(row=>[row.asset_id,publicProgress(row)]));
+    return {children:shelfSeries(db,series.shelf_id).filter(s=>s.parentId===series.id),series:{...publicSeries(series),role:series.role},items:publicItem.batch(rows).map((item,index)=>({...item,series:{id:series.id,title:series.title,position:index+1,label:rows[index].label},progress:progress.get(item.id)??null}))};
+  };
   app.get('/api/v1/shelves/:id/series',auth,async req=>{
     membership(req.params.id,req.user.id);return {series:shelfSeries(db,req.params.id)};
   });
@@ -85,17 +86,17 @@ export function registerSeries(app,{db,authenticate,membership,findItem,publicIt
     const result=detail(find(row.series_id,req.user.id),req.user.id);
     return {...result,currentIndex:result.items.findIndex(i=>i.id===item.id)};
   });
-  app.put('/api/v1/series/:id',{...auth,bodyLimit:256*1024,schema:{body:object({revision,...metadata,orderMode:{enum:['name','manual']},parentId:{anyOf:[uuid,{type:'null'}]},moveAssets:{type:'boolean'},children:{type:'array',maxItems:1000,uniqueItems:true,items:uuid},items:{type:'array',maxItems:1000,items:object({assetId:uuid,label:{type:'string',maxLength:80}},['assetId'])}},['revision','title','description','items'])}},async req=>{
+  app.put('/api/v1/series/:id',{...auth,bodyLimit:64*1024*1024,schema:{body:object({revision,...metadata,orderMode:{enum:['name','manual']},parentId:{anyOf:[uuid,{type:'null'}]},moveAssets:{type:'boolean'},children:{type:'array',maxItems:1000,uniqueItems:true,items:uuid},items:{type:'array',maxItems:MAX_SERIES_ASSETS,items:object({assetId:uuid,label:{type:'string',maxLength:80}},['assetId'])}},['revision','title','description','items'])}},async req=>{
     const series=find(req.params.id,req.user.id,['owner','editor']),input=req.body,title=input.title.trim().normalize('NFC');
     if(!title)throw httpError(422,'シリーズ名を入力してください。');
     return transaction(db,()=>{
       if(series.revision!==input.revision)throw httpError(409,'シリーズが別の画面で更新されました。最新の内容を読み直してください。');
-      const seen=new Set();
+      const seen=new Set(),assetShelf=db.prepare('SELECT shelf_id FROM items WHERE id=?'),assetSeries=db.prepare('SELECT series_id FROM series_items WHERE asset_id=?');
       for(const entry of input.items){
         if(seen.has(entry.assetId))throw httpError(422,'同じアセットは1回だけ登録できます。');seen.add(entry.assetId);
-        const item=db.prepare('SELECT shelf_id FROM items WHERE id=?').get(entry.assetId);
+        const item=assetShelf.get(entry.assetId);
         if(!item || item.shelf_id!==series.shelf_id)throw httpError(422,'この本棚のアセットだけを追加できます。');
-        const previous=db.prepare('SELECT series_id FROM series_items WHERE asset_id=?').get(entry.assetId);
+        const previous=assetSeries.get(entry.assetId);
         if(previous && previous.series_id!==series.id&&!input.moveAssets)throw httpError(409,'別のシリーズに所属しています。先にそのシリーズから外してください。');
       }
       const originalMembers=db.prepare('SELECT asset_id FROM series_items WHERE series_id=?').all(series.id);

@@ -12,11 +12,11 @@ public final class DownloadManifest {
         if(pages<1||pages>1000000||files.length()<1||files.length()>1000||("image-book".equals(kind)?pages!=files.length():files.length()!=1))throw new IllegalArgumentException();
         for(int n=0;n<files.length();n++){
             JSONObject f=files.getJSONObject(n);long size=f.getLong("size");String mime=f.getString("mime");
-            if(f.getInt("index")!=n||size<=0||size>8589934592L||f.getInt("chunks")!=(size+CHUNK-1)/CHUNK||!Arrays.asList("audio/mp4","video/mp4","video/webm","application/pdf","image/png","image/jpeg","image/webp","application/vnd.mirea.epub+json").contains(mime))throw new IllegalArgumentException();
+            if(f.getInt("index")!=n||size<=0||size>com.suiren.mirea.playback.PlaybackLimits.MAX_ASSET_BYTES||f.getInt("chunks")!=(size+CHUNK-1)/CHUNK||!Arrays.asList("audio/mp4","video/mp4","video/webm","application/pdf","image/png","image/jpeg","image/webp","application/vnd.mirea.epub+json").contains(mime))throw new IllegalArgumentException();
             if("audio".equals(kind)!=mime.equals("audio/mp4")||"epub".equals(kind)!=mime.equals("application/vnd.mirea.epub+json")||f.has("quality")&&(!kind.equals("video")||!f.getString("quality").matches("[0-9]{2,4}p")))throw new IllegalArgumentException();
             total+=size;
         }
-        if(total>8589934592L)throw new IllegalArgumentException();return m;
+        if(total>com.suiren.mirea.playback.PlaybackLimits.MAX_ASSET_BYTES)throw new IllegalArgumentException();return m;
     }
     public static long total(JSONObject m)throws Exception{long n=0;JSONArray f=m.getJSONArray("files");for(int i=0;i<f.length();i++)n+=f.getJSONObject(i).getLong("size");return n;}
 }

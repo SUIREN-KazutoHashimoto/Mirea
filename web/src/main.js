@@ -4,8 +4,11 @@ import {openAbout} from './about.js';
 import {openAssetContextMenu} from './asset-context-menu.js';
 import {mountCollectionDrop} from './collection-drop.js';
 import {mountUploadLeaveGuard} from './upload-leave-guard.js';
+import {requestDialogClose} from './unsaved-changes.js';
+import {createLibraryHistory} from './library-history.js';
 import {bindPlaybackResume,forgetPlayback,restoreStoppedPlayback,clearPlaybackPresentation} from './playback-resume.js';
 import {createMediaPreloader} from './media-preload.js';
+import {createBookPreloader} from './book-preload.js';
 import {playlistContext} from './playlist-context.js';
 import {playlistKind} from '../../server/playlist-kind.js';
 import './workspace-improvements.css';
@@ -30,7 +33,7 @@ import { App } from '@capacitor/app';
 import { mountVideoPreviews } from './video-previews.js';
 import { configureAnalytics, startAnalytics, stopAnalytics, clearAccountAnalytics, flushAnalytics, trackAsset, analyticsNativeState } from './analytics.js';
 import { openAnalytics } from './analytics-ui.js';
-import { openProgress,bindVideoProgress,progressNativeState,flushProgress,clearAccountProgress,syncStoredProgress } from './progress.js';
+import { openProgress,bindVideoProgress,progressNativeState,flushProgress,clearAccountProgress,syncStoredProgress,cachedProgress } from './progress.js';
 import { downloadToDevice,listDownloads,removeDownload,openDownloaded,closeDownloads,clearAccountDownloads,downloadsNativeState,syncDownloads,ensureDownloadWorker,downloadedThumbnail,syncNativeDownloads } from './downloads.js';
 import {openSeriesBulk} from './series-bulk.js';
 import { openSeriesManager,mountSeriesNavigation,seriesNativeState } from './series-ui.js';
@@ -38,6 +41,7 @@ import {syncAppearance} from './native-appearance.js';
 import { createTheme } from './theme.js';
 import { openSettings } from './settings.js';
 import { createViewerScreen } from './viewer-shell.js';
+import {createCatalogClient} from './catalog-client.js';
 import { initializeNativePlayback,openNativePlayback,refreshNativePlayback } from './native-playback.js';
 import { NativePlayer,nativePlayerAvailable } from './native-player-bridge.js';
 import { mountVideoPlayer } from './video-player.js';
@@ -94,7 +98,7 @@ const finishAppLaunch=showAppLaunch({native});
 const pwa=createPwaInstall({native,ensureWorker:ensureDownloadWorker});
 if(!native&&!import.meta.env.DEV)void pwa.prepare();
 let disposeAuthPwa;
-const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v0.25.0beta/mirea-0.25.0beta-android.apk';
+const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v1.0.0/mirea-1.0.0-android.apk';
 const currentApkUrl=()=>config.androidApkUrl?.startsWith('/api/v1/app-updates/')?absoluteUrl(config.androidApkUrl):config.androidApkUrl||defaultApkUrl;
 
 const root = document.querySelector('#app');
@@ -129,8 +133,27 @@ let config = { allowRegistration: true, maxUploadBytes: 2147483648, maxBookPages
 let shelves = [], items = [], activeShelf = null, filter = 'all', search = '', sort = loadCollectionSort(), loadGeneration = 0;
 let playlists=[],activePlaylist='',playlistDraft=null,catalogBulkBusy=false,catalogBulkController;
 let series=[],activeSeries='',seriesReturnView,historyMode=false,historyRows=[];
-let libraryPoll,pullRefresh,refreshBusy=false,librarySnapshot='',offlineLibrary=false,synchronizing,offlineLibraryData,metadataCacheWarning=false;
+let historyCacheWrite=Promise.resolve();
+function cacheRecentHistory(rows){const ctx=catalogContext();if(!ctx.partition)return;const snapshot=rows.map(row=>({id:row.id,lastSeenAt:row.lastSeenAt}));historyCacheWrite=historyCacheWrite.catch(()=>{}).then(async()=>{if(ctx.current())await(await offlineVault()).seal(ctx.partition,'reading-history',snapshot);});historyCacheWrite.catch(()=>{});}
+async function loadRecentHistory(){const ctx=catalogContext();await historyCacheWrite.catch(()=>{});const saved=ctx.partition?await(await offlineVault()).unseal(ctx.partition,'reading-history').catch(()=>[]):[];if(!ctx.current())return [];const known=new Map(items.map(item=>[item.id,item]));return (Array.isArray(saved)?saved:[]).filter(row=>known.has(row.id)&&Number.isFinite(row.lastSeenAt)&&!shelves.find(s=>s.id===known.get(row.id).shelfId)?.private).map(row=>({...known.get(row.id),lastSeenAt:row.lastSeenAt}));}
+let libraryPoll,pullRefresh,refreshBusy=false,librarySnapshot='',offlineLibrary=false,synchronizing,offlineLibraryData,metadataCacheWarning=false,catalogRequest;
+const catalogClient=createCatalogClient({request:api,scope:()=>`${getEndpoint()}|${getSession()?.user.id}|${sessionRevision()}`});
 let seriesContinuous=true,appDrawer,cardGestures,collectionDrop,displayedItems=[];
+let collectionView,collectionLimit=100,collectionScope='';const collectionLocations=new Map();
+const collectionKey=()=>JSON.stringify([getEndpoint(),getSession()?.user.id,activeShelf,activeSeries,activePlaylist,historyMode,filter,search,sort]);
+function rememberCollectionLocation(){collectionLocations.set(collectionKey(),{limit:collectionLimit,y:window.scrollY,main:document.querySelector('.main-content')?.scrollTop??0});}
+function restoreCollectionLocation(){const saved=collectionLocations.get(collectionKey());if(!saved)return false;requestAnimationFrame(()=>{window.scrollTo({top:saved.y,behavior:'instant'});const main=document.querySelector('.main-content');if(main)main.scrollTop=saved.main;});return true;}
+const libraryHistory=native?{ready:async()=>{},begin:()=>()=>{},update(){},closedViewer(){}}:createLibraryHistory({scope:()=>getSession()?`${getEndpoint()}|${getSession().user.id}`:null,read:()=>({shelf:activeShelf,series:activeSeries,playlist:activePlaylist,history:historyMode,filter,search,sort,limit:collectionLimit,y:window.scrollY,main:document.querySelector('.main-content')?.scrollTop??0,viewer:document.querySelector('.viewer-screen:not([style*="display: none"])')?.dataset.assetId??null}),restore:restoreLibraryView,onError:report});
+async function restoreLibraryView(view,{isCurrent=()=>true}={}){
+  if(!view||!getSession()||!document.querySelector('#items')||!isCurrent())return;
+  for(const modal of [...document.querySelectorAll('dialog[open]')].reverse()){if(modal.requestClose){if(!modal.requestClose())return;}else modal.close();}
+  const ctx=catalogContext();for(const screen of document.querySelectorAll('.viewer-screen'))if(screen.dataset.assetId!==view.viewer)screen.requestReturn?.();
+  await selectShelf(shelves.some(s=>s.id===view.shelf)?view.shelf:null);if(!ctx.current()||!isCurrent())return;
+  if(view.history)await openRecentHistory();else if(view.playlist==='index'||playlists.some(p=>p.id===view.playlist))await openPlaylistView(view.playlist);
+  if(!ctx.current()||!isCurrent())return;if(view.series&&series.some(s=>s.id===view.series))openLibrarySeries(view.series);
+  filter=['all','book','video','audio'].includes(view.filter)?view.filter:'all';search=typeof view.search==='string'?view.search.slice(0,500):'';sort=SORTS.some(([id])=>id===view.sort)?view.sort:'recent';document.querySelector('#search').value=search;collectionLimit=Math.max(100,Math.min(100000,Number(view.limit)||100));collectionLocations.set(collectionKey(),{limit:collectionLimit,y:Math.max(0,Number(view.y)||0),main:Math.max(0,Number(view.main)||0)});renderItems();restoreCollectionLocation();
+  if(view.viewer&&!document.querySelector(`.viewer-screen[data-asset-id="${CSS.escape(view.viewer)}"]`)){const item=items.find(item=>item.id===view.viewer);if(item)await openViewer(item,{autoplay:false});}
+}
 let thumbnailRequest, thumbnailObserver, thumbnailUrls = new Map(), videoPreviews;
 let thumbnailLoading=new WeakSet();
 let nativeAppActive = true, nativeStateRevision = 0;
@@ -139,7 +162,7 @@ if (native) {
     const modal=[...document.querySelectorAll('dialog[open]')].at(-1),viewer=document.querySelector('.viewer-screen:not([style*="display: none"])');
     const action=libraryBackAction({drawer:appDrawer?.isOpen(),modal:Boolean(modal),viewer:Boolean(viewer),series:Boolean((activeSeries||activePlaylist)&&document.querySelector('#items')),collection:Boolean(document.querySelector('#items')),canGoBack});
     if(action==='drawer-close')appDrawer.close();
-    else if(action==='modal-close')modal.close();
+    else if(action==='modal-close')(modal.requestClose??(()=>modal.close()))();
     else if(action==='viewer-return'){if(viewer.requestReturn)viewer.requestReturn();else viewer.close();}
     else if(action==='series-parent')leaveLibrarySeries();
     else if(action==='drawer-open')appDrawer?.show();
@@ -148,6 +171,7 @@ if (native) {
   App.addListener('appStateChange', ({ isActive }) => {
     nativeStateRevision++;
     nativeAppActive = isActive;
+    if(isActive)for(const viewer of document.querySelectorAll('.viewer-screen'))viewer.resumeReading?.();
     if (isActive) {refreshNativeTransfers().catch(()=>{});syncNativeDownloads().then(()=>{if(offlineLibrary)renderOfflineLibrary();}).catch(()=>{});syncAppearance(document.documentElement.dataset.theme);refreshAppUpdates();refreshNativePlayback().catch(()=>{});synchronizeConnection();}
     analyticsNativeState(isActive);
     progressNativeState(isActive);
@@ -216,8 +240,10 @@ function dialog(title, body, extraClass = '') {
   node.setAttribute('aria-label',title);
   node.innerHTML = `<div class="modal-header"><h2>${esc(title)}</h2><button class="icon-button close-modal" aria-label="閉じる">${icon('close')}</button></div>${body}`;
   document.body.append(node);
-  node.querySelector('.close-modal').onclick = () => node.close();
-  node.addEventListener('click', e => { if (e.target === node) { const box = node.getBoundingClientRect(); if (e.clientX < box.left || e.clientX > box.right || e.clientY < box.top || e.clientY > box.bottom) node.close(); } });
+  node.requestClose=()=>requestDialogClose(node);
+  node.querySelector('.close-modal').onclick = node.requestClose;
+  node.addEventListener('cancel',event=>{event.preventDefault();node.requestClose();});
+  node.addEventListener('click', e => { if (e.target === node) { const box = node.getBoundingClientRect(); if (e.clientX < box.left || e.clientX > box.right || e.clientY < box.top || e.clientY > box.bottom) node.requestClose(); } });
   node.addEventListener('close', () => {
     node.remove();
     videoPreviews?.setPaused('dialog', Boolean(document.querySelector('dialog[open]')));
@@ -300,12 +326,12 @@ function renderShell() {
     <div class="profile"><span class="avatar">${esc(user.name.slice(0, 1))}</span><div><strong>${esc(user.name)}</strong><small>${esc(user.email)}</small></div><button id="logout" class="icon-button" aria-label="ログアウト">${icon('logout')}</button></div></aside>
     <div class="drawer-backdrop" hidden></div><main class="main-content"><header class="topbar"><button id="open-drawer" class="icon-button menu-opener" aria-label="ライブラリメニューを開く" aria-controls="library-drawer" aria-expanded="false">${icon('menu')}</button><div class="breadcrumb"><span class="workspace-prefix">ワークスペース</span> <span>/</span> <strong id="breadcrumb-title">ライブラリ</strong></div><div class="topbar-actions"><button class="button primary" id="open-upload">${icon('plus')}コンテンツを追加</button><button class="button secondary" id="add-series">${icon('plus')}シリーズを追加</button></div><button id="mobile-settings" class="icon-button mobile-settings" aria-label="設定">${icon('settings')}</button><button id="mobile-logout" class="icon-button mobile-logout" aria-label="ログアウト">${icon('logout')}</button></header>
     <div class="content-wrap"><section id="name-integrity" class="name-integrity" aria-label="データ不整合の通知" role="status" hidden></section>
-    <section class="collection"><div class="collection-toolbar"><div class="tabs" role="group" aria-label="種類で絞り込み"><button data-filter="all" class="tab active">すべて <span id="count-all">0</span></button><button data-filter="book" class="tab">${icon('book')}本 <span id="count-book">0</span></button><button data-filter="video" class="tab">${icon('video')}動画 <span id="count-video">0</span></button><button data-filter="audio" class="tab">${icon('audio')}音声 <span id="count-audio">0</span></button></div><div class="collection-tools"><label class="search-field">${icon('search')}<input id="search" type="search" placeholder="タイトルで検索" aria-label="タイトルで検索"></label><label class="sr-only" for="sort">並び順</label><select id="sort"><option value="recent">追加が新しい順</option><option value="name">タイトル順</option></select></div></div><div class="collection-view-controls"></div><div class="collection-caption"><h2 id="collection-title" tabindex="-1">すべてのコンテンツ</h2><span id="result-count"></span><button id="bulk-thumbnail" type="button" class="button secondary" hidden>サムネイル変更</button><button id="refresh-library" type="button" class="collection-refresh" aria-label="コンテンツ一覧を更新" title="コンテンツ一覧を更新">${icon('refresh')}</button><button id="bulk-download" type="button" class="button secondary bulk-download-button" disabled>${icon('download')}<span>表示中を一括DL</span></button></div><p id="offline-library-notice" class="offline-notice" role="status" hidden></p><div id="items" class="item-grid" aria-live="polite"><p class="loading-state">ライブラリを読み込んでいます…</p></div></section>
+    <section class="collection"><div class="collection-toolbar"><div class="tabs" role="group" aria-label="種類で絞り込み"><button data-filter="all" class="tab active">すべて <span id="count-all">0</span></button><button data-filter="book" class="tab">${icon('book')}本 <span id="count-book">0</span></button><button data-filter="video" class="tab">${icon('video')}動画 <span id="count-video">0</span></button><button data-filter="audio" class="tab">${icon('audio')}音声 <span id="count-audio">0</span></button></div><div class="collection-tools"><label class="search-field">${icon('search')}<input id="search" type="search" placeholder="タイトルで検索" aria-label="タイトルで検索"></label><label class="sr-only" for="sort">並び順</label><select id="sort"><option value="recent">追加が新しい順</option><option value="name">タイトル順</option></select></div></div><div class="collection-view-controls"></div><div class="collection-caption"><h2 id="collection-title" tabindex="-1">すべてのコンテンツ</h2><span id="result-count"></span><button id="bulk-thumbnail" type="button" class="button secondary" hidden>サムネイル変更</button><button id="refresh-library" type="button" class="collection-refresh" aria-label="コンテンツ一覧を更新" title="コンテンツ一覧を更新">${icon('refresh')}</button><button id="bulk-download" type="button" class="button secondary bulk-download-button" disabled>${icon('download')}<span>一覧を一括DL</span></button></div><p id="offline-library-notice" class="offline-notice" role="status" hidden></p><div id="items" class="item-grid" aria-live="polite"><p class="loading-state">ライブラリを読み込んでいます…</p></div></section>
     <footer class="library-footer"><span class="footer-brand" role="img" aria-label="Mirea">${brandMarkup()}</span><span>あなたの物語が、ここにある。</span></footer></div></main></div>`;
   const versionLabel=document.createElement('small');versionLabel.className='server-version';versionLabel.textContent='サーバー '+(config.version??'—');root.querySelector('.sidebar>.brand').after(versionLabel);
   root.querySelector('.collection-tools').append(root.querySelector('.collection-view-controls'));
   const bulkSeries=document.createElement('button');bulkSeries.className='button secondary';bulkSeries.textContent='シリーズをまとめて整理';bulkSeries.onclick=()=>openSeriesBulk({dialog,api,esc,shelves,activeShelf,onChanged:refresh,isCurrent:catalogContext().current});root.querySelector('.collection-caption').append(bulkSeries);
-  const clearHistory=document.createElement('button');clearHistory.id='clear-history';clearHistory.className='button secondary';clearHistory.textContent='閲覧履歴をすべて非表示';clearHistory.onclick=async()=>{if(!confirm('閲覧履歴の表示をすべて消しますか？閲覧記録と続き位置は残り、再度閲覧した作品は履歴に戻ります。'))return;await api('/history',{method:'DELETE'});await refresh();};root.querySelector('.collection-caption').append(clearHistory);
+  const clearHistory=document.createElement('button');clearHistory.id='clear-history';clearHistory.className='button secondary';clearHistory.textContent='閲覧履歴をすべて非表示';clearHistory.onclick=async()=>{if(!confirm('閲覧履歴の表示をすべて消しますか？閲覧記録と続き位置は残り、再度閲覧した作品は履歴に戻ります。'))return;try{await api('/history',{method:'DELETE'});cacheRecentHistory([]);await refresh();}catch(error){report(error);}};root.querySelector('.collection-caption').append(clearHistory);
   if(user.defaultCredentialWarning){const warning=document.createElement('button');warning.className='button danger initial-admin-warning';warning.textContent='初期管理者のメールアドレスとパスワードを変更してください';warning.onclick=showSettings;root.querySelector('.content-wrap').prepend(warning);}
   document.querySelector('#add-shelf').onclick = openCreateShelf;
   const playlistNav=document.createElement('button');playlistNav.id='nav-playlists';playlistNav.className='nav-item';playlistNav.innerHTML=icon('library')+'<span>プレイリスト</span>';playlistNav.onclick=()=>openPlaylistView();document.querySelector('#recent-history').after(playlistNav);
@@ -337,7 +363,7 @@ function renderShell() {
   document.querySelector('#sort').innerHTML=SORTS.map(([id,label])=>`<option value="${id}">${label}</option>`).join('');
   document.querySelector('#sort').onchange = e => { sort = saveCollectionSort(e.target.value); renderItems(true); };
   document.querySelectorAll('[data-filter]').forEach(button => { button.onclick = () => { filter = button.dataset.filter; renderItems(true); }; });
-  mountCollectionView({container:root.querySelector('.collection-view-controls'),grid:root.querySelector('#items')});
+  collectionView=mountCollectionView({container:root.querySelector('.collection-view-controls'),grid:root.querySelector('#items'),context:()=>`${getEndpoint()||location.origin}|${getSession()?.user.id}|${activeShelf??'all'}|${activeSeries||''}|${activePlaylist||''}`});
   appDrawer=mountLibraryDrawer({layout:root.querySelector('.app-layout'),panel:root.querySelector('.sidebar'),main:root.querySelector('.main-content'),opener:root.querySelector('#open-drawer'),closer:root.querySelector('.drawer-close'),backdrop:root.querySelector('.drawer-backdrop'),actions:[root.querySelector('#open-upload'),root.querySelector('#add-series')],actionHome:root.querySelector('.topbar-actions'),native});
   pullRefresh=mountLibraryRefresh({main:root.querySelector('.main-content'),button:root.querySelector('#refresh-library'),onRefresh:refreshManually,
     blocked:()=>refreshBusy||!getSession()||appDrawer?.isOpen()||Boolean(document.querySelector('dialog[open],.viewer-screen:not([style*="display: none"])'))});
@@ -347,8 +373,7 @@ function renderShell() {
 function showSettings() {
   const actor=getSession(),server=getEndpoint(),revision=sessionRevision();
   const current=()=>sessionRevision()===revision&&getSession()?.user.id===actor?.user.id&&getSession()?.token===actor?.token&&getEndpoint()===server;
-  if(offlineLibrary){openDownloadManager();return;}
-  openSettings({isCurrent:current,manageDiagnostics:()=>openErrorDiagnostics(dialog), dialog, api, esc, theme, flush:flushAnalytics, apkUrl: currentApkUrl(), version: config.version || '0.4.4-beta', manageShelf: id => openMembers(id), manageDownloads:openDownloadManager,manageCatalog:container=>{container.innerHTML='<button id="download-catalog" class="button secondary"><span>全アセットの一覧・表紙を保存</span></button><p id="catalog-download-status" role="status"></p>';const button=container.querySelector('button');button.disabled=offlineLibrary;button.onclick=downloadAllMetadata;}, mountUpdates: native ? mountAppUpdates : null, mountPwa:native?null:container=>mountPwaInstall(container,pwa),
+  openSettings({offlineUser:offlineLibrary?actor?.user:null,isCurrent:current,manageDiagnostics:()=>openErrorDiagnostics(dialog), dialog, api, esc, theme, flush:flushAnalytics, apkUrl: currentApkUrl(), version: config.version || '0.4.4-beta', manageShelf: id => openMembers(id), manageDownloads:openDownloadManager,manageCatalog:container=>{container.innerHTML='<button id="download-catalog" class="button secondary"><span>全アセットの一覧・表紙を保存</span></button><p id="catalog-download-status" role="status"></p>';const button=container.querySelector('button');button.disabled=offlineLibrary;button.onclick=downloadAllMetadata;}, mountUpdates: native ? mountAppUpdates : null, mountPwa:native?null:container=>mountPwaInstall(container,pwa),
     onUpdated: async result => { if(!current())return;closeDownloads();await setSession(result);await stopAnalytics().catch(()=>{});if(getSession()!==result || getEndpoint()!==server)return;await startAnalytics();if(getSession()!==result || getEndpoint()!==server)return;renderShell();await refresh();toast('アカウント情報を更新しました。他の端末では再ログインが必要です。'); },
     onDeleted: async () => { if(!current())return;const results=await Promise.allSettled([clearAccountDownloads(),clearAccountAnalytics(),clearAccountProgress()]);if(!current())return;const cacheError=results.some(r=>r.status==='rejected');clearThumbnails();setSession(null);loadGeneration++;shelves=[];items=[];activeShelf=null;renderAuth();toast(cacheError?'アカウントを削除しました。端末内データを消去できませんでした。ブラウザーのサイトデータを削除してください。':'アカウントと個人の記録、この端末のダウンロードを削除しました。'); }
   });
@@ -360,30 +385,32 @@ function openShelfMenu(id){
   const actor=getSession(),server=getEndpoint();
   showShelfMenu({shelf,dialog,api,esc,isCurrent:()=>getSession()===actor&&getEndpoint()===server,share:openMembers,
     statistics:shelfId=>openAnalytics({dialog,api,flush:flushAnalytics,esc,shelfId}),
-    renameDone:async()=>{await refresh();toast('本棚の名前を変更しました。');},
+    renameDone:async()=>{await refresh();toast('本棚の設定を変更しました。');},
     deleteDone:async(shelfId,result)=>{if(activeShelf===shelfId)activeShelf=null;await refresh();toast(result.cleanupPending?'本棚を削除しました。一部の残存ファイルは管理者のファイル整理で確認してください。':'本棚と中のアセットを削除しました。');}
   });
 }
 async function openRecentHistory(){
-  if(offlineLibrary)return;
+  rememberCollectionLocation();
+  const finishNavigation=libraryHistory.begin();
   activePlaylist='';playlistDraft=null;
   historyMode=true;historyRows=[];activeShelf=null;activeSeries='';seriesReturnView=null;filter='all';search='';document.querySelector('#search').value='';
-  await flushAnalytics().catch(()=>{});await refresh();document.querySelector('.collection')?.scrollIntoView({block:'start'});
+  if(offlineLibrary){applyOfflineShelf();historyRows=await loadRecentHistory();renderNav();renderItems(true);}else{await flushAnalytics().catch(()=>{});await refresh();}document.querySelector('.collection')?.scrollIntoView({block:'start'});finishNavigation();
 }
 function editThumbnails(options={}){
   const actor=getSession(),endpoint=getEndpoint();return openThumbnailEditor({dialog,api,esc,...options,isCurrent:()=>getSession()?.token===actor?.token&&getEndpoint()===endpoint,onChanged:async()=>{await refresh();syncDownloads({items,force:true,refreshCovers:true}).catch(()=>{});},toast});
 }
 
 function showNameIntegrity(catalog,offline){renderNameIntegrity(document.querySelector('#name-integrity'),catalog,{esc,offline,openAsset:openAssetDetails,openSeries:(id,shelfId)=>openSeriesManager({dialog,api,esc,shelves:catalog.shelves,initialShelfId:shelfId,initialSeriesId:id,onChanged:refresh,isCurrent:catalogContext().current})});}
-async function refresh({background=false,signal=AbortSignal.timeout(15000)}={}) {
+async function refresh({background=false,signal}={}) {
   const generation = ++loadGeneration;
   const node = document.querySelector('#items');
   if (!node) return {status:'cancelled'};
+  const ctx=catalogContext();catalogRequest?.abort();const controller=catalogRequest=new AbortController();signal=AbortSignal.any([controller.signal,signal??AbortSignal.timeout(120000)]);const contextWatch=setInterval(()=>{if(!ctx.current())controller.abort();},500);
   refreshBusy=true;
   if(!background&&!node.children.length)node.innerHTML = '<p class="loading-state">ライブラリを読み込んでいます…</p>';
   try {
-    const [response,uploadStatus,history] = await Promise.all([api('/library/catalog',{signal}),api('/uploads',{signal}),historyMode?api('/history',{signal}):null]);
-    if (generation !== loadGeneration) return {status:'cancelled'};
+    const [snapshotResult,uploadStatus,history] = await Promise.all([catalogClient.fetch({signal,current:ctx.current,userId:ctx.userId}),api('/uploads',{signal}),historyMode?api('/history',{signal}):null]),response=snapshotResult.catalog;
+    if (generation !== loadGeneration||!ctx.current()) return {status:'cancelled'};
     showNameIntegrity(response,false);
     offlineLibrary=false;offlineLibraryData=null;shelves = response.shelves;
     if(activeShelf)await requirePrivateShelf(shelves.find(s=>s.id===activeShelf));
@@ -391,30 +418,33 @@ async function refresh({background=false,signal=AbortSignal.timeout(15000)}={}) 
     if (activeShelf && !shelves.some(s => s.id === activeShelf)) activeShelf = null;
     if(!catalogBulkBusy)rememberCatalog(response,generation);
     // serverTime renews the metadata lease but must not redraw the library every minute.
-    const snapshot=JSON.stringify([activeShelf,response.shelves,response.items,response.series,response.playlists,history?.items]);
-    if(history)historyRows=history.items.filter(item=>!response.shelves.find(s=>s.id===item.shelfId)?.private);
+    const snapshot=JSON.stringify([activeShelf,response.etag??[response.shelves,response.items,response.series,response.playlists],history?.items]);
+    if(history){historyRows=history.items.filter(item=>!response.shelves.find(s=>s.id===item.shelfId)?.private);cacheRecentHistory(historyRows);}
 
     document.querySelector('#drawer-upload-count').textContent=uploadStatus.activeCount??0;
     const unchanged=background&&snapshot===librarySnapshot;
     librarySnapshot=snapshot;
-    items=response.items.filter(item=>activeShelf?item.shelfId===activeShelf:historyMode||activePlaylist||!shelves.find(s=>s.id===item.shelfId)?.private);
-    series=response.series.filter(row=>activeShelf?row.shelfId===activeShelf:historyMode||activePlaylist||!shelves.find(s=>s.id===row.shelfId)?.private);
-    playlists=response.playlists??[];
+    items=response.items.filter(item=>activeShelf?item.shelfId===activeShelf:!shelves.find(s=>s.id===item.shelfId)?.private).map(item=>({...item,progress:cachedProgress(item)}));
+    // Even a 304 must replace transient offline availability before click
+    // handlers resolve their item. Keep the unchanged DOM and its focus intact.
     if(unchanged){patchAvailability();return {status:'updated'};}
+    series=response.series.filter(row=>activeShelf?row.shelfId===activeShelf:!shelves.find(s=>s.id===row.shelfId)?.private);
+    playlists=response.playlists??[];
     if(activePlaylist&&activePlaylist!=='index'&&!playlists.some(p=>p.id===activePlaylist)){activePlaylist='index';playlistDraft=null;}
     if(activeSeries && activeSeries!=='ungrouped' && !series.some(s=>s.id===activeSeries)){activeSeries='';seriesReturnView=null;}
     renderNav();
     renderItems(!background);
+    void libraryHistory.ready();
     rememberOfflineConfig(config);
     return {status:'updated'};
   } catch (error) {
-    if (generation !== loadGeneration || !getSession()) return {status:'cancelled'};
+    if (generation !== loadGeneration || !ctx.current()) return {status:'cancelled'};
     if(background){if(!error.status&&!offlineLibrary)await renderOfflineLibrary({generation});return {status:offlineLibrary?'offline':'failed'};}
     if(!error.status||error.status>=500){if(await renderOfflineLibrary({generation}))return {status:'offline'};}
     node.innerHTML = `<div class="empty-state"><h3>ライブラリを読み込めませんでした</h3><p>${esc(error.message)}</p><button class="button secondary" id="retry-library">もう一度読み込む</button></div>`;
     node.querySelector('button').onclick = refresh;
     return {status:'failed'};
-  }finally{if(generation===loadGeneration)refreshBusy=false;}
+  }finally{clearInterval(contextWatch);if(catalogRequest===controller)catalogRequest=null;if(generation===loadGeneration)refreshBusy=false;}
 }
 async function refreshManually(){
   const revision=sessionRevision(),server=getEndpoint();
@@ -433,17 +463,21 @@ async function refreshManually(){
 }
 async function selectShelf(id) {
   try{await requirePrivateShelf(shelves.find(s=>s.id===id),{force:true});}catch(error){toast(error.message);return;}
+  rememberCollectionLocation();
+  const finishNavigation=libraryHistory.begin();
   historyMode=false;historyRows=[];
   activePlaylist='';playlistDraft=null;
   activeShelf = id;
   activeSeries='';seriesReturnView=null;
   search = '';
   document.querySelector('#search').value = '';
-  if(offlineLibrary&&offlineLibraryData){applyOfflineShelf();renderNav();renderItems(true);}else refresh();
+  if(offlineLibrary&&offlineLibraryData){applyOfflineShelf();renderNav();renderItems(true);}else await refresh();restoreCollectionLocation();finishNavigation();
 }
 async function openPlaylistView(id='index'){
+  rememberCollectionLocation();
+  const finishNavigation=libraryHistory.begin();
   activePlaylist=id;playlistDraft=null;activeShelf=null;activeSeries='';seriesReturnView=null;historyMode=false;historyRows=[];filter='all';search='';sort=id==='index'?loadCollectionSort():'series';document.querySelector('#search').value='';
-  if(offlineLibrary){applyOfflineShelf();renderNav();renderItems(true);}else await refresh();
+  if(offlineLibrary){applyOfflineShelf();renderNav();renderItems(true);}else await refresh();finishNavigation();
 }
 function renderPlaylistContext(){
   const container=document.querySelector('.playlist-context');container.hidden=!activePlaylist;if(!activePlaylist){container.replaceChildren();return;}
@@ -451,7 +485,7 @@ function renderPlaylistContext(){
   if(container.contextKey===key&&container.contextDraft===playlistDraft)return;container.contextKey=key;container.contextDraft=playlistDraft;
   container.innerHTML=`<div class="playlist-header"><button class="button secondary playlist-back">← ${p?'リスト一覧へ':'コンテンツ一覧へ'}</button><h2>${p?esc(p.title):'プレイリスト'}</h2>${offlineLibrary?'':`<button class="button secondary playlist-edit">${p?'リストを編集':'リストを作成'}</button>`}</div><p class="muted">自分専用 · 本棚をまたいで好きな作品をまとめられます。</p><div class="playlist-editor-host"></div>`;
   container.querySelector('.playlist-back').onclick=()=>p?openPlaylistView():selectShelf(null);
-  if(p){const members=p.assetIds.map(id=>items.find(item=>item.id===id)).filter(Boolean),kinds=new Set(members.map(playlistKind));if(kinds.size===1&&['video','audio'].includes([...kinds][0])){const play=document.createElement('button');play.className='button primary playlist-play';play.type='button';play.textContent='▶ リストを連続再生';play.disabled=!members.some(item=>!item.offlineUnavailable);play.onclick=()=>{seriesContinuous=true;openViewer(members.find(item=>!item.offlineUnavailable),{startAtBeginning:true,autoplay:true,playlistId:p.id});};container.querySelector('.playlist-header').append(play);}else if(kinds.size>1){const warning=document.createElement('p');warning.className='permission-note';warning.textContent='種類の異なる作品が含まれています。編集から種類ごとに分けて保存してください。元の作品や並びは自動変更しません。';container.prepend(warning);}}
+  if(p){const members=p.assetIds.map(id=>items.find(item=>item.id===id)).filter(Boolean),kinds=new Set(members.map(playlistKind));if(kinds.size===1&&['video','audio'].includes([...kinds][0])){const play=document.createElement('button');play.className='button primary playlist-play';play.type='button';play.textContent='▶ リストを連続再生';play.disabled=!members.some(item=>!item.offlineUnavailable);play.onclick=()=>{const first=playlists.find(row=>row.id===p.id)?.assetIds.map(id=>items.find(item=>item.id===id)).find(item=>item&&!item.offlineUnavailable);if(first){seriesContinuous=true;openViewer(first,{startAtBeginning:true,autoplay:true,playlistId:p.id});}};container.querySelector('.playlist-header').append(play);}else if(kinds.size>1){const warning=document.createElement('p');warning.className='permission-note';warning.textContent='種類の異なる作品が含まれています。編集から種類ごとに分けて保存してください。元の作品や並びは自動変更しません。';container.prepend(warning);}}
   const edit=container.querySelector('.playlist-edit');if(edit)edit.onclick=()=>{playlistDraft=p?{id:p.id,revision:p.revision,title:p.title,assetIds:[...p.assetIds]}:{title:'',assetIds:[]};renderPlaylistContext();};
   if(playlistDraft&&!offlineLibrary){
     const ctx=catalogContext(),draft=playlistDraft,view=activePlaylist;
@@ -462,11 +496,12 @@ async function downloadAllMetadata(){
   if(catalogBulkBusy){catalogBulkController?.abort();return;}
   if(offlineLibrary)return;
   const ctx=catalogContext(),controller=catalogBulkController=new AbortController(),button=document.querySelector('#download-catalog'),status=document.querySelector('#catalog-download-status');
+  const contextWatch=setInterval(()=>{if(!ctx.current())controller.abort();},500);
   const current=()=>ctx.current()&&!controller.signal.aborted&&!isOfflineSession();
   catalogBulkBusy=true;button.querySelector('span').textContent='一覧・表紙の保存を停止';status.textContent='閲覧できる全アセットの情報を取得しています…';
   try{
     const transfer=trackTransfer({direction:'download',title:'全アセットのメタデータ＋サムネイル',cancel:()=>controller.abort(),notifications:!native,work:async update=>{
-      const response=await api('/library/catalog',{signal:AbortSignal.any([controller.signal,AbortSignal.timeout(30000)])});
+      const response=await api('/library/catalog',{signal:AbortSignal.any([controller.signal,AbortSignal.timeout(120000)])});
       if(!current())throw new DOMException('保存を停止しました。','AbortError');
       await rememberOfflineConfig(config);const cache=await offlineCatalog(),catalog=await cache.save(ctx.partition,response,ctx.userId,{current});
       if(!catalog||!current())throw new DOMException('保存を停止しました。','AbortError');
@@ -479,7 +514,7 @@ async function downloadAllMetadata(){
     }});
     const result=await transfer.promise;if(status.isConnected&&ctx.current())status.textContent=`全${result.count}アセットのメタデータとサムネイルを保存しました。本体は含みません。最終接続から7日間オフラインで一覧を表示できます。`;
   }catch(error){if(status.isConnected&&ctx.current())status.textContent=error.name==='AbortError'?'保存を停止しました。取得済みの情報は残ります。':error.message;}
-  finally{catalogBulkBusy=false;if(catalogBulkController===controller)catalogBulkController=null;if(button.isConnected)button.querySelector('span').textContent='全アセットの一覧・表紙を保存';}
+    finally{clearInterval(contextWatch);catalogBulkBusy=false;if(catalogBulkController===controller)catalogBulkController=null;if(button.isConnected)button.querySelector('span').textContent='全アセットの一覧・表紙を保存';}
 }
 function renderNav() {
   const current = shelves.find(s => s.id === activeShelf);
@@ -493,7 +528,7 @@ function renderNav() {
   document.querySelector('#breadcrumb-title').textContent = current?.name ?? 'ライブラリ';
 
   document.querySelector('#add-series').hidden=Boolean(current?current.role==='viewer':!shelves.some(s=>s.role!=='viewer'));
-  document.querySelector('#add-shelf').hidden=false;document.querySelector('#recent-history').disabled=offlineLibrary;document.querySelector('#drawer-upload-jobs').disabled=offlineLibrary;
+  document.querySelector('#add-shelf').hidden=false;document.querySelector('#recent-history').disabled=false;document.querySelector('#drawer-upload-jobs').disabled=offlineLibrary;
   document.querySelector('#open-upload').hidden = Boolean(current && current.role === 'viewer');
   document.querySelector('#download-catalog')?.toggleAttribute('disabled',offlineLibrary);
   document.querySelector('#offline-library-notice')?.remove();
@@ -501,10 +536,13 @@ function renderNav() {
 function renderItems(animate=false) {
   const node = document.querySelector('#items');
   if (!node) return;
+  collectionView?.refreshContext();const scope=collectionKey();if(scope!==collectionScope){collectionScope=scope;collectionLimit=collectionLocations.get(scope)?.limit??100;}
   document.querySelector('#clear-history').hidden=!historyMode;
+  document.querySelector('#clear-history').disabled=offlineLibrary;
   const selectedPlaylist=playlists.find(p=>p.id===activePlaylist),playlistPositions=new Map(selectedPlaylist?.assetIds.map((id,index)=>[id,index+1])??[]);
   const source=historyMode?historyRows:selectedPlaylist?items.filter(i=>playlistPositions.has(i.id)).map(i=>({...i,position:playlistPositions.get(i.id)})):items;
   renderPlaylistContext();
+  libraryHistory.update();
   cardGestures?.dispose();videoPreviews?.dispose();videoPreviews=null;node.dataset.animate=String(animate);
   const bookCount = source.filter(i => !isTimedKind(i.kind)).length;
   const videoCount = source.filter(i => i.kind === 'video').length;
@@ -534,6 +572,7 @@ function renderItems(animate=false) {
   if(historyMode)document.querySelector('#collection-title').textContent='閲覧履歴';
   if(activePlaylist)document.querySelector('#collection-title').textContent=selectedPlaylist?'リスト内のコンテンツ':'プレイリスト';
   const entries=activePlaylist==='index'?playlistEntries(playlists,items,{search,sort,compare:compareCollection}):collectionEntries(selected,series,{group:!historyMode&&!activePlaylist&&activeSeries!=='ungrouped',parentId:selectedSeries?.id??null,allItems:source,filter,search,sort});
+  let more=document.querySelector('#collection-more');if(!more){more=document.createElement('button');more.id='collection-more';more.type='button';more.className='button secondary collection-more';node.after(more);}more.hidden=entries.length<=collectionLimit;more.textContent=`次の100件を表示（${Math.min(collectionLimit,entries.length)} / ${entries.length}件）`;more.onclick=()=>{collectionLimit+=100;renderItems();};
   displayedItems=selected;
   if(activePlaylist==='index')displayedItems=[];
   document.querySelector('#bulk-thumbnail').hidden=activePlaylist==='index'||!selected.some(i=>!i.pending&&['owner','editor'].includes(i.role));
@@ -547,7 +586,7 @@ function renderItems(animate=false) {
     if (action) action.onclick = hasFilter ? () => { search = ''; filter = 'all'; document.querySelector('#search').value = ''; renderItems(); } : openCreateShelf;
     return;
   }
-  patchCollection(node,entries.map(entry => {
+  patchCollection(node,entries.slice(0,collectionLimit).map(entry => {
     if(entry.type==='playlist')return `<article class="media-card playlist-card"><button class="card-open" data-open-playlist="${entry.id}" aria-label="プレイリスト「${esc(entry.title)}」を開く"><div class="card-art actual-cover">${entry.cover?`<img data-local-thumbnail="${entry.cover.id}" data-thumbnail="${esc(entry.cover.thumbnailUrl)}" alt="${esc(entry.title)}の表紙">`:''}<span class="cover-placeholder">${icon('library')}<span>${entry.cover?'表紙を読み込んでいます…':'作品はまだありません'}</span></span><span class="media-type">PLAYLIST</span></div><div class="card-content"><span class="card-shelf">自分専用のリスト</span><h3>${esc(entry.title)}</h3><div class="card-meta"><span>${entry.assetCount}作品</span><span>${date(entry.updatedAt)}</span></div></div></button></article>`;
     if(entry.type==='series'){
       const cover=entry.cover,count=entry.matchedCount===entry.assetCount?`${entry.assetCount}作品`:`${entry.matchedCount} / ${entry.assetCount}作品が一致`;
@@ -591,24 +630,29 @@ async function openTransferDestination(destination){
   if(destination.seriesId){if(!series.some(s=>s.id===destination.seriesId&&s.shelfId===shelf.id))throw Error('追加先シリーズは移動または削除されています。');openLibrarySeries(destination.seriesId);}
 }
 function openLibrarySeries(id){
+  rememberCollectionLocation();
+  const finishNavigation=libraryHistory.begin();
   if(!activeSeries)seriesReturnView={filter,search,sort};
-  activeSeries=id;sort='series';filter='all';search='';document.querySelector('#search').value='';renderItems(true);document.querySelector('.series-folder-name h2')?.focus({preventScroll:true});document.querySelector('.collection')?.scrollIntoView({block:'start'});
+  activeSeries=id;sort='series';filter='all';search='';document.querySelector('#search').value='';renderItems(true);document.querySelector('.series-folder-name h2')?.focus({preventScroll:true});if(!restoreCollectionLocation())document.querySelector('.collection')?.scrollIntoView({block:'start'});finishNavigation();
 }
 function leaveLibrarySeries(){
   if(activePlaylist){if(activePlaylist==='index')selectShelf(null);else openPlaylistView();return;}
   if(!activeSeries)return;
+  rememberCollectionLocation();
+  const finishNavigation=libraryHistory.begin();
   const current=series.find(s=>s.id===activeSeries);
   if(current?.parentId&&series.some(s=>s.id===current.parentId)){activeSeries=current.parentId;filter='all';search='';document.querySelector('#search').value='';}
   else{activeSeries='';if(seriesReturnView){({filter,search,sort}=seriesReturnView);seriesReturnView=null;document.querySelector('#search').value=search;}}
-  renderItems(true);document.querySelector('#collection-title')?.focus({preventScroll:true});
+  renderItems(true);document.querySelector('#collection-title')?.focus({preventScroll:true});restoreCollectionLocation();finishNavigation();
 }
 function manageSeries(create=false){
   const actor=getSession()?.user.id,endpoint=getEndpoint(),selected=!create&&series.find(s=>s.id===activeSeries && s.role!=='viewer');
   openSeriesManager({dialog,api,esc,shelves,initialShelfId:series.find(s=>s.id===activeSeries)?.shelfId??shelves.find(s=>s.id===activeShelf && s.role!=='viewer')?.id,initialSeriesId:selected?.id,initialParentId:create?activeSeries:null,onChanged:refresh,isCurrent:()=>getSession()?.user.id===actor && getEndpoint()===endpoint});
 }
 
-function openCreateShelf() {
+function openCreateShelf(onCreated) {
   const node = dialog('新しい本棚', `<form class="modal-body" id="shelf-form"><p class="muted">テーマや楽しむ相手に合わせて、本棚を分けられます。</p><label>本棚の名前<input name="name" maxlength="100" required placeholder="例：週末の映画と読書"></label><label>説明 <span class="optional">任意</span><textarea name="description" maxlength="500" rows="3" placeholder="どんなものを集める本棚ですか？"></textarea></label><p class="form-error" role="alert" hidden></p><div class="modal-actions"><button class="button primary" type="submit">${icon('plus')}本棚を作成</button></div></form>`);
+  node.querySelector('form').setAttribute('data-unsaved','');
   node.querySelector('form').onsubmit = async e => {
     e.preventDefault();
     const form = e.currentTarget, button = form.querySelector('[type="submit"]');
@@ -619,12 +663,13 @@ function openCreateShelf() {
       node.close();
       await refresh();
       toast('本棚を作成しました。');
+      if(typeof onCreated==='function')onCreated();
     } catch (error) { const box = form.querySelector('.form-error'); box.textContent = error.message; box.hidden = false; }
     finally { button.disabled = false; }
   };
 }
 function openUpload(initialFiles) {
-  const editable=shelves.filter(s=>s.role!=='viewer');if(!editable.length)return openCreateShelf();
+  const editable=shelves.filter(s=>s.role!=='viewer');if(!editable.length)return openCreateShelf(()=>openUpload(initialFiles));
   const actor=getSession(),endpoint=getEndpoint(),isCurrent=()=>getSession()?.token===actor?.token&&getEndpoint()===endpoint;
   return openUploadDialog({dialog,api,upload,shelves:editable,activeShelf:series.find(s=>s.id===activeSeries)?.shelfId??activeShelf,initialSeriesId:series.find(s=>s.id===activeSeries)?.id,initialFiles:Array.isArray(initialFiles)?initialFiles:undefined,config,esc,bytes,icon,processingLabel,isCurrent,onChanged:async()=>{if(isCurrent())await refresh();},toast});
 }
@@ -684,12 +729,14 @@ function deleteItem(item) {
     catch (error) { const box = node.querySelector('.form-error'); box.textContent = error.message; box.hidden = false; node.querySelector('#confirm-delete').disabled = false; }
   };
 }
-async function openViewer(item,{startAtBeginning=false,autoplay=true,background=false,playbackOrder,reuseScreen,playlistId=activePlaylist&&activePlaylist!=='index'?activePlaylist:null}={}) {
+async function openViewer(item,{startAtBeginning=false,autoplay=true,background=false,playbackOrder,reuseScreen,canOpen=()=>true,commitOpen=()=>true,playlistId=activePlaylist&&activePlaylist!=='index'?activePlaylist:null}={}) {
+  if(!canOpen())return false;
   if(!item||item.offlineUnavailable)return;
   if(!item.shelfId){try{const cached=await(await offlineCatalog()).load(offlinePartition(getEndpoint(),getSession().user.id));const known=cached?.items?.find(i=>i.id===item.id);if(known)item={...known,...item,shelfId:known.shelfId};}catch{/* Content authorization still runs on the server. */}}
   const shelf=shelves.find(s=>s.id===item.shelfId);
   if(!shelf&&isOfflineSession()){toast('本棚情報が端末にありません。オンラインで一覧を同期してから開いてください。');return;}
   try{await requirePrivateShelf(shelf,{force:activeShelf!==shelf?.id&&!reuseScreen});}catch(error){toast(error.message);return;}
+  if(!canOpen())return false;
   if(nativePlayerAvailable()&&isTimedKind(item.kind)){
     document.querySelectorAll('.viewer-screen').forEach(screen=>screen.close());
     const preparing=dialog('再生を準備しています','<div class="modal-body"><p class="native-playback-status" role="status">アクセス権・続き位置・端末の保存データを確認しています…</p></div>');
@@ -705,24 +752,27 @@ async function openViewer(item,{startAtBeginning=false,autoplay=true,background=
   const order=isTimedKind(item.kind)?playbackOrder?.scope===playbackScope?playbackOrder:createPlaybackOrder({scope:playbackScope,modes:loadPlaybackModes(localStorage,playbackScope)}):null;
   const isPdf = item.mimeType === 'application/pdf';
   const reusing=Boolean(reuseScreen?.isConnected&&reuseScreen.open);
+  const finishNavigation=reusing?()=>libraryHistory.update():libraryHistory.begin();
   if(!reusing)document.querySelectorAll('.viewer-screen').forEach(screen=>screen.close());
   videoPreviews?.setPaused('viewer', true);
   const releaseUpdate = reusing?()=>{}:beginUpdateActivity();
   let node;
-  try { node = reusing?reuseScreen:createViewerScreen({title:item.title,kind:item.kind,onClose:()=>{forgetPlayback();releaseUpdate();videoPreviews?.setPaused('viewer',false);}}); }
+  try { node = reusing?reuseScreen:createViewerScreen({title:item.title,kind:item.kind,onClose:()=>{forgetPlayback();releaseUpdate();videoPreviews?.setPaused('viewer',false);libraryHistory.closedViewer();}}); }
   catch (error) { releaseUpdate(); throw error; }
+  if(!reusing){node.dataset.assetId=item.id;finishNavigation();}
   if(backgroundContinuation)node.minimize();
-  const oldRelease=node.releaseAsset,epoch=(node.assetEpoch??0)+1;node.assetEpoch=epoch;
+  const oldRelease=node.releaseAsset,epoch=(node.assetSequence??node.assetEpoch??0)+1;node.assetSequence=epoch;node.pendingAsset=epoch;
+  if(!reusing)node.assetEpoch=epoch;
   const body=reusing?document.createElement('div'):node.querySelector('.viewer-body');body.classList.add('viewer-body');if(reusing){body.style.visibility='hidden';body.style.pointerEvents='none';node.append(body);}
   const assetMeta=document.createElement('div'),assetTools=document.createElement('div');assetMeta.hidden=assetTools.hidden=reusing;node.querySelector('.viewer-meta').append(assetMeta);node.querySelector('.viewer-tools').append(assetTools);body.assetTools=assetTools;
-  let committed=false,released=false;
-  const validAsset=()=>node.isConnected&&node.assetEpoch===epoch;
-  function commit(){if(committed||!validAsset())return;committed=true;oldRelease?.();node.setAsset(item);assetMeta.hidden=assetTools.hidden=false;body.style.visibility='';body.style.pointerEvents='';node.releaseAsset=releaseAsset;}
-  function releaseAsset(){if(released)return;released=true;node.removeEventListener('close',releaseAsset);preloader?.dispose();seriesNavigation.dispose();progress?.dispose();tracker?.dispose();cleanup?.();discardUnclaimed();const media=body.querySelector('video,audio');media?.pause();downloaded?.dispose();if(downloaded&&media){media.removeAttribute('src');media.load();}assetMeta.remove();assetTools.remove();body.remove();}
+  let committed=false,released=false,startMedia;
+  const validAsset=()=>node.isConnected&&!released&&(committed?node.assetEpoch===epoch:node.pendingAsset===epoch&&canOpen());
+  function commit(options){if(committed)return true;if(!validAsset()||!commitOpen())return false;committed=true;node.assetEpoch=epoch;oldRelease?.(options);node.setAsset(item);node.dataset.assetId=item.id;assetMeta.hidden=assetTools.hidden=false;body.style.visibility='';body.style.pointerEvents='';node.releaseAsset=releaseAsset;if(reusing)finishNavigation();startMedia?.();return true;}
+  function releaseAsset({preserveMedia=false}={}){if(released)return;released=true;node.removeEventListener('close',releaseAsset);preloader?.dispose();seriesNavigation.dispose();progress?.dispose();tracker?.dispose();cleanup?.({preserveMedia});discardUnclaimed();const media=body.querySelector('video,audio');if(!preserveMedia)media?.pause();downloaded?.dispose();if(downloaded&&media&&!preserveMedia){media.removeAttribute('src');media.load();}assetMeta.remove();assetTools.remove();if(!preserveMedia)body.remove();}
   node.addEventListener('close',releaseAsset,{once:true});
   body.innerHTML='<p class="viewer-loading" role="status">読み込んでいます…</p>';
   const tracker = trackAsset(item.id);
-  let cleanup,progress,downloaded,preloader,unclaimedMedia;
+  let cleanup,progress,downloaded,preloader,unclaimedMedia,suspendedReading=false;
   const discardUnclaimed=()=>{if(!unclaimedMedia)return;unclaimedMedia.stream.dispose();unclaimedMedia.video.removeAttribute('src');unclaimedMedia.video.load();unclaimedMedia=null;};
   const seriesNavigation=mountSeriesNavigation({node,body,meta:assetMeta,item,api:libraryRead,esc,open:(target,options)=>openViewer(target,{...options,playlistId}),loadContext:()=>playlistId?playlistPlaybackContext(playlistId,item.id):libraryRead(`/items/${item.id}/series`),preload:target=>preloader?.preload(target),order,onModes:value=>savePlaybackModes(localStorage,playbackScope,value),enabled:seriesContinuous,onEnabled:value=>{seriesContinuous=value;},
     isCurrent:()=>validAsset()&&getSession()?.user.id===progressActor && getEndpoint()===progressServer,isActive:()=>!native && isTimedKind(item.kind) || nativeAppActive && !document.hidden,beforeMove:()=>progress?.checkpoint()});
@@ -732,12 +782,14 @@ async function openViewer(item,{startAtBeginning=false,autoplay=true,background=
   assetMeta.append(progressBar);
   const resumeStatus=progressBar.querySelector('.resume-status'),restart=progressBar.querySelector('button');
   const updateStatus=state=>{
-    const messages={pending:'続き位置は送信待ちです。接続後に再送します。',conflict:'別の画面で進行度が更新されました。この画面の保存を停止しました。開き直してください。',forbidden:'続き位置を保存する権限がありません。',unauthorized:'続き位置を保存するには再ログインが必要です。',saved:'続き位置を保存しました。'};
+    const messages={pending:'続き位置はこの端末に保存しています。',conflict:'別の端末にも続き位置があります。どちらから続けるか選べます。',forbidden:'続き位置を保存する権限がありません。',unauthorized:'続き位置を保存するには再ログインが必要です。',saved:'続き位置を保存しました。'};
     if(node.isConnected)resumeStatus.textContent=messages[state] || state;
+    progressBar.querySelector('.progress-conflict-actions')?.remove();
+    if(state==='conflict'&&node.isConnected){const actions=document.createElement('div');actions.className='progress-conflict-actions';for(const [choice,label]of [['local','この端末の続き'],['remote','別の端末の続き']]){const button=document.createElement('button');button.type='button';button.className='text-button';button.textContent=label;button.onclick=async()=>{if(!progress?.resolveConflict||!validAsset())return;actions.querySelectorAll('button').forEach(control=>control.disabled=true);try{await progress.resolveConflict(choice);if(!validAsset())return;if(choice==='remote'){progress.bind(()=>null);await openViewer(item,{autoplay:false,playbackOrder:order,playlistId,reuseScreen:node});}else updateStatus('saved');}catch(error){if(validAsset()){if(progress?.conflicted)updateStatus('conflict');else if(error.code==='PROGRESS_PENDING')updateStatus('pending');else if(error.code==='PROGRESS_FORBIDDEN')updateStatus('forbidden');resumeStatus.textContent=error.message;actions.querySelectorAll('button').forEach(control=>control.disabled=false);}}};actions.append(button);}progressBar.append(actions);}
   };
   restart.onclick=()=>{seriesNavigation.cancel();cleanup?.restart?.();};
   const onError = error => {
-    if (!validAsset()) return;
+    if (!validAsset()){releaseAsset();return;}
     discardUnclaimed();
     seriesNavigation.cancel();
     tracker?.error();
@@ -748,46 +800,67 @@ async function openViewer(item,{startAtBeginning=false,autoplay=true,background=
     errorBox.className = 'viewer-error';
     errorBox.setAttribute('role', 'alert');
     errorBox.textContent = error.message || 'コンテンツを開けませんでした。閉じて、もう一度お試しください。';
-    body.prepend(errorBox);if(reusing&&!committed)commit();
+    if(typeof error.retry==='function'){const retry=document.createElement('button');retry.type='button';retry.className='button secondary';retry.textContent='もう一度読み込む';retry.onclick=()=>{errorBox.remove();Promise.resolve().then(error.retry).catch(onError);};errorBox.append(retry);}
+    body.prepend(errorBox);if(reusing&&!committed){releaseAsset();toast(error.message||'次の作品を開けませんでした。もう一度お試しください。');}
   };
   try {
-    downloaded=await openDownloaded(item,()=>node.close());
+    downloaded=await openDownloaded(item,reason=>{
+      if(!validAsset())return;
+      if(reusing&&!committed){onError(new Error('次の作品の保存データを利用できません。もう一度お試しください。'));return;}
+      if(reason!=='background'||isTimedKind(item.kind)){node.close();return;}
+      suspendedReading=true;
+      void progress?.checkpoint();progress?.bind(()=>null);cleanup?.();cleanup=undefined;downloaded?.dispose();
+      body.replaceChildren();const placeholder=document.createElement('p');placeholder.className='viewer-loading';placeholder.setAttribute('role','status');placeholder.textContent='本を再開しています…';body.append(placeholder);
+      node.resumeReading=()=>{node.resumeReading=null;if(validAsset())void openViewer(item,{autoplay:false,playlistId,reuseScreen:node}).catch(onError);};
+    });
     if(!validAsset()){downloaded?.dispose();releaseAsset();return;}
+    if(suspendedReading){downloaded?.dispose();return;}
     if(downloaded){item.pageCount=downloaded.manifest.pageCount;item.size=downloaded.manifest.files.reduce((n,file)=>n+file.size,0);}
-    progress=await openProgress(item,{status:updateStatus,saved:position=>{
+    const preparedBook=!downloaded?node.nextBook?.take(item.id):null;node.nextBook=null;
+    if(!isTimedKind(item.kind)){preloader=createBookPreloader({pages:(id,signal)=>api(`/items/${id}/pages`,{signal,diagnostics:false}),blob:authenticatedBlob,current:()=>validAsset()&&!offlineLibrary&&getSession()?.user.id===progressActor&&getEndpoint()===progressServer});node.nextBook=preloader;void seriesNavigation.ready.then(()=>seriesNavigation.preloadNext?.());}
+    progress=await openProgress(item,{startAtBeginning,status:updateStatus,saved:position=>{
       if(getSession()?.user.id!==progressActor || getEndpoint()!==progressServer)return;
       const current=items.find(row=>row.id===item.id);
-      if((current?.progress?.revision??0)>position.revision)return;
+      if(position&&(current?.progress?.revision??0)>position.revision)return;
       if(current)current.progress=position;
       item.progress=position;
       const card=document.querySelector(`[data-open="${item.id}"] .card-progress`);if(card)card.textContent=progressLabel(item,position);
     }});
+    if(progress.conflicted)updateStatus('conflict');
     if(!validAsset()){releaseAsset();return;}
-    if(startAtBeginning){progress.initial=null;resumeStatus.textContent='シリーズの続きとして、このアセットの先頭から開きました。';}
-    else if(progress.initial)resumeStatus.textContent=progressLabel(item,progress.initial)+'（自動で復元）';
+    if(suspendedReading)return;
+    if(!progress.conflicted&&startAtBeginning){resumeStatus.textContent='この作品の先頭から再生・閲覧しています。';}
+    else if(!progress.conflicted&&progress.initial)resumeStatus.textContent=progressLabel(item,progress.initial)+'（自動で復元）';
     else if(resumeStatus.textContent==='続き位置を確認しています…')resumeStatus.textContent='閲覧中は続き位置を自動保存します。';
     if (item.kind === 'image-book') {
-      cleanup = openImageBook(body, item, onError, tracker,progress,downloaded,seriesNavigation);
+      cleanup = openImageBook(body, item, onError, tracker,progress,downloaded,seriesNavigation,preparedBook);
     } else if (item.kind === 'epub') {
       const { openEpub } = await import('./epub-reader.js');
       if (!validAsset()){releaseAsset();return;}
+      if(suspendedReading)return;
       cleanup = openEpub(body,item,onError,tracker,progress,downloaded,seriesNavigation);
     } else if (isPdf) {
       const { openPdf } = await import('./pdf-reader.js');
       if (!validAsset()){releaseAsset();return;}
+      if(suspendedReading)return;
       cleanup = await openPdf(body, item, onError, tracker,progress,downloaded,seriesNavigation);
     } else {
       const prepared=!downloaded?node.nextMedia?.take(item.id):null;node.nextMedia=null;
       unclaimedMedia=prepared;
       let ticket=null;if(!downloaded){try{ticket=await api(`/items/${item.id}/playback-ticket`,{method:'POST',diagnostics:!prepared,...(prepared?{body:{ticket:new URL(prepared.ticket.url,location.origin).searchParams.get('ticket')}}:{})});}catch(error){if(!prepared||![404,409,410].includes(error.status))throw error;ticket=await api(`/items/${item.id}/playback-ticket`,{method:'POST'});}}
-      const adopted=prepared&&prepared.ticket.url===ticket?.url&&prepared.ticket.hlsUrl===ticket?.hlsUrl?prepared:null;if(prepared&&!adopted)discardUnclaimed();
-      if (!validAsset()){discardUnclaimed();return;}
+      let adopted=prepared&&prepared.ticket.url===ticket?.url&&prepared.ticket.hlsUrl===ticket?.hlsUrl?prepared:null;if(prepared&&!adopted)discardUnclaimed();
+      if (!validAsset()){releaseAsset();return false;}
       const {attachVideoStream}=await import('./video-stream.js');
+      const {isPictureInPicture}=await import('./media-session.js');
       preloader=createMediaPreloader({api,absoluteUrl,attach:attachVideoStream,scope:playbackScope,current:()=>validAsset()&&!offlineLibrary&&getSession()?.user.id===progressActor&&getEndpoint()===progressServer,quality:()=>loadQualityPreference(getEndpoint(),getSession()?.user.id)});
-      if(!validAsset()){discardUnclaimed();return;}
+      if(!validAsset()){releaseAsset();return false;}
+      const retained=item.kind==='video'&&isPictureInPicture(node.activeMedia?.video)?node.activeMedia:null;
+      // A browser PiP window belongs to its original video element. Commit the
+      // transition before changing that element; pending preparation can cancel.
+      if(retained){discardUnclaimed();adopted=null;if(!commit({preserveMedia:true})){releaseAsset();return false;}}
       let stream=adopted?.stream,stopNetworkQuality;
       const renew=previous=>api(`/items/${item.id}/playback-ticket`,{method:'POST',...(previous?{body:{ticket:new URL(previous.url,location.origin).searchParams.get('ticket')}}:{}),signal:AbortSignal.timeout(5000)});
-      const player=mountVideoPlayer(body,{onError,media:adopted?.video,focus:!reusing,kind:item.kind,title:item.title,assetId:item.id,preferencesScope:playbackScope,playback:seriesNavigation,onNavigate:direction=>seriesNavigation.navigate(direction),editNavigation:()=>openNavigationEditor({item,api,dialog,esc}),reconnect:async()=>{body.querySelector('.viewer-error')?.remove();if(downloaded)return downloaded.reconnect();await stream.reconnect();return null;}});
+      const player=mountVideoPlayer(body,{onError,media:retained?.video??adopted?.video,retainedHost:retained?.body,preservePictureInPicture:Boolean(retained),active:false,focus:!reusing,kind:item.kind,title:item.title,assetId:item.id,preferencesScope:playbackScope,playback:seriesNavigation,onNavigate:direction=>seriesNavigation.navigate(direction),editNavigation:()=>openNavigationEditor({item,api,dialog,esc}),reconnect:async()=>{body.querySelector('.viewer-error')?.remove();if(downloaded)return downloaded.reconnect();await stream.reconnect();return null;}});
       let coverUrl;const coverRequest=new AbortController();
       // Artwork is optional: a slow thumbnail must never delay the media source,
       // progress binding, controls, or the viewer's cleanup registration.
@@ -797,19 +870,20 @@ async function openViewer(item,{startAtBeginning=false,autoplay=true,background=
         if(item.kind==='audio'){const image=player.surface.querySelector('img');image.src=coverUrl;image.hidden=false;}
       }).catch(()=>{});
       const video = player.video;
-      const stopResume=bindPlaybackResume(video,item);
-      node.bindBackground(video,{key:progressServer+'|'+progressActor+'|'+item.id,id:item.id,loadArtwork:async(_state,signal)=>{
+      let stopResume=()=>{};
+      const backgroundOptions={key:progressServer+'|'+progressActor+'|'+item.id,id:item.id,loadArtwork:async(_state,signal)=>{
         if(getSession()?.user.id!==progressActor||getEndpoint()!==progressServer)return null;
         const saved=await downloadedThumbnail(item.id).catch(()=>null);if(signal.aborted||getSession()?.user.id!==progressActor||getEndpoint()!==progressServer)return null;
         return saved||(!offlineLibrary?authenticatedBlob(item.thumbnailUrl??`/api/v1/items/${item.id}/thumbnail`,signal):null);
-      }});
+      }};
         if(item.kind==='video')api(`/items/${item.id}/replay-heatmap`).then(value=>player.setHeatmap(value)).catch(()=>{/* Playback never depends on aggregate availability. */});
-      const videoProgress=bindVideoProgress(video,progress);
+      const videoProgress=bindVideoProgress(video,progress,{waitForMetadata:Boolean(retained)});
       const stopNavigation=item.kind==='video'?loadVideoNavigation({id:item.id,api,blob:authenticatedBlob,set:player.setNavigation,isCurrent:()=>node.isConnected&&getSession()?.user.id===progressActor&&getEndpoint()===progressServer}):()=>{};
-      cleanup=()=>{stopResume();coverRequest.abort();stopNetworkQuality?.();stopNavigation();videoProgress();stream?.dispose();player.dispose();if(coverUrl)URL.revokeObjectURL(coverUrl);};cleanup.restart=()=>videoProgress.restart();
+      cleanup=({preserveMedia=false}={})=>{stopResume();coverRequest.abort();stopNetworkQuality?.();stopNavigation();videoProgress();stream?.dispose({preserveMedia});player.dispose({preserveMedia});if(coverUrl)URL.revokeObjectURL(coverUrl);};cleanup.restart=()=>videoProgress.restart();
       unclaimedMedia=null;
-      tracker?.video(video,player.surface);
-      seriesNavigation.bindVideo(video,{autoplay});
+      // Do not start a hidden candidate before the user can still cancel it.
+      let started=false;
+      startMedia=()=>{if(started)return;started=true;player.activate();node.activeMedia={video,body};stopResume=bindPlaybackResume(video,item);node.bindBackground(video,backgroundOptions);tracker?.video(video,player.surface);seriesNavigation.bindVideo(video,{autoplay});};
       if(downloaded){
         video.src=downloaded.url(0);
         tracker?.quality({selectedQuality:downloaded.manifest.files[0].quality??'download',actualQuality:downloaded.manifest.files[0].quality??'download',streamKind:'download'});
@@ -820,15 +894,18 @@ async function openViewer(item,{startAtBeginning=false,autoplay=true,background=
         if(item.kind==='video')stopNetworkQuality=mountNetworkQuality(body.querySelector('.player-controls'),qualityEndpoint,qualityUser,value=>stream?.choose(value));
       }
       if(downloaded)video.setAttribute('controlsList','nodownload');
+      if(committed)startMedia();
       if(reusing&&video.readyState<3)await new Promise(resolve=>{const done=()=>{clearTimeout(timeout);node.removeEventListener('close',done);video.removeEventListener('canplay',done);video.removeEventListener('error',done);resolve();};node.addEventListener('close',done,{once:true});const timeout=setTimeout(done,8000);video.addEventListener('canplay',done,{once:true});video.addEventListener('error',done,{once:true});});
       node.nextMedia=preloader;void seriesNavigation.ready.then(()=>seriesNavigation.preloadNext?.());
     }
     if(reusing&&!isTimedKind(item.kind)&&!committed)await new Promise(resolve=>{const ready=()=>body.querySelector('.image-page:not([hidden]),canvas:not([hidden]),.epub-flow > *,.viewer-error');if(ready()){resolve();return;}const done=()=>{observer.disconnect();clearTimeout(timeout);node.removeEventListener('close',done);resolve();},observer=new MutationObserver(()=>{if(ready()||!validAsset())done();});observer.observe(body,{subtree:true,childList:true,attributes:true,attributeFilter:['hidden']});node.addEventListener('close',done,{once:true});const timeout=setTimeout(done,12000);});
-    if(validAsset())commit();else{releaseAsset();return;}
+    if(!commit()){releaseAsset();return false;}
     restart.disabled=false;
     if(downloaded){const badge=document.createElement('span');badge.className='download-source';badge.textContent='端末の暗号化データを使用（7日間の閲覧許可）';progressBar.prepend(badge);}
   } catch (error) { onError(error); }
   if(!committed&&!reusing&&validAsset())commit();
+  if(!committed)releaseAsset();
+  return committed;
 }
 async function playlistPlaybackContext(id,assetId){
   if(!offlineLibrary)return api('/playlists/'+id+'/playback?assetId='+assetId);
@@ -846,10 +923,11 @@ function openAssetActions(item,position){
     {label:'プレイリストに追加',disabled:offlineLibrary,run:()=>addAssetToPlaylist(item)},
     {label:'暗号化ダウンロード',disabled:offlineLibrary||item.downloadReady===false,run:()=>openDownload(item)},
     {label:'削除',disabled:!editable,danger:true,run:()=>deleteItem(item)},
-    {label:'プロパティ',run:()=>openAssetDetails(item)}
+    {label:'プロパティ',run:()=>openAssetDetails(item)},
+    ...(historyMode?[{label:'閲覧履歴から非表示',disabled:offlineLibrary,run:()=>hideRecentHistory(item.id)}]:[])
   ]});
   const node=dialog(item.title,`<div class="modal-body asset-action-list"><button class="asset-action action-download" disabled>${icon('download')}<span>保存状態を確認しています…</span></button><button class="asset-action action-unregister" hidden>${icon('trash')}<span>端末のダウンロードを解除</span></button>${editable?`<button class="asset-action action-delete danger-text">${icon('trash')}<span>サーバーから作品を削除</span></button>`:''}${offlineLibrary?'':'<button class="asset-action action-playlist">'+icon('plus')+'<span>プレイリストに追加</span></button>'}${historyMode?'<button class="asset-action action-hide-history">閲覧履歴から非表示</button>':''}<button class="asset-action action-details">${icon('more')}<span>詳細を表示</span></button><p class="muted action-status" role="status"></p></div>`,'asset-action-menu');
-  const hideHistory=node.querySelector('.action-hide-history');if(hideHistory)hideHistory.onclick=async()=>{await api('/history/'+item.id,{method:'DELETE'});node.close();await refresh();};
+  const hideHistory=node.querySelector('.action-hide-history');if(hideHistory){hideHistory.disabled=offlineLibrary;hideHistory.onclick=async()=>{try{await hideRecentHistory(item.id);node.close();}catch(error){report(error);}};}
   const download=node.querySelector('.action-download'),unregister=node.querySelector('.action-unregister'),status=node.querySelector('.action-status');
   const act=fn=>()=>{node.close();if(current())fn();};
   download.onclick=act(()=>openDownload(item));unregister.onclick=act(()=>removeAssetDownload(item));node.querySelector('.action-details').onclick=act(()=>openAssetDetails(item));
@@ -863,6 +941,7 @@ function openAssetActions(item,position){
   };
   node.refreshDownloadState();
 }
+async function hideRecentHistory(id){await api('/history/'+id,{method:'DELETE'});cacheRecentHistory(historyRows.filter(row=>row.id!==id));await refresh();}
 function removeAssetDownload(item){
   const actor=getSession(),endpoint=getEndpoint(),current=()=>getSession()?.token===actor?.token&&getEndpoint()===endpoint;
   const node=dialog('端末のダウンロードを解除',`<div class="modal-body"><p>「${esc(item.title)}」の、この端末に保存した暗号化データを削除します。サーバーの原本・閲覧履歴は削除しません。</p><p class="muted">この保存データを再生中なら停止します。再取得にはサーバーへの接続が必要です。</p><p class="form-error" hidden role="alert"></p><div class="modal-actions"><button class="button danger confirm-unregister">端末の保存を解除</button></div></div>`);
@@ -871,7 +950,7 @@ function removeAssetDownload(item){
 async function addAssetToPlaylist(item){
   const ctx=catalogContext();
   try{
-    const rows=(await api('/playlists')).playlists;if(!ctx.current())return;
+    const rows=(await api('/playlists')).playlists.filter(p=>!p.mixed&&(!p.kind||p.kind===playlistKind(item)));if(!ctx.current())return;
     if(!rows.length){await openPlaylistView();playlistDraft={title:'',assetIds:[item.id]};renderPlaylistContext();return;}
     const node=dialog('プレイリストに追加',`<form class="modal-body"><label>追加先<select name="playlist">${rows.map(p=>`<option value="${p.id}">${esc(p.title)}${p.assetIds.includes(item.id)?'（追加済み）':''}</option>`).join('')}</select></label><p class="form-error" role="alert" hidden></p><button class="button primary" type="submit">追加</button><button class="text-button create-playlist" type="button">新しいリストを作成</button></form>`);
     node.querySelector('.create-playlist').onclick=async()=>{node.close();if(!ctx.current())return;await openPlaylistView();playlistDraft={title:'',assetIds:[item.id]};renderPlaylistContext();};
@@ -908,7 +987,7 @@ function openBulkDownload(visible){
   const snapshot=downloadableSnapshot(visible);if(!snapshot.length)return;
   const actor=getSession(),endpoint=getEndpoint(),current=()=>getSession()?.token===actor?.token&&getEndpoint()===endpoint,controller=new AbortController();
   const total=snapshot.reduce((sum,item)=>sum+item.size,0);
-  const node=bulkDialog=dialog('表示中のアセットを一括ダウンロード',`<div class="modal-body"><p>現在の本棚・検索・種類・シリーズに該当する ${snapshot.length} 件を順番に暗号化保存します。画面外へスクロールした作品も対象です。保存済みはスキップし、取得途中は再開します。</p><p class="muted">合計サイズの概算：${bytes(total)}。動画は標準の保存画質を使用します。画質により容量は変わり、アプリの動画・音声はネイティブ再生用の保存にも容量を使用します。Wi-Fiと端末の空き容量を確認してください。</p><progress class="download-progress" max="100" value="0" aria-label="一括ダウンロードの進行状況"></progress><p class="bulk-status" role="status">開始前に一覧を確認できます。メニューを閉じても転送を継続します。「転送状況」から確認・停止できます。</p><details><summary>対象の作品</summary><ol class="bulk-failures">${snapshot.map(item=>`<li>${esc(item.title)}</li>`).join('')}</ol></details><ul class="bulk-failures bulk-errors"></ul><div class="modal-actions"><button class="button primary bulk-start">一括ダウンロードを開始</button><button class="button secondary bulk-stop" hidden>一時停止</button></div></div>`,'bulk-download-modal');
+  const node=bulkDialog=dialog('この一覧を一括ダウンロード',`<div class="modal-body"><p>現在の本棚・検索・種類・シリーズに該当する ${snapshot.length} 件を順番に暗号化保存します。スクロール先や「次の100件」で追加表示する作品も対象です。保存済みはスキップし、取得途中は再開します。</p><p class="muted">合計サイズの概算：${bytes(total)}。動画は標準の保存画質を使用します。画質により容量は変わり、アプリの動画・音声はネイティブ再生用の保存にも容量を使用します。Wi-Fiと端末の空き容量を確認してください。</p><progress class="download-progress" max="100" value="0" aria-label="一括ダウンロードの進行状況"></progress><p class="bulk-status" role="status">開始前に一覧を確認できます。メニューを閉じても転送を継続します。「転送状況」から確認・停止できます。</p><details><summary>対象の作品</summary><ol class="bulk-failures">${snapshot.map(item=>`<li>${esc(item.title)}</li>`).join('')}</ol></details><ul class="bulk-failures bulk-errors"></ul><div class="modal-actions"><button class="button primary bulk-start">一括ダウンロードを開始</button><button class="button secondary bulk-stop" hidden>一時停止</button></div></div>`,'bulk-download-modal');
   let running=false;const start=node.querySelector('.bulk-start'),stop=node.querySelector('.bulk-stop'),status=node.querySelector('.bulk-status'),progress=node.querySelector('progress');
   const changed=value=>{
     if(!node.isConnected)return;
@@ -962,7 +1041,7 @@ function openDownloadManager(){
 }
 function progressLabel(item,position){
   if(!position)return '';
-  if(!isTimedKind(item.kind))return `続きから: ${position.page} / ${item.pageCount}${item.kind==='epub'?'章':'ページ'}`;
+  if(!isTimedKind(item.kind))return position.completed?'読了':`続きから: ${position.page} / ${item.pageCount}${item.kind==='epub'?'章':'ページ'}`;
   const time=ms=>{const seconds=Math.floor((ms??0)/1000);return `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`;};
   return position.completed?'最後まで再生済み（次回は最初から）':`続きから: ${time(position.positionMs)} / ${time(position.durationMs)}`;
 }
@@ -1003,8 +1082,8 @@ function applyOfflineShelf(){
   showNameIntegrity(offlineLibraryData,true);
   shelves=offlineLibraryData.shelves;
   if(activeShelf&&!shelves.some(s=>s.id===activeShelf))activeShelf=null;
-  items=offlineLibraryData.items.filter(i=>activeShelf?i.shelfId===activeShelf:activePlaylist||!shelves.find(s=>s.id===i.shelfId)?.private);
-  series=offlineLibraryData.series.filter(s=>activeShelf?s.shelfId===activeShelf:activePlaylist||!shelves.find(sh=>sh.id===s.shelfId)?.private);
+  items=offlineLibraryData.items.filter(i=>activeShelf?i.shelfId===activeShelf:!shelves.find(s=>s.id===i.shelfId)?.private).map(item=>({...item,progress:cachedProgress(item)}));
+  series=offlineLibraryData.series.filter(s=>activeShelf?s.shelfId===activeShelf:!shelves.find(sh=>sh.id===s.shelfId)?.private);
   playlists=offlineLibraryData.playlists??[];
   if(activeSeries&&!series.some(s=>s.id===activeSeries)){activeSeries='';seriesReturnView=null;}
 }
@@ -1018,6 +1097,7 @@ function patchAvailability(){
   videoPreviews?.setPaused('connection',offlineLibrary);
   for(const selector of ['#open-upload','#add-series','#add-shelf','#drawer-upload-jobs','#bulk-thumbnail','#download-catalog','.shelf-menu-toggle','.edit-series','.series-thumbnail'])for(const button of document.querySelectorAll(selector))button.disabled=offlineLibrary;
   const bulk=document.querySelector('#bulk-download');if(bulk)bulk.disabled=offlineLibrary||!displayedItems.some(item=>!item.pending);
+  const playlistPlay=document.querySelector('.playlist-play');if(playlistPlay){const ids=new Set(playlists.find(row=>row.id===activePlaylist)?.assetIds??[]);playlistPlay.disabled=!items.some(item=>ids.has(item.id)&&!item.offlineUnavailable);}
   document.querySelector('#offline-library-notice')?.remove();
 }
 async function renderOfflineLibrary({generation=loadGeneration,markOffline=true}={}){
@@ -1040,20 +1120,21 @@ async function renderOfflineLibrary({generation=loadGeneration,markOffline=true}
     }}));
     if(current()&&offlineLibrary&&offlineLibraryData===data){const refreshed=offlineCollection(data,rows,playable);offlineLibraryData=refreshed;applyOfflineShelf();patchAvailability();}
   };
-  setTimeout(()=>hydrate().catch(()=>{}),0);return true;
+  setTimeout(()=>hydrate().catch(()=>{}),0);if(markOffline)void libraryHistory.ready();return true;
 }
 function synchronizeConnection({refreshLibrary=true}={}){
   if(synchronizing||!getSession())return synchronizing;
   synchronizing=(async()=>{
     const wasOffline=isOfflineSession()||offlineLibrary;
-    const budget=connectionBudget({ms:1800});
+    const budget=connectionBudget({ms:10000});
     try{if(!await reconnectSession({signal:budget.signal}))return;
       await loadConfig({signal:budget.signal});
       if(shouldRefreshCatalog({requested:refreshLibrary,wasOffline})&&!pullRefresh?.active&&!refreshBusy)await refresh({background:true});
     }finally{budget.dispose();}
     if(isOfflineSession())return;
     ensureDownloadWorker().catch(()=>{});
-    await Promise.all([syncDownloads({items,force:wasOffline}),syncStoredProgress(),flushProgress(),flushAnalytics(),
+    void syncDownloads({items,force:wasOffline}).catch(()=>{});
+    await Promise.all([syncStoredProgress(),flushProgress(),flushAnalytics(),
       nativePlayerAvailable()?NativePlayer.synchronize({origin:getEndpoint(),token:getSession().token,userId:getSession().user.id}):null]);
   })().catch(error=>{if([401,403].includes(error.status)){window.dispatchEvent(new Event('mirea:unauthorized'));}}).finally(()=>{synchronizing=null;});
   return synchronizing;
@@ -1081,15 +1162,23 @@ configureStartupUpdates(dialog);
 syncAppearance(document.documentElement.dataset.theme);
 initializeNativePlayback().catch(()=>{});
 async function bootstrapLogin(){
-  const budget=connectionBudget();
+  let budget,refreshBeforePlayback;
   root.innerHTML='<main class="reconnect-screen"><section><h1>Mireaを開いています</h1><p class="startup-status" role="status">ログインと端末の保存データを確認しています…</p></section></main>';
   const phase=text=>{const status=root.querySelector('.startup-status');if(status)status.textContent=text;};
-  try{await initializeSession({signal:budget.signal});phase('サーバーの設定を確認しています…');await loadConfig({signal:budget.signal});if(getSession()){phase('閲覧記録の保存領域を準備しています…');await startAnalytics();renderShell();if(isOfflineSession()){if(!await renderOfflineLibrary())throw new Error('有効なオフライン一覧情報がありません。オンラインで一度接続してください。');}else{await renderOfflineLibrary({markOffline:false}).catch(()=>false);await refresh({background:offlineLibrary});}synchronizeConnection();}else renderAuth();}
+  try{
+    // A short deadline is useful only when a usable offline library can open.
+    // First-time/uncached sessions must tolerate an ordinary slower response.
+    const origin=getEndpoint(),revision=sessionRevision();
+    const identity=await offlineIdentity(origin).catch(()=>null);
+    if(origin!==getEndpoint()||revision!==sessionRevision())return;
+    budget=connectionBudget({ms:identity?1200:10000});
+    await initializeSession({signal:budget.signal});phase('サーバーの設定を確認しています…');await loadConfig({signal:budget.signal});if(getSession()){phase('閲覧記録の保存領域を準備しています…');await startAnalytics();renderShell();if(isOfflineSession()){if(!await renderOfflineLibrary())throw new Error('有効なオフライン一覧情報がありません。オンラインで一度接続してください。');}else{const cached=await renderOfflineLibrary({markOffline:false}).catch(()=>false);const updating=refresh({background:cached});if(!cached)refreshBeforePlayback=updating;}synchronizeConnection();}else renderAuth();}
   catch(error){
     libraryPoll?.();libraryPoll=null;pullRefresh?.dispose();pullRefresh=null;clearThumbnails();
     root.innerHTML=`<main class="reconnect-screen"><section><h1>サーバーに再接続</h1><p>${esc(['AbortError','TimeoutError'].includes(error.name)?'接続の確認が時間内に完了しませんでした。もう一度接続してください。':error.message)}</p><p class="muted">通信に失敗しても、保持したログインは解除しません。オンラインで認証を確認してからライブラリを開きます。</p><button class="button primary retry-connection">もう一度接続する</button><button class="button secondary show-login">ログイン画面を開く</button></section></main>`;
     root.querySelector('.retry-connection').onclick=()=>bootstrapLogin();root.querySelector('.show-login').onclick=()=>renderAuth();
-  }finally{budget.dispose();finishAppLaunch();}
+  }finally{budget?.dispose();finishAppLaunch();}
+  if(refreshBeforePlayback)await refreshBeforePlayback;
   if(getSession()&&root.querySelector('.app-layout'))await restoreLastPlayback();
 }
 async function restoreLastPlayback(){

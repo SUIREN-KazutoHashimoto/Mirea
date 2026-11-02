@@ -30,11 +30,17 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
     private PlaybackPresentation.Orientation orientation;
     private final PlaybackPresentation.Chrome chrome=new PlaybackPresentation.Chrome();
     private final ArrayList<Dialog> dialogs=new ArrayList<>();
-    private boolean visible,preserve,backgroundRequested,scrubbing,destroyed;
+    private boolean visible,preserve,backgroundRequested,scrubbing,destroyed,pipTransitioning,libraryAfterPip,hadService;
     private Boolean windowVideo;
     private long createdAt;
     private float zoom=1,panX,panY;private String shownAsset="";
     private final Handler handler=new Handler(Looper.getMainLooper());
+    private final Runnable pipTimeout=()->{
+        if(destroyed||isFinishing()||!pipTransitioning)return;
+        if(isInPictureInPictureMode()){completePipEntry();return;}
+        boolean returnToLibrary=libraryAfterPip;libraryAfterPip=false;pipTransitioning=false;render();
+        if(returnToLibrary&&!isFinishing()){preserve=true;showLibrary();finish();}
+    };
     private final Runnable tick=new Runnable(){public void run(){if(destroyed)return;render();handler.postDelayed(this,500);}};
     private final BroadcastReceiver changed=new BroadcastReceiver(){public void onReceive(Context c,Intent i){if(!i.getBooleanExtra("progressOnly",false))render();}};
     private PlaybackService service(){return PlaybackService.current;}
@@ -70,6 +76,7 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
                 orientation.toggle(landscape);applyOrientation();screen.landscape(!landscape);break;
             }
             case "options":options();break;
+            case "progress-conflict":progressConflict();break;
             case "quality":qualities();break;
             case "speed":speeds();break;
             case "equalizer":equalizer();break;
@@ -100,11 +107,16 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
     }
     private void options(){
         PlaybackService s=service();JSONObject state=s==null?new JSONObject():s.status();ArrayList<String> names=new ArrayList<>(),actions=new ArrayList<>();
+        if(state.optBoolean("progressConflict")){names.add("続き位置を選択（別の端末で更新）");actions.add("progress-conflict");}
         if(s!=null&&s.video()){if(canPip()){names.add("ピクチャーインピクチャー（PiP）");actions.add("pip");}if(!state.optBoolean("download")){names.add("画質を選択");actions.add("quality");names.add("Wi-Fi／モバイル通信の画質設定");actions.add("network-quality");}names.add("精密シーク（場面画像から選ぶ）");actions.add("precise");names.add("チャプター"+(state.optString("chapter").isEmpty()?"":"："+state.optString("chapter")));actions.add("chapters");names.add("字幕の言語・オン／オフ");actions.add("captions");names.add("字幕の文字サイズ");actions.add("caption-size");names.add("ズームをリセット");actions.add("zoom-reset");}
         names.add("リピート："+(state.optString("repeat").equals("one")?"単体":state.optString("repeat").equals("series")?"シリーズ":"オフ"));actions.add("repeat");if(state.optBoolean("hasSeries")){names.add("シリーズシャッフル："+(state.optBoolean("shuffle")?"オン":"オフ"));actions.add("shuffle");}
         names.add("イコライザー");actions.add("equalizer");names.add("再生速度");actions.add("speed");names.add(state.optBoolean("muted")?"消音を解除":"消音にする");actions.add("mute");names.add("連続再生："+(state.optBoolean("continuous")?"オン":"オフ"));actions.add("continuous");
         names.add("前の作品");actions.add("previous");names.add("次の作品");actions.add("next");names.add("バックグラウンドで再生");actions.add("background");names.add("ライブラリへ戻る（再生を継続）");actions.add("library");names.add("再接続");actions.add("reconnect");names.add("再生を終了");actions.add("close");
         show(new AlertDialog.Builder(this).setTitle("再生オプション").setItems(names.toArray(new String[0]),(d,index)->act(actions.get(index))).setNegativeButton("閉じる",null).create());
+    }
+    private void progressConflict(){
+        PlaybackService s=service();if(s==null||!s.status().optBoolean("progressConflict"))return;JSONObject state=s.status(),remote=state.optJSONObject("remoteProgress");String other=remote==null?"最初から":remote.optBoolean("completed")?"読み終わり・再生済み":PlaybackPresentation.time(remote.optLong("positionMs"));
+        show(new AlertDialog.Builder(this).setTitle("続き位置を選択").setMessage("別の端末で続き位置が更新されています。現在の再生は続けられます。\nこの端末："+PlaybackPresentation.time(state.optLong("positionMs"))+"\n別の端末："+other).setPositiveButton("この端末の位置を保存",(d,n)->{if(service()==s)s.resolveProgress(true);}).setNeutralButton("別の端末の位置へ移動",(d,n)->{if(service()==s)s.resolveProgress(false);}).setNegativeButton("後で",null).create());
     }
     private void equalizer(){
         PlaybackService s=service();if(s==null)return;equalizerPanel=new EqualizerPanel(this,s.status().optJSONObject("equalizer"),(enabled,gains)->{PlaybackService current=service();if(current==null)return new JSONObject();current.equalizer(enabled,gains);return current.status().optJSONObject("equalizer");});show(new AlertDialog.Builder(this).setTitle("イコライザー").setView(equalizerPanel).setNegativeButton("閉じる",null).create());
@@ -123,8 +135,8 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
     private void networkQualities(){show(new AlertDialog.Builder(this).setTitle("どの回線の初期画質を変更しますか？").setItems(new String[]{"Wi-Fi","モバイル通信"},(d,n)->show(new AlertDialog.Builder(this).setTitle(n==0?"Wi-Fiの画質":"モバイル通信の画質").setItems(new String[]{"自動","高画質優先","データセーバー"},(dialog,i)->{if(service()!=null)service().networkPreference(n==0?"wifi":"mobile",new String[]{"auto","higher","data"}[i]);}).setNegativeButton("閉じる",null).create())).setNegativeButton("閉じる",null).create());}
     private void show(Dialog d){dialogs.add(d);d.setOnDismissListener(value->{dialogs.remove(d);chrome.interact(SystemClock.elapsedRealtime());if(!destroyed)render();});d.show();}
     private void render(){
-        if(destroyed||screen==null)return;PlaybackService s=service();if(s==null){try{boolean starting=SystemClock.elapsedRealtime()-createdAt<2000;screen.bind(new JSONObject().put("video",true).put("buffering",starting).put("error",starting?"":"再生を終了しました。ライブラリから開いてください。"),null);}catch(JSONException ignored){}return;}
-        boolean inPip=isInPictureInPictureMode();s.visibility(visible&&!inPip,inPip);JSONObject state=s.status();boolean isVideo=s.video();if(equalizerPanel!=null){if(equalizerPanel.isAttachedToWindow())equalizerPanel.status(state.optJSONObject("equalizer"));else equalizerPanel=null;}
+        if(destroyed||screen==null||isFinishing())return;PlaybackService s=service();if(s==null){if(hadService||SystemClock.elapsedRealtime()-createdAt>=2000){preserve=true;finish();return;}try{screen.bind(new JSONObject().put("video",true).put("buffering",true),null);}catch(JSONException ignored){}return;}
+        hadService=true;boolean inPip=isInPictureInPictureMode()||pipTransitioning;s.visibility(visible&&!inPip,inPip);JSONObject state=s.status();boolean isVideo=s.video();if(inPip&&!isVideo){preserve=true;libraryAfterPip=false;pipTransitioning=false;handler.removeCallbacks(pipTimeout);finish();return;}if(equalizerPanel!=null){if(equalizerPanel.isAttachedToWindow())equalizerPanel.status(state.optJSONObject("equalizer"));else equalizerPanel=null;}
         JSONObject current=state.optJSONObject("item");String id=current==null?"":current.optString("id");if(!shownAsset.equals(id)){shownAsset=id;screen.resetZoom();zoom=1;panX=panY=0;applyZoom();}screen.navigation(s.navigation,s.storyboard);
         video.setVisibility(isVideo?View.VISIBLE:View.GONE);screen.bind(state,s.artwork);screen.setPip(inPip);screen.setMotionForeground(visible&&!inPip);
         AccessibilityManager accessibility=getSystemService(AccessibilityManager.class);boolean assisted=accessibility!=null&&accessibility.isTouchExplorationEnabled();boolean busy=scrubbing||!dialogs.isEmpty()||state.optBoolean("buffering")||!state.optString("error").isEmpty();
@@ -132,14 +144,14 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
         if(isVideo){Surface surface=video.getHolder().getSurface();if(surface!=null&&surface.isValid()&&(s!=surfaceService||surface!=boundSurface))attach(surface);fitVideo();}
         if(isVideo&&s.playing()&&visible&&!inPip)getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if(windowVideo==null||windowVideo!=isVideo){windowVideo=isVideo;applySystemBars();}
-        applyOrientation();configurePip(!backgroundRequested&&isVideo&&s.playing());
+        applyOrientation();configurePip(!backgroundRequested&&!pipTransitioning&&isVideo&&s.playing());
     }
     private void fitVideo(){PlaybackService s=service();if(video==null||s==null||!s.video()||root.getWidth()<=0)return;JSONObject state=s.status();int[] size=PlaybackPresentation.fit(root.getWidth(),root.getHeight(),state.optInt("width",16),state.optInt("height",9));FrameLayout.LayoutParams p=(FrameLayout.LayoutParams)video.getLayoutParams();if(p.width!=size[0]||p.height!=size[1]){p.width=size[0];p.height=size[1];p.gravity=Gravity.CENTER;video.setLayoutParams(p);}applyZoom();}
     private void applyZoom(){if(video==null)return;float maxX=Math.max(0,(video.getWidth()*zoom-root.getWidth())/2),maxY=Math.max(0,(video.getHeight()*zoom-root.getHeight())/2);panX=Math.max(-maxX,Math.min(maxX,panX));panY=Math.max(-maxY,Math.min(maxY,panY));video.setScaleX(zoom);video.setScaleY(zoom);video.setTranslationX(panX);video.setTranslationY(panY);}
     @Override public boolean onKeyDown(int key,KeyEvent e){PlaybackService s=service();if(s==null||!dialogs.isEmpty()||e.getAction()!=KeyEvent.ACTION_DOWN)return super.onKeyDown(key,e);if(key==KeyEvent.KEYCODE_SPACE||key==KeyEvent.KEYCODE_K)act("play");else if(key==KeyEvent.KEYCODE_J||key==KeyEvent.KEYCODE_L)s.seek(s.position()+(key==KeyEvent.KEYCODE_L?10000:-10000));else if(key==KeyEvent.KEYCODE_DPAD_LEFT||key==KeyEvent.KEYCODE_DPAD_RIGHT){int direction=key==KeyEvent.KEYCODE_DPAD_RIGHT?1:-1;s.seek(e.isCtrlPressed()?VideoNavigation.chapterPosition(s.navigation,s.position(),direction):s.position()+direction*5000);}else if(e.isShiftPressed()&&(key==KeyEvent.KEYCODE_N||key==KeyEvent.KEYCODE_P))s.navigate(key==KeyEvent.KEYCODE_N?1:-1);else if(key>=KeyEvent.KEYCODE_0&&key<=KeyEvent.KEYCODE_9)s.seek(s.duration()*(key-KeyEvent.KEYCODE_0)/10);else if(key==KeyEvent.KEYCODE_M)act("mute");else if(key==KeyEvent.KEYCODE_F)act("rotate");else if(key==KeyEvent.KEYCODE_I)act("background");else if(key==KeyEvent.KEYCODE_C)act("captions");else if(key==KeyEvent.KEYCODE_PERIOD||key==KeyEvent.KEYCODE_COMMA){int direction=key==KeyEvent.KEYCODE_PERIOD?1:-1;if(e.isShiftPressed())s.speed((float)s.status().optDouble("rate",1)+direction*.25f);else if(!s.playing())s.seek(s.position()+direction*33);}else return super.onKeyDown(key,e);chrome.interact(SystemClock.elapsedRealtime());render();return true;}
-    private void applySystemBars(){if(isInPictureInPictureMode())return;WindowInsetsControllerCompat controller=WindowCompat.getInsetsController(getWindow(),root);controller.setAppearanceLightStatusBars(false);controller.setAppearanceLightNavigationBars(false);controller.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);if(Boolean.FALSE.equals(windowVideo))controller.show(WindowInsetsCompat.Type.systemBars());else controller.hide(WindowInsetsCompat.Type.systemBars());}
+    private void applySystemBars(){if(isInPictureInPictureMode()||pipTransitioning)return;WindowInsetsControllerCompat controller=WindowCompat.getInsetsController(getWindow(),root);controller.setAppearanceLightStatusBars(false);controller.setAppearanceLightNavigationBars(false);controller.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);if(Boolean.FALSE.equals(windowVideo))controller.show(WindowInsetsCompat.Type.systemBars());else controller.hide(WindowInsetsCompat.Type.systemBars());}
     private void applyOrientation(){
-        PlaybackService s=service();if(s==null||!visible||isInPictureInPictureMode()||isInMultiWindowMode()||Build.VERSION.SDK_INT>=36&&getResources().getConfiguration().smallestScreenWidthDp>=600)return;JSONObject state=s.status();int target=orientation.target(s.video(),state.optBoolean("prepared"),state.optInt("width"),state.optInt("height"));int requested=target==PlaybackPresentation.Orientation.LANDSCAPE?ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE:target==PlaybackPresentation.Orientation.PORTRAIT?ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT:ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
+        PlaybackService s=service();if(s==null||!visible||pipTransitioning||isInPictureInPictureMode()||isInMultiWindowMode()||Build.VERSION.SDK_INT>=36&&getResources().getConfiguration().smallestScreenWidthDp>=600)return;JSONObject state=s.status();int target=orientation.target(s.video(),state.optBoolean("prepared"),state.optInt("width"),state.optInt("height"));int requested=target==PlaybackPresentation.Orientation.LANDSCAPE?ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE:target==PlaybackPresentation.Orientation.PORTRAIT?ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT:ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
         // Keep the current video orientation during preparation/quality changes.
         if(s.video()&&target==PlaybackPresentation.Orientation.AUTOMATIC)return;
         if(getRequestedOrientation()!=requested)setRequestedOrientation(requested);
@@ -147,9 +159,30 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
     private boolean canPip(){return getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE);}
     private PictureInPictureParams params(boolean auto){PlaybackService s=service();JSONObject state=s==null?new JSONObject():s.status();double ratio=state.optInt("width",16)/(double)Math.max(1,state.optInt("height",9));ratio=Math.max(1/2.39,Math.min(2.39,ratio));PictureInPictureParams.Builder b=new PictureInPictureParams.Builder().setAspectRatio(new Rational((int)(ratio*1000),1000));Rect rect=new Rect();if(video.getGlobalVisibleRect(rect)&&!rect.isEmpty())b.setSourceRectHint(rect);if(Build.VERSION.SDK_INT>=31)b.setAutoEnterEnabled(auto).setSeamlessResizeEnabled(true);return b.build();}
     private void configurePip(boolean auto){if(canPip())try{setPictureInPictureParams(params(auto));}catch(IllegalArgumentException|IllegalStateException ignored){}}
-    private void enterPip(){PlaybackService s=service();if(s==null||!s.video()||!canPip()){Toast.makeText(this,"この端末ではPiPを利用できません。",Toast.LENGTH_SHORT).show();return;}try{enterPictureInPictureMode(params(false));}catch(IllegalStateException|IllegalArgumentException e){Toast.makeText(this,"PiPに切り替えられません。",Toast.LENGTH_SHORT).show();}}
+    private void beginPipEntry(){
+        if(destroyed||isFinishing()||screen==null)return;
+        pipTransitioning=true;screen.cancelHold();screen.cancelScrub();screen.setPip(true);screen.setMotionForeground(false);
+        for(Dialog dialog:new ArrayList<>(dialogs))dialog.dismiss();
+        handler.removeCallbacks(pipTimeout);handler.postDelayed(pipTimeout,3000);
+    }
+    private void completePipEntry(){
+        if(destroyed||isFinishing()||screen==null){libraryAfterPip=false;return;}
+        pipTransitioning=false;handler.removeCallbacks(pipTimeout);screen.setPip(true);
+        PlaybackService s=service();if(s==null||!s.video()){libraryAfterPip=false;preserve=true;finish();return;}
+        if(libraryAfterPip){libraryAfterPip=false;preserve=false;showLibrary();}
+        render();
+    }
+    private boolean requestPip(){
+        if(destroyed||isFinishing()||screen==null)return false;
+        if(isInPictureInPictureMode()){completePipEntry();return true;}
+        beginPipEntry();
+        try{if(enterPictureInPictureMode(params(false)))return true;}catch(IllegalStateException|IllegalArgumentException ignored){}
+        pipTransitioning=false;handler.removeCallbacks(pipTimeout);screen.setPip(false);return false;
+    }
+    private void enterPip(){PlaybackService s=service();if(s==null||!s.video()||!canPip()){Toast.makeText(this,"この端末ではPiPを利用できません。",Toast.LENGTH_SHORT).show();return;}if(!requestPip()){render();Toast.makeText(this,"PiPに切り替えられません。",Toast.LENGTH_SHORT).show();}}
     @Override public void onUserLeaveHint(){super.onUserLeaveHint();PlaybackService s=service();if(Build.VERSION.SDK_INT<31&&!backgroundRequested&&s!=null&&s.video()&&s.playing())enterPip();}
-    @Override public void onPictureInPictureModeChanged(boolean value,Configuration config){super.onPictureInPictureModeChanged(value,config);if(screen!=null){screen.setPip(value);if(value){screen.resetZoom();zoom=1;panX=panY=0;applyZoom();}}chrome.interact(SystemClock.elapsedRealtime());if(service()!=null)service().visibility(!value&&visible,value);if(!value)applySystemBars();render();}
+    @Override public void onPictureInPictureUiStateChanged(PictureInPictureUiState state){super.onPictureInPictureUiStateChanged(state);if(Build.VERSION.SDK_INT>=35&&state.isTransitioningToPip()&&screen!=null)beginPipEntry();}
+    @Override public void onPictureInPictureModeChanged(boolean value,Configuration config){super.onPictureInPictureModeChanged(value,config);pipTransitioning=false;handler.removeCallbacks(pipTimeout);if(screen!=null){screen.setPip(value);if(value){screen.resetZoom();zoom=1;panX=panY=0;applyZoom();}}chrome.interact(SystemClock.elapsedRealtime());if(service()!=null)service().visibility(!value&&visible,value);if(value)completePipEntry();else{libraryAfterPip=false;applySystemBars();render();}}
     @Override public void onConfigurationChanged(Configuration config){if(screen!=null){screen.cancelHold();screen.cancelScrub();}super.onConfigurationChanged(config);chrome.interact(SystemClock.elapsedRealtime());fitVideo();render();ViewCompat.requestApplyInsets(root);}
     @Override public void onWindowFocusChanged(boolean focus){super.onWindowFocusChanged(focus);if(!focus&&screen!=null){screen.cancelHold();screen.cancelScrub();}if(focus&&root!=null)applySystemBars();}
     @Override public void onSaveInstanceState(Bundle out){out.putInt("orientationMode",orientation.manual());super.onSaveInstanceState(out);}
@@ -158,15 +191,17 @@ public final class PlaybackActivity extends ComponentActivity implements Surface
     private void returnToLibrary(){
         PlaybackService s=service();preserve=true;backgroundRequested=true;configurePip(false);
         if(s!=null&&s.video()&&canPip()){
-            try{if(isInPictureInPictureMode()||enterPictureInPictureMode(params(false))){preserve=false;showLibrary();return;}}catch(IllegalArgumentException|IllegalStateException ignored){}
+            // PiP entry is asynchronous. Keep this video window as the only
+            // presentation until Android confirms it is pinned.
+            libraryAfterPip=true;if(requestPip()){preserve=false;return;}libraryAfterPip=false;
             Toast.makeText(this,"PiPを利用できないため、バックグラウンドで再生を続けます。",Toast.LENGTH_LONG).show();
         }
         showLibrary();finish();
     }
     private void showLibrary(){startActivity(new Intent(this,com.suiren.mirea.MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_REORDER_TO_FRONT));}
-    @Override public void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);preserve=false;backgroundRequested=false;chrome.interact(SystemClock.elapsedRealtime());render();}
+    @Override public void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);preserve=false;backgroundRequested=false;libraryAfterPip=false;pipTransitioning=false;handler.removeCallbacks(pipTimeout);chrome.interact(SystemClock.elapsedRealtime());render();}
     private void closePlayback(){preserve=false;stopService(new Intent(this,PlaybackService.class));finish();}
-    @Override public void onDestroy(){destroyed=true;handler.removeCallbacks(tick);for(Dialog d:new ArrayList<>(dialogs))d.dismiss();try{unregisterReceiver(changed);}catch(IllegalArgumentException ignored){}/* The foreground service owns playback. Activity recreation, Home and PiP
+    @Override public void onDestroy(){destroyed=true;handler.removeCallbacks(tick);handler.removeCallbacks(pipTimeout);for(Dialog d:new ArrayList<>(dialogs))d.dismiss();try{unregisterReceiver(changed);}catch(IllegalArgumentException ignored){}/* The foreground service owns playback. Activity recreation, Home and PiP
         must never tear down its decoder or checkpoint queue. A dismissed PiP
         pauses; the explicit close action is the only Activity service stop. */if(isFinishing()&&!preserve&&service()!=null)service().pause();super.onDestroy();}
     private void attach(Surface surface){PlaybackService s=service();if(s==null)return;if(surfaceService!=null&&boundSurface!=null&&surfaceService!=s)surfaceService.clearSurface(boundSurface);surfaceService=s;boundSurface=surface;s.setSurface(surface);}

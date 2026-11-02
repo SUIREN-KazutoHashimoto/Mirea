@@ -23,6 +23,10 @@ public final class UpdateEngine {
     public static final String EVENT="com.suiren.mirea.UPDATE_STATE";
     private static final int JOB_ID=1296650837;
     private static final AtomicBoolean RUNNING=new AtomicBoolean(false);
+    // Jobs and the foreground plugin use separate engines but share preferences.
+    // A server switch must invalidate both an in-flight response and a pending install.
+    private static final Object SOURCE_LOCK=new Object();
+    private final ThreadLocal<Long> operationGeneration=new ThreadLocal<>();
     private static volatile boolean busy=false,foreground=false,playbackBusy=false,transferBusy=false;
     private final Context ctx;
     private final SharedPreferences prefs;
@@ -36,11 +40,14 @@ public final class UpdateEngine {
     public static boolean isBusy(){return busy||playbackBusy||transferBusy;}
     public void installNow() throws Exception {
         if(!RUNNING.compareAndSet(false,true))throw new Exception("更新の処理中です。");
-        try{maybeInstall(true);}catch(Exception error){state("error",safeMessage(error));throw error;}finally{RUNNING.set(false);changed();}
+        beginOperation();
+        try{maybeInstall(true);}catch(Exception error){state("error",safeMessage(error));throw error;}finally{operationGeneration.remove();RUNNING.set(false);changed();}
     }
     private File part(){return new File(folder,"update.apk.part");}
     private File apk(){return new File(folder,"update.apk");}
-    private void state(String value,String message){prefs.edit().putString("state",value).putString("message",message).apply();changed();}
+    private void beginOperation(){synchronized(SOURCE_LOCK){operationGeneration.set(prefs.getLong("sourceGeneration",0));}}
+    private boolean currentOperation(){Long generation=operationGeneration.get();return generation==null||generation==prefs.getLong("sourceGeneration",0);}
+    private void state(String value,String message){synchronized(SOURCE_LOCK){if(!currentOperation())return;prefs.edit().putString("state",value).putString("message",message).apply();}changed();}
     public void changed(){ctx.sendBroadcast(new Intent(EVENT).setPackage(ctx.getPackageName()));}
     public String publicKey() throws Exception {
         try(InputStream in=ctx.getAssets().open("update-signing-public.pem");ByteArrayOutputStream out=new ByteArrayOutputStream()){
@@ -52,10 +59,18 @@ public final class UpdateEngine {
     public boolean unmetered(){return prefs.getBoolean("unmetered",true);}
     public boolean networkAllowed(){ConnectivityManager cm=(ConnectivityManager)ctx.getSystemService(Context.CONNECTIVITY_SERVICE);return cm.getActiveNetwork()!=null&&(!unmetered()||!cm.isActiveNetworkMetered());}
     public String source(){return prefs.getString("source","");}
-    public synchronized void configure(String source,Boolean automatic,Boolean unmetered) throws Exception {
+    public void configure(String source,Boolean automatic,Boolean unmetered) throws Exception {
+        synchronized(SOURCE_LOCK){
         SharedPreferences.Editor edit=prefs.edit();
-        if(source!=null){URI uri=UpdateManifest.https(source);if(uri.getRawQuery()!=null||!(uri.getRawPath()==null||uri.getRawPath().isEmpty()||uri.getRawPath().equals("/")))throw new Exception("Server origin required");String value=source.replaceAll("/+$","");if(!value.equals(source()))edit.putString("source",value).putLong("lastCheckedAt",0);}
+        if(source!=null){URI uri=UpdateManifest.https(source);if(uri.getRawQuery()!=null||!(uri.getRawPath()==null||uri.getRawPath().isEmpty()||uri.getRawPath().equals("/")))throw new Exception("Server origin required");String value=source.replaceAll("/+$","");if(!value.equals(source())){
+            abandonPendingSession();
+            edit.putString("source",value).putLong("sourceGeneration",prefs.getLong("sourceGeneration",0)+1).putLong("lastCheckedAt",0)
+              .remove("manifest").remove("manifestSource").remove("downloadHash").putString("state","idle").putString("message","");
+            // Do not remove a partial APK while the old worker still has it open.
+            // The next verified manifest replaces it through the existing hash check.
+        }}
         if(automatic!=null)edit.putBoolean("automatic",automatic);if(unmetered!=null)edit.putBoolean("unmetered",unmetered);edit.commit();schedule();changed();
+        }
     }
     public void schedule(){
         JobScheduler scheduler=(JobScheduler)ctx.getSystemService(Context.JOB_SCHEDULER_SERVICE);
@@ -91,9 +106,10 @@ public final class UpdateEngine {
         try{UpdateManifest m=cached();if(m!=null&&m.versionCode>installed.getLongVersionCode())s.put("nextVersion",m.versionName).put("nextCode",m.versionCode).put("total",m.size);}catch(Exception ignored){}
         return s;
     }
-    public UpdateManifest cached() throws Exception {String value=prefs.getString("manifest","");return value.isEmpty()?null:UpdateManifest.verify(value,publicKey(),ctx.getPackageName(),System.currentTimeMillis());}
+    public UpdateManifest cached() throws Exception {synchronized(SOURCE_LOCK){checkInterrupted();String value=prefs.getString("manifest","");return value.isEmpty()||!source().equals(prefs.getString("manifestSource",""))?null:UpdateManifest.verify(value,publicKey(),ctx.getPackageName(),System.currentTimeMillis());}}
     public void run(boolean userInitiated,boolean download) throws Exception {
         if(!RUNNING.compareAndSet(false,true))return;
+        beginOperation();
         try{
             if(source().isEmpty()||!userInitiated&&!automatic())return;
             if(!userInitiated&&isBusy())throw new Pause("閲覧・転送中のため更新を保留しています。");
@@ -101,7 +117,10 @@ public final class UpdateEngine {
             if(!userInitiated&&System.currentTimeMillis()-prefs.getLong("lastCheckedAt",0)<60*60*1000L){if(download&&old!=null&&old.versionCode>installed().getLongVersionCode())download(old,false);return;}
             checkInterrupted();state("checking","更新を確認しています…");
             String raw=readManifest(source()+"/api/v1/app-updates/android/manifest");
+            checkInterrupted();
             UpdateManifest m=UpdateManifest.verify(raw,publicKey(),ctx.getPackageName(),System.currentTimeMillis());
+            synchronized(SOURCE_LOCK){
+            checkInterrupted();
             long highest=prefs.getLong("highestVersion",0);
             if(m.versionCode<highest)throw new Exception("以前に確認した版より古い更新情報です。");
             if(m.versionCode==highest&&!prefs.getString("highestHash",m.sha256).equals(m.sha256))throw new Exception("同じ版番号のAPKが変更されています。");
@@ -112,13 +131,15 @@ public final class UpdateEngine {
             prefs.edit().putLong("lastCheckedAt",System.currentTimeMillis()).putLong("highestVersion",m.versionCode).putString("highestHash",m.sha256).commit();
             if(m.versionCode<=installed.getLongVersionCode()){abandonPendingSession();delete(part());delete(apk());prefs.edit().remove("manifest").remove("downloadHash").commit();state("current","最新版を利用しています。");return;}
             if(!prefs.getString("downloadHash","").equals(m.sha256)){abandonPendingSession();delete(part());delete(apk());}
-            prefs.edit().putString("manifest",raw).putString("downloadHash",m.sha256).commit();state("available",m.versionName+" を利用できます。");if(download)download(m,userInitiated);
+            prefs.edit().putString("manifest",raw).putString("manifestSource",source()).putString("downloadHash",m.sha256).commit();state("available",m.versionName+" を利用できます。");
+            }
+            if(download)download(m,userInitiated);
         }catch(Pause paused){state("deferred",paused.getMessage());}
         catch(Exception error){state("error",safeMessage(error));throw error;}
-        finally{RUNNING.set(false);changed();}
+        finally{operationGeneration.remove();RUNNING.set(false);changed();}
     }
     private static String safeMessage(Exception error){String message=error.getMessage();if(message!=null&&message.matches("[\\p{IsHan}\\p{IsHiragana}\\p{IsKatakana}].*")&&!message.contains("http"))return message;return "更新を検証・取得できません。接続先、端末の日時、空き容量、更新の署名と有効期限を確認してください。";}
-    private void checkInterrupted() throws Exception {if(Thread.currentThread().isInterrupted())throw new InterruptedIOException("Update interrupted");}
+    private void checkInterrupted() throws Exception {if(Thread.currentThread().isInterrupted()||!currentOperation())throw new InterruptedIOException("Update interrupted");}
     private HttpsURLConnection connect(String address,long offset) throws Exception {
         for(int redirects=0;redirects<4;redirects++){
             URI uri=UpdateManifest.https(address);HttpsURLConnection c=(HttpsURLConnection)uri.toURL().openConnection();
@@ -138,6 +159,7 @@ public final class UpdateEngine {
         }finally{c.disconnect();}
     }
     private void download(UpdateManifest m,boolean userInitiated) throws Exception {
+        checkInterrupted();
         if(isBusy())throw new Pause("閲覧・転送が終わってから更新できます。");if(!networkAllowed())throw new Pause("Wi-Fi等の非従量制回線を待っています。");
         if(!folder.isDirectory()&&!folder.mkdirs())throw new IOException("Update folder unavailable");
         if(apk().isFile()){verifyApk(apk(),m);state("ready","更新を適用できます。");maybeInstall(false);return;}
@@ -155,7 +177,7 @@ public final class UpdateEngine {
                 }
             }finally{c.disconnect();}
         }
-        verifyApk(part(),m);if(!part().renameTo(apk()))throw new IOException("APK publication failed");state("ready","更新を適用できます。");maybeInstall(false);
+        verifyApk(part(),m);checkInterrupted();if(!part().renameTo(apk()))throw new IOException("APK publication failed");state("ready","更新を適用できます。");maybeInstall(false);
     }
     public static String hex(byte[] bytes){StringBuilder out=new StringBuilder();for(byte b:bytes)out.append(String.format(java.util.Locale.ROOT,"%02x",b&255));return out.toString();}
     private static String signer(PackageInfo info) throws Exception {if(info.signingInfo==null||info.signingInfo.getApkContentsSigners().length!=1)throw new Exception("Single APK signer required");return hex(MessageDigest.getInstance("SHA-256").digest(info.signingInfo.getApkContentsSigners()[0].toByteArray()));}
@@ -166,7 +188,8 @@ public final class UpdateEngine {
         PackageInfo incoming=ctx.getPackageManager().getPackageArchiveInfo(file.getAbsolutePath(),PackageManager.GET_SIGNING_CERTIFICATES),installed=installed();
         if(incoming==null||!ctx.getPackageName().equals(incoming.packageName)||incoming.getLongVersionCode()!=m.versionCode||incoming.getLongVersionCode()<=installed.getLongVersionCode()||!m.versionName.equals(incoming.versionName)||incoming.applicationInfo==null||incoming.applicationInfo.minSdkVersion!=m.minSdk||incoming.applicationInfo.minSdkVersion>Build.VERSION.SDK_INT||!signer(incoming).equals(m.signerSha256)||!signer(incoming).equals(signer(installed))){delete(file);throw new Exception("APK identity mismatch");}
     }
-    public synchronized void maybeInstall(boolean userInitiated) throws Exception {
+    private void maybeInstall(boolean userInitiated) throws Exception {
+        checkInterrupted();
         reconcileSession();
         if(isBusy()){state("deferred","閲覧・転送が終わってから更新できます。");return;}
         // Foreground users are never surprised by a process-replacing install.
@@ -175,14 +198,26 @@ public final class UpdateEngine {
         if(prefs.getInt("sessionId",-1)>=0){state("confirmation_required","Androidの更新確認を完了してください。");return;}
         UpdateManifest m=cached();if(m==null||!apk().isFile())throw new Exception("No verified update");verifyApk(apk(),m);
         PackageInstaller installer=ctx.getPackageManager().getPackageInstaller();PackageInstaller.SessionParams params=new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);params.setAppPackageName(ctx.getPackageName());params.setSize(m.size);
+        // Tell Android the true download origin. Do not impersonate an app store
+        // or suppress verification; the OS remains responsible for installation.
+        // Query parameters can contain temporary download credentials. The
+        // origin/path identifies the download without forwarding those tokens.
+        params.setOriginatingUri(Uri.parse(m.apkUrl).buildUpon().clearQuery().build());
+        params.setOriginatingUid(ctx.getApplicationInfo().uid);
+        // A self-updater is neither a store nor a file-manager installation of
+        // a user-selected file (automatic downloads need no file selection).
+        if(Build.VERSION.SDK_INT>=33)params.setPackageSource(PackageInstaller.PACKAGE_SOURCE_OTHER);
         if(Build.VERSION.SDK_INT>=31)params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
         int id=installer.createSession(params);String nonce=UUID.randomUUID().toString();
         try(PackageInstaller.Session session=installer.openSession(id)){
             try(InputStream in=new FileInputStream(apk());OutputStream out=session.openWrite("base.apk",0,m.size)){byte[] bytes=new byte[65536];int n;while((n=in.read(bytes))!=-1){checkInterrupted();out.write(bytes,0,n);}session.fsync(out);}
+            synchronized(SOURCE_LOCK){
+            checkInterrupted();
             if(isBusy()||!userInitiated&&(!automatic()||foreground))throw new Pause("閲覧・転送やアプリ操作が終わってから更新できます。");
             prefs.edit().putInt("sessionId",id).putString("nonce",nonce).remove("confirmation").commit();
             Intent callback=new Intent(ctx,UpdateInstallReceiver.class).setAction("com.suiren.mirea.UPDATE_INSTALL").setData(Uri.parse("mirea-update://"+nonce));
             int flags=PendingIntent.FLAG_UPDATE_CURRENT|(Build.VERSION.SDK_INT>=31?PendingIntent.FLAG_MUTABLE:0);state("installing","更新を適用しています…");session.commit(PendingIntent.getBroadcast(ctx,id,callback,flags).getIntentSender());
+            }
         }catch(Exception error){try{installer.abandonSession(id);}catch(Exception ignored){}prefs.edit().remove("sessionId").remove("nonce").commit();throw error;}
     }
     public Intent permissionIntent(){return new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,Uri.parse("package:"+ctx.getPackageName()));}
@@ -195,6 +230,7 @@ public final class UpdateEngine {
         if(resolved==null||(resolved.activityInfo.applicationInfo.flags&(ApplicationInfo.FLAG_SYSTEM|ApplicationInfo.FLAG_UPDATED_SYSTEM_APP))==0)throw new Exception("Invalid Android installer");return intent;
     }
     public void installResult(Intent intent){
+        synchronized(SOURCE_LOCK){
         String nonce=prefs.getString("nonce","");int id=prefs.getInt("sessionId",-1);
         if(id<0||intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID,-2)!=id||intent.getData()==null||!nonce.equals(intent.getData().getHost()))return;
         int result=intent.getIntExtra(PackageInstaller.EXTRA_STATUS,PackageInstaller.STATUS_FAILURE);
@@ -202,8 +238,25 @@ public final class UpdateEngine {
             if(confirm!=null){prefs.edit().putString("confirmation",confirm.toUri(0)).commit();state("confirmation_required","Androidの確認ボタンから更新を完了してください。");}
         }else{
             prefs.edit().remove("sessionId").remove("nonce").remove("confirmation").commit();
-            if(result==PackageInstaller.STATUS_SUCCESS){delete(apk());delete(part());state("current","更新が完了しました。");}else state("error","Androidが更新を完了できませんでした。元のアプリは削除していません。再試行できます。");
+            if(result==PackageInstaller.STATUS_SUCCESS){delete(apk());delete(part());state("current","更新が完了しました。");}else state("error",installFailureMessage(result));
         }
+        }
+    }
+    static String installFailureMessage(int result){
+        String reason;
+        switch(result){
+            case PackageInstaller.STATUS_FAILURE_BLOCKED:reason="Androidのポリシーまたは検証により更新が拒否されました。Android側の案内を確認してください。";break;
+            case PackageInstaller.STATUS_FAILURE_ABORTED:reason="更新がキャンセルされたか、Androidがインストールを中止しました。";break;
+            case PackageInstaller.STATUS_FAILURE_INVALID:reason="AndroidによるAPKの検証に失敗しました。更新を確認し直してください。";break;
+            case PackageInstaller.STATUS_FAILURE_CONFLICT:reason="インストール済みアプリとの競合により更新できませんでした。";break;
+            case PackageInstaller.STATUS_FAILURE_STORAGE:reason="Androidが更新用の空き容量を確保できませんでした。端末の空き容量を確認してください。";break;
+            case PackageInstaller.STATUS_FAILURE_INCOMPATIBLE:reason="この更新は端末のAndroid環境に対応していません。";break;
+            case PackageInstaller.STATUS_FAILURE_TIMEOUT:reason="Androidのインストール処理がタイムアウトしました。時間をおいて再試行してください。";break;
+            default:reason="Androidが更新を完了できませんでした。";
+        }
+        // Raw EXTRA_STATUS_MESSAGE can include local paths or package details.
+        // The documented numeric result is sufficient for safe support triage.
+        return reason+" 元のアプリは削除していません。（Androidコード: "+result+"）";
     }
     private static void delete(File file){if(file.exists()&&!file.delete())throw new IllegalStateException("Cannot remove private update file");}
 }

@@ -48,7 +48,23 @@ test('only new authenticated leases renew expiry; revoke/logout remove authoriza
 
 test('offline shell is an exact static build allowlist, never API/media/arbitrary origin or traversal',async()=>{
   const {validShellManifest}=await import('../web/src/offline-shell.js');
-  const base={version:'a'.repeat(64),files:['/index.html','/favicon.svg','/download-sw.js','/assets/index-xyz.js','/pdf-assets/cmaps/Adobe-Japan1.bcmap']};
+  const base={version:'a'.repeat(64),files:['/index.html','/favicon.svg','/download-sw.js','/assets/index-xyz.js','/pdf-assets/cmaps/Adobe-Japan1.bcmap','/third-party-notices.html','/third-party-notices.json','/third-party-notices.txt']};
   assert.equal(validShellManifest(base),true);
-  for(const path of ['/api/v1/auth/remember','/api/v1/items/id/content','/uploads/video.mp4','//evil.test/index.html','/assets/../secret','/assets/code.js?token=secret','https://evil.test/asset.js'])assert.equal(validShellManifest({...base,files:[path]}),false,path);
+  for(const path of ['/api/v1/auth/remember','/api/v1/items/id/content','/uploads/video.mp4','//evil.test/index.html','/assets/../secret','/assets/code.js?token=secret','https://evil.test/asset.js','/third-party-notices.js','/third-party-notices-private.txt','/third-party-notices.json?user=secret','/third-party-notices/../secret'])assert.equal(validShellManifest({...base,files:[path]}),false,path);
+});
+
+test('offline third-party notices keep their own document instead of returning the application shell',async()=>{
+  const {readFile}=await import('node:fs/promises'),vm=await import('node:vm'),{shellResponse}=await import('../web/src/offline-shell.js');
+  const source=(await readFile(new URL('../web/src/download-sw.js',import.meta.url),'utf8')).replace(/^import .*;\r?\n/gm,'');
+  const handlers=new Map(),lookups=[];
+  vm.runInNewContext(source,{URL,Set,MessageChannel,self:{location:{origin:'https://mirea.test'},addEventListener:(name,fn)=>handlers.set(name,fn)},DOWNLOAD_PATH:'/__mirea_download__/',shellResponse:(request,options)=>shellResponse(request,{...options,online:false,network:()=>{throw Error('Unexpected network access');}}),caches:{keys:async()=>['mirea-shell-v1-fixture'],open:async()=>({match:async path=>{lookups.push(path);return new Response(path==='/index.html'?'app':'license '+path);}})}});
+  for(const mode of ['navigate','same-origin'])for(const extension of ['html','json','txt']){
+    const path='/third-party-notices.'+extension;let response;
+    handlers.get('fetch')({request:{url:'https://mirea.test'+path,method:'GET',mode},respondWith:value=>{response=value;}});
+    assert.equal(await(await response).text(),'license '+path);
+    assert.equal(lookups.at(-1),path);
+  }
+  let claimed=false;
+  handlers.get('fetch')({request:{url:'https://mirea.test/third-party-notices-private.txt',method:'GET',mode:'same-origin'},respondWith:()=>{claimed=true;}});
+  assert.equal(claimed,false,'unlisted documents do not enter the cache path');
 });

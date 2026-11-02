@@ -30,12 +30,13 @@ public final class PlaybackSource extends MediaDataSource {
         size=manifest.getJSONArray("files").getJSONObject(0).getLong("size");blockSize=1048576;expiresAt=grant.getLong("expiresAt");key=Base64.getDecoder().decode(grant.getString("key"));
         if(key.length!=32||expiresAt<=System.currentTimeMillis())throw new IOException("Invalid playback grant");
         deadline=android.os.SystemClock.elapsedRealtime()+expiresAt-System.currentTimeMillis();
+        PlaybackCache.retain(folder);
     }
     public synchronized void renew(long expires){if(manifest!=null&&expires>System.currentTimeMillis()){expiresAt=expires;deadline=android.os.SystemClock.elapsedRealtime()+expires-System.currentTimeMillis();}}
     public static void validateManifest(JSONObject m)throws Exception{
         if(m.getInt("version")!=1||!"AES-256-GCM".equals(m.getString("algorithm"))||m.getInt("chunkSize")!=1048576||!PlaybackApi.uuid(m.getString("id"))||!PlaybackApi.uuid(m.getString("assetId"))||!Arrays.asList("video","audio").contains(m.getString("kind"))||m.getJSONArray("files").length()!=1)throw new IOException("Invalid encrypted media manifest");
         JSONObject f=m.getJSONArray("files").getJSONObject(0);long size=f.getLong("size");
-        if(f.getInt("index")!=0||size<1||size>8589934592L||f.getInt("chunks")!=(size+1048575)/1048576||!(m.getString("kind").equals("audio")?"audio/mp4".equals(f.getString("mime")):Arrays.asList("video/mp4","video/webm").contains(f.getString("mime"))))throw new IOException("Invalid encrypted media file");
+        if(f.getInt("index")!=0||size<1||size>PlaybackLimits.MAX_ASSET_BYTES||f.getInt("chunks")!=(size+1048575)/1048576||!(m.getString("kind").equals("audio")?"audio/mp4".equals(f.getString("mime")):Arrays.asList("video/mp4","video/webm").contains(f.getString("mime"))))throw new IOException("Invalid encrypted media file");
     }
     public static byte[] decrypt(byte[] key,String id,int part,int length,byte[] bytes)throws Exception{
         if(key.length!=32||bytes.length!=length+28)throw new IOException("Invalid encrypted chunk");
@@ -68,5 +69,5 @@ public final class PlaybackSource extends MediaDataSource {
         byte[] bytes=block(position/blockSize);int from=(int)(position%blockSize),n=(int)Math.min(Math.min(count,bytes.length-from),size-position);System.arraycopy(bytes,from,buffer,offset,n);return n;
     }
     @Override public long getSize(){return size;}
-    @Override public synchronized void close(){closed=true;if(key!=null){Arrays.fill(key,(byte)0);key=null;}for(byte[] bytes:blocks.values())Arrays.fill(bytes,(byte)0);blocks.clear();}
+    @Override public synchronized void close(){if(closed)return;closed=true;if(key!=null){Arrays.fill(key,(byte)0);key=null;}for(byte[] bytes:blocks.values())Arrays.fill(bytes,(byte)0);blocks.clear();if(folder!=null)PlaybackCache.release(folder);}
 }

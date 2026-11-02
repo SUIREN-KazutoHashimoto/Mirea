@@ -24,7 +24,7 @@ async function scenario({native=true,cached=true,online=true,status,bodyDelay=fa
   const exports={
     './error-diagnostics.js':{requestError,clearDiagnostics},
     './client-version.js':{default:clientVersion},'./version-compatibility.js':{compareVersions},
-    './native-transfers.js':{nativeTransfersAvailable:()=>native,nativeUpload:()=>{},configureNativeTransfers:()=>{},invalidateTransfers:()=>{}},
+    './native-transfers.js':{nativeTransfersAvailable:()=>native,nativeUpload:()=>{},configureNativeTransfers:()=>{},invalidateTransfers:async()=>{}},
     './download-core.js':{ciphertextHash:async()=> 'fixture-partition'},'./transfer-manager.js':{stopTransfers:()=>{},clearTransferRecords:()=>{}},
     './private-shelves.js':{clearShelfUnlocks:()=>{},shelfUnlockValue:()=>'',unlockRequiredShelf:async()=>{}},
     './native-player-bridge.js':{NativePlayer:{},nativePlayerAvailable:()=>false,invalidateNativePlayback:()=>{}},

@@ -69,7 +69,7 @@ test('atomic edits reject duplicates, other shelves, other series and stale upda
   }
   assert.equal((await c.save(series,[],c.owner,{title:'   '})).statusCode,422);
   assert.equal((await c.save(series,[],c.owner,{items:[{assetId:c.pdf,label:'x'.repeat(81)}]})).statusCode,400);
-  assert.equal((await c.save(series,[],c.owner,{items:Array.from({length:1001},()=>({assetId:c.pdf}))})).statusCode,400);
+  assert.equal((await c.save(series,[],c.owner,{items:Array.from({length:100001},()=>({assetId:c.pdf}))})).statusCode,400);
   const updated=(await c.save(series,[c.images,c.pdf],c.editor)).json().series;
   assert.equal((await c.save(series,[])).statusCode,409);
   assert.equal((await c.req('DELETE',`/series/${series.id}`,c.owner,{revision:series.revision})).statusCode,409);

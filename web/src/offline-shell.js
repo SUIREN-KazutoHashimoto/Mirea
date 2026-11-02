@@ -1,5 +1,5 @@
 export function validShellManifest(manifest){
-  return /^[0-9a-f]{64}$/.test(manifest?.version??'')&&Array.isArray(manifest.files)&&manifest.files.length>0&&manifest.files.length<=2000&&manifest.files.every(path=>typeof path==='string'&&/^\/(?:index\.html|favicon\.svg|manifest\.webmanifest|pwa\/(?:icon-(?:192|512)|maskable-512|apple-touch-icon)\.png|brand\/orbit-(?:mark|mark-inverse|icon)\.svg|download-sw\.js|assets\/[A-Za-z0-9_.-]+|pdf-assets\/[A-Za-z0-9_./-]+)$/.test(path)&&!path.includes('..'));
+  return /^[0-9a-f]{64}$/.test(manifest?.version??'')&&Array.isArray(manifest.files)&&manifest.files.length>0&&manifest.files.length<=2000&&manifest.files.every(path=>typeof path==='string'&&/^\/(?:index\.html|favicon\.svg|manifest\.webmanifest|third-party-notices\.(?:html|json|txt)|pwa\/(?:icon-(?:192|512)|maskable-512|apple-touch-icon)\.png|brand\/orbit-(?:mark|mark-inverse|icon)\.svg|download-sw\.js|assets\/[A-Za-z0-9_.-]+|pdf-assets\/[A-Za-z0-9_./-]+)$/.test(path)&&!path.includes('..'));
 }
 
 
@@ -11,6 +11,7 @@ export async function shellResponse(request,{navigate,findCached,network=fetch,o
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),ms);
   try{
     const response=await network(request,{signal:controller.signal});
+    if(cached&&response.status>=500){await response.body?.cancel().catch(()=>{});return cached;}
     const bytes=await response.arrayBuffer();controller.signal.throwIfAborted();
     return new Response(bytes,{status:response.status,statusText:response.statusText,headers:response.headers});
   }catch{return cached??new Response('オフライン用画面がありません。オンラインで一度ダウンロードしてください。',{status:503});}

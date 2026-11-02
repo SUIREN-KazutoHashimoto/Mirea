@@ -1,9 +1,10 @@
 import { createSeriesContinuation,bindContinuationVideo } from './series-continuation.js';
 import {seriesPathLabel,isInSeries} from './series-tree.js';
+import {hasDialogChanges} from './unsaved-changes.js';
 
 export function appendSeriesAssets(entries,ids,assets){
-  const added=[...new Set(ids)].filter(id=>assets.has(id)&&!entries.some(e=>e.assetId===id));
-  if(entries.length+added.length>1000)throw Error('1シリーズに追加できるアセットは1,000件までです。');
+  const existing=new Set(entries.map(entry=>entry.assetId)),added=[...new Set(ids)].filter(id=>assets.has(id)&&!existing.has(id));
+  if(entries.length+added.length>100000)throw Error('1シリーズに追加できるアセットは100,000件までです。');
   return [...entries,...added.map(assetId=>({assetId,label:''}))];
 }
 // Ordering/ACL stay server-authoritative; unsaved checkbox changes are local.
@@ -13,13 +14,16 @@ export function openSeriesManager({dialog,api,esc,shelves,initialShelfId,initial
   let shelfId=initialShelfId??editable[0].id,generation=0,creation;
   const alive=()=>node.isConnected&&isCurrent(),error=err=>{if(!alive())return;const box=body.querySelector('.form-error');if(box){box.textContent=err.message;box.hidden=false;}else body.textContent=err.message;};
   const options=(rows,selected='',exclude)=>'<option value="">なし（最上位）</option>'+rows.filter(s=>!exclude||!isInSeries(rows,s.id,exclude)).map(s=>`<option value="${esc(s.id)}" ${s.id===selected?'selected':''}>${esc(seriesPathLabel(rows,s.id))}</option>`).join('');
+  const discard=()=>!hasDialogChanges(node)||confirm('変更内容を保存せずに移動しますか？');
   node.addEventListener('close',()=>{if(isCurrent())onChanged();},{once:true});
   async function list(){
+    node.hasUnsavedChanges=()=>false;
     const revision=++generation;body.innerHTML='<p role="status">シリーズを読み込んでいます…</p>';
     try{
       const rows=(await api(`/shelves/${shelfId}/series`)).series;if(!alive()||revision!==generation)return;
       body.innerHTML=`<label>本棚<select class="series-shelf">${editable.map(s=>`<option value="${s.id}" ${s.id===shelfId?'selected':''}>${esc(s.name)}</option>`).join('')}</select></label><p class="muted">同じ本棚の中でシリーズを入れ子にできます。作品は1つのシリーズに所属します。</p><form class="series-create"><label>新しいシリーズ名<input name="title" maxlength="200" required></label><label>親シリーズ<select name="parentId">${options(rows,initialParentId)}</select></label><button class="button primary" type="submit">シリーズを作成</button></form><p class="form-error" role="alert" hidden></p>`;
-      body.querySelector('.series-shelf').onchange=e=>{shelfId=e.target.value;list();};
+      body.querySelector('form').setAttribute('data-unsaved','');
+      body.querySelector('.series-shelf').onchange=e=>{if(!discard()){e.target.value=shelfId;return;}shelfId=e.target.value;list();};
       body.querySelector('form').onsubmit=async e=>{
         e.preventDefault();const form=e.currentTarget,button=form.querySelector('button');button.disabled=true;
         const values={title:form.elements.title.value.trim(),parentId:form.elements.parentId.value||null},key=JSON.stringify([shelfId,values]);
@@ -37,32 +41,37 @@ export function openSeriesManager({dialog,api,esc,shelves,initialShelfId,initial
       const assets=new Map(library.items.map(i=>[i.id,i])),rows=library.series;let orderMode=detail.series.orderMode??'name';const names=new Intl.Collator('ja',{numeric:true,sensitivity:'variant'});
       const sortNames=()=>entries.sort((a,b)=>names.compare(assets.get(a.assetId).title,assets.get(b.assetId).title)||a.assetId.localeCompare(b.assetId));
       const children=rows.filter(s=>s.id!==id&&(!s.parentId||s.parentId===id)&&!isInSeries(rows,id,s.id));
-      body.innerHTML=`<button class="text-button series-back" type="button">← シリーズを追加</button><form class="series-edit"><fieldset><label>シリーズ名<input name="title" maxlength="200" required value="${esc(detail.series.title)}"></label><label>説明<textarea name="description" maxlength="2000" rows="2">${esc(detail.series.description)}</textarea></label><label>親シリーズ<select name="parentId">${options(rows,detail.series.parentId,id)}</select></label><details class="series-child-picker" open><summary>子シリーズを追加・解除</summary><p class="muted">チェックしたシリーズを中に入れます。解除してもシリーズや作品は削除されません。</p>${children.map(s=>`<label class="series-child-choice"><input type="checkbox" data-child-series="${esc(s.id)}" ${s.parentId===id?'checked':''}>${esc(s.title)}</label>`).join('')||'<p class="muted">追加できるシリーズはありません。先にシリーズを作成してください。</p>'}</details><p class="muted">以下はこのシリーズに直接所属する作品です。別のシリーズの作品は保存時にここへ移動します。上から再生／閲覧する順で、子シリーズの作品とは別に管理します。最大1,000件。</p><label>作品の並び順<select class="series-order-mode"><option value="name">名前の昇順（追加・名前変更時も自動）</option><option value="manual">手動で指定</option></select></label><div class="series-order-tools"><button type="button" class="button secondary series-sort-name">名前の昇順にまとめて並べる</button></div><ol class="series-order"></ol><div class="series-add"><label>追加するアセット（複数選択）<select class="series-candidate" multiple size="6" aria-label="追加するアセット（複数選択）"></select></label><div><button class="text-button select-all-assets" type="button">すべて選択</button><button class="button secondary" type="button" id="series-add">選択した作品をまとめて追加</button></div></div><p class="form-error" role="alert" hidden></p><div class="modal-actions"><button class="text-button series-delete" type="button">シリーズを削除</button><button class="button primary" type="submit">シリーズを保存</button></div><button class="text-button series-reload" type="button">保存せず最新の内容を読み直す</button></fieldset></form>`;
+      body.innerHTML=`<button class="text-button series-back" type="button">← シリーズを追加</button><form class="series-edit"><fieldset><label>シリーズ名<input name="title" maxlength="200" required value="${esc(detail.series.title)}"></label><label>説明<textarea name="description" maxlength="2000" rows="2">${esc(detail.series.description)}</textarea></label><label>親シリーズ<select name="parentId">${options(rows,detail.series.parentId,id)}</select></label><details class="series-child-picker" open><summary>子シリーズを追加・解除</summary><p class="muted">チェックしたシリーズを中に入れます。解除してもシリーズや作品は削除されません。</p>${children.map(s=>`<label class="series-child-choice"><input type="checkbox" data-child-series="${esc(s.id)}" ${s.parentId===id?'checked':''}>${esc(s.title)}</label>`).join('')||'<p class="muted">追加できるシリーズはありません。先にシリーズを作成してください。</p>'}</details><p class="muted">以下はこのシリーズに直接所属する作品です。別のシリーズの作品は保存時にここへ移動します。上から再生／閲覧する順で、子シリーズの作品とは別に管理します。最大100,000件。一度のファイルアップロードは1,000件までです。</p><label>作品の並び順<select class="series-order-mode"><option value="name">名前の昇順（追加・名前変更時も自動）</option><option value="manual">手動で指定</option></select></label><div class="series-order-tools"><button type="button" class="button secondary series-sort-name">名前の昇順にまとめて並べる</button></div><ol class="series-order"></ol><div class="series-add"><label>追加するアセット（複数選択）<select class="series-candidate" multiple size="6" aria-label="追加するアセット（複数選択）"></select></label><div><button class="text-button select-all-assets" type="button">すべて選択</button><button class="button secondary" type="button" id="series-add">選択した作品をまとめて追加</button></div></div><p class="form-error" role="alert" hidden></p><div class="modal-actions"><button class="text-button series-delete" type="button">シリーズを削除</button><button class="button primary" type="submit">シリーズを保存</button></div><button class="text-button series-reload" type="button">保存せず最新の内容を読み直す</button></fieldset></form>`;
       const form=body.querySelector('form'),order=body.querySelector('.series-order'),candidate=body.querySelector('.series-candidate');
+      form.setAttribute('data-unsaved','');
+      const originalEntries=JSON.stringify(entries),originalMode=orderMode;node.hasUnsavedChanges=()=>JSON.stringify(entries)!==originalEntries||orderMode!==originalMode;
+      let orderLimit=100,candidateLimit=200,matchingCandidates=[];
+      const orderMore=document.createElement('button');orderMore.type='button';orderMore.className='button secondary series-order-more';orderMore.textContent='次の100件を表示';order.after(orderMore);orderMore.onclick=()=>{orderLimit+=100;renderOrder();};
+      const candidateMore=document.createElement('button');candidateMore.type='button';candidateMore.className='text-button series-candidate-more';candidateMore.textContent='次の200件を表示';candidate.after(candidateMore);candidateMore.onclick=()=>{rememberCandidates();candidateLimit+=200;renderCandidates();};
       const chosenAssets=new Set(),searchLabel=document.createElement('label'),assetSearch=document.createElement('input'),candidateCount=document.createElement('p');
       searchLabel.textContent='追加する作品を検索';assetSearch.type='search';assetSearch.className='series-candidate-search';assetSearch.placeholder='タイトル・所属シリーズで検索';assetSearch.setAttribute('aria-label','追加するアセットを検索');searchLabel.append(assetSearch);candidate.parentElement.before(searchLabel);candidateCount.className='muted series-candidate-count';candidateCount.setAttribute('role','status');candidate.after(candidateCount);
       const rememberCandidates=()=>{for(const option of candidate.options)if(option.selected)chosenAssets.add(option.value);else chosenAssets.delete(option.value);};
       function renderCandidates(){
         const included=new Set(entries.map(e=>e.assetId)),query=assetSearch.value.normalize('NFKC').toLocaleLowerCase();for(const id of chosenAssets)if(included.has(id))chosenAssets.delete(id);
         const available=library.items.filter(item=>!item.pending&&!included.has(item.id)),matching=available.filter(item=>(item.title+' '+(item.series?.title??'')).normalize('NFKC').toLocaleLowerCase().includes(query)).sort((a,b)=>names.compare(a.title,b.title));
-        candidate.innerHTML=matching.slice(0,200).map(item=>`<option value="${item.id}" ${chosenAssets.has(item.id)?'selected':''}>${esc(item.title)}${item.series&&item.series.id!==id?' 【'+esc(item.series.title)+'から移動】':''} (${item.kind==='video'?'動画':item.kind==='audio'?'音声':'本'})</option>`).join('');
-        candidateCount.textContent=`${matching.length}件が一致 · 選択 ${chosenAssets.size}件${matching.length>200?'（先頭200件を表示。検索で絞り込めます）':''}`;body.querySelector('#series-add').disabled=!chosenAssets.size||entries.length>=1000;
+        matchingCandidates=matching;candidate.innerHTML=matching.slice(0,candidateLimit).map(item=>`<option value="${item.id}" ${chosenAssets.has(item.id)?'selected':''}>${esc(item.title)}${item.series&&item.series.id!==id?' 【'+esc(seriesPathLabel(rows,item.series.id))+'から移動】':''} (${item.kind==='video'?'動画':item.kind==='audio'?'音声':'本'})</option>`).join('');
+        candidateMore.hidden=matching.length<=candidateLimit;candidateCount.textContent=`${Math.min(matching.length,candidateLimit)} / ${matching.length}件を表示 · 選択 ${chosenAssets.size}件`;body.querySelector('#series-add').disabled=!chosenAssets.size||entries.length>=100000;body.querySelector('.select-all-assets').textContent=`検索結果をすべて選択（${matching.length}件）`;
       }
-      candidate.onchange=()=>{rememberCandidates();renderCandidates();};assetSearch.oninput=()=>{rememberCandidates();renderCandidates();};
+      candidate.onchange=()=>{rememberCandidates();renderCandidates();};assetSearch.oninput=()=>{rememberCandidates();candidateLimit=200;renderCandidates();};
       assetSearch.onkeydown=event=>{if(event.key==='Enter')event.preventDefault();};
       const mode=body.querySelector('.series-order-mode');mode.value=orderMode;mode.onchange=()=>{orderMode=mode.value;renderOrder();};body.querySelector('.series-sort-name').onclick=()=>{orderMode='name';mode.value=orderMode;renderOrder();};
       function renderOrder(){
         if(orderMode==='name')sortNames();
-        order.innerHTML=entries.map((entry,index)=>`<li><span class="series-entry-title"><small>${index+1}番目</small>${esc(assets.get(entry.assetId).title)}</span><input data-label="${index}" aria-label="${index+1}番目の巻・話ラベル" maxlength="80" placeholder="例：第1巻" value="${esc(entry.label)}"><div class="series-order-actions"><button type="button" class="icon-button" data-up="${index}" aria-label="${index+1}番目を前へ" ${index===0?'disabled':''}>↑</button><button type="button" class="icon-button" data-down="${index}" aria-label="${index+1}番目を後ろへ" ${index===entries.length-1?'disabled':''}>↓</button><button type="button" class="text-button" data-remove="${index}" aria-label="${index+1}番目をシリーズから外す">外す</button></div></li>`).join('');
+        orderMore.hidden=entries.length<=orderLimit;order.innerHTML=entries.slice(0,orderLimit).map((entry,index)=>`<li><span class="series-entry-title"><small>${index+1}番目</small>${esc(assets.get(entry.assetId).title)}</span><input data-label="${index}" aria-label="${index+1}番目の巻・話ラベル" maxlength="80" placeholder="例：第1巻" value="${esc(entry.label)}"><div class="series-order-actions"><button type="button" class="icon-button" data-up="${index}" aria-label="${index+1}番目を前へ" ${index===0?'disabled':''}>↑</button><button type="button" class="icon-button" data-down="${index}" aria-label="${index+1}番目を後ろへ" ${index===entries.length-1?'disabled':''}>↓</button><button type="button" class="text-button" data-remove="${index}" aria-label="${index+1}番目をシリーズから外す">外す</button></div></li>`).join('');
         order.querySelectorAll('[data-label]').forEach(input=>input.oninput=()=>entries[Number(input.dataset.label)].label=input.value);
         order.querySelectorAll('[data-up],[data-down]').forEach(button=>button.onclick=()=>{orderMode='manual';mode.value=orderMode;const index=Number(button.dataset.up??button.dataset.down),target=index+(button.dataset.up===undefined?1:-1);[entries[index],entries[target]]=[entries[target],entries[index]];renderOrder();});
         order.querySelectorAll('[data-remove]').forEach(button=>button.onclick=()=>{entries.splice(Number(button.dataset.remove),1);renderOrder();});
         renderCandidates();
       }
       renderOrder();
-      body.querySelector('.select-all-assets').onclick=()=>{for(const option of candidate.options){option.selected=true;chosenAssets.add(option.value);}renderCandidates();};
+      body.querySelector('.select-all-assets').onclick=()=>{for(const item of matchingCandidates)chosenAssets.add(item.id);renderCandidates();};
       body.querySelector('#series-add').onclick=()=>{try{rememberCandidates();entries=appendSeriesAssets(entries,[...chosenAssets],assets);chosenAssets.clear();renderOrder();}catch(err){error(err);}};
-      body.querySelector('.series-back').onclick=list;body.querySelector('.series-reload').onclick=()=>edit(id);
+      body.querySelector('.series-back').onclick=()=>{if(discard())list();};body.querySelector('.series-reload').onclick=()=>{if(discard())edit(id);};
       form.onsubmit=async e=>{
         e.preventDefault();const fieldset=form.querySelector('fieldset');fieldset.disabled=true;
         try{await api(`/series/${id}`,{method:'PUT',body:{revision:detail.series.revision,title:form.elements.title.value.trim(),description:form.elements.description.value.trim(),parentId:form.elements.parentId.value||null,children:[...body.querySelectorAll('[data-child-series]')].filter(e=>e.checked).map(e=>e.dataset.childSeries),items:entries,orderMode,moveAssets:true}});if(alive())node.close();}
@@ -93,7 +102,7 @@ export function mountSeriesNavigation({node,body,meta,item,api,esc,open,isCurren
     move:async(target,options,allowed)=>{
       await beforeMove();
       if(!active() || !allowed())return false;
-      return open(target,{...options,playbackOrder:order,background:options.autoplay&&Boolean(node.isMinimized),reuseScreen:node});
+      return open(target,{...options,playbackOrder:order,background:options.autoplay&&Boolean(node.isMinimized),reuseScreen:node,canOpen:allowed,commitOpen:allowed.commit});
     }
   });
   function render(state=core.state){

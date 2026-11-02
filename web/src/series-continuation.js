@@ -30,8 +30,13 @@ export function createSeriesContinuation({assetId,loadContext,move,isActive=()=>
       if(!target || target.id===assetId&&!(order&&continuous&&order.modes.repeat==='series')){message=targetId?'選択したアセットはシリーズから外されました。':'シリーズの端に到達しました。';return false;}
       if(target.offlineUnavailable){message='次の作品は未保存・期限切れのため、オフラインでは開けません。';return false;}
       // The viewer disposes old progress/analytics/media keys before opening the new asset.
-      let committed=false;const allowed=()=>{if(disposed||revision!==epoch||!isActive()||continuous&&!enabled)return false;if(planned&&!committed){if(!planned.commit())return false;committed=true;}return true;};
-      return (await move(target,{startAtBeginning:continuous,autoplay},allowed))!==false;
+      let committed=false;const allowed=()=>!disposed&&revision===epoch&&isActive()&&(!continuous||enabled);
+      allowed.commit=()=>{if(committed)return true;if(!allowed()||planned&&!planned.commit())return false;committed=true;return true;};
+      // A player track change always starts at zero. Direct library opens keep
+      // their bookmark, as do explicit book selections within a series.
+      const startAtBeginning=continuous||['audio','video'].includes(target.kind);
+      const result=await move(target,{startAtBeginning,autoplay},allowed);
+      return result!==false&&(committed||allowed.commit());
     }catch(error){if(!disposed && revision===epoch)message=error.message || '次のアセットを開けません。接続を確認してもう一度お試しください。';return false;}
     finally{busy=false;if(!disposed)emit();}
   }

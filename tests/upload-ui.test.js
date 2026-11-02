@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {parseFragment} from 'parse5';
 import {openUploadDialog} from '../web/src/upload-ui.js';
+import {clearTransferRecords,transferRows} from '../web/src/transfer-manager.js';
 // Minimal component DOM harness, not browser/file-picker automation. parse5
 // decodes the real rendered HTML; only selectors used by this component exist.
 class Element {
@@ -13,12 +14,12 @@ class Element {
  append(...elements){for(const element of elements)this.insertBefore(element,null);}
  after(element){const siblings=this.parent.children;if(element.parent){const old=element.parent.children.indexOf(element);if(old>=0)element.parent.children.splice(old,1);}const index=siblings.indexOf(this);element.parent=this.parent;siblings.splice(index+1,0,element);}
  before(element){const siblings=this.parent.children;const index=siblings.indexOf(this);element.parent=this.parent;siblings.splice(index,0,element);}
- get innerHTML(){return '';}set innerHTML(html){this.children=parseFragment(html).childNodes.map(n=>new Element(n,this));}
+ get innerHTML(){return '';}set innerHTML(html){for(const child of this.children)child.parent=null;this.children=parseFragment(html).childNodes.map(n=>new Element(n,this));}
  get textContent(){return this.text+this.children.map(n=>n.textContent).join('');}set textContent(value){this.text=String(value);this.children=[];}
  get value(){if(this.val!==undefined)return this.val;if(this.tag==='select')return this.querySelector('option[selected]')?.attrs.get('value')??this.querySelector('option')?.attrs.get('value')??'';return this.attrs.get('value')??'';}set value(v){this.val=v;}
  get elements(){return Object.fromEntries(this.querySelectorAll('[name]').map(el=>[el.attrs.get('name'),el]));}
  matches(selector){const tag=selector.match(/^[a-z]+/)?.[0],id=selector.match(/#([\w-]+)/)?.[1],classes=[...selector.matchAll(/\.([\w-]+)/g)].map(m=>m[1]),attrs=[...selector.matchAll(/\[([\w-]+)(?:="([^"]*)")?\]/g)];return (!tag||this.tag===tag)&&(!id||this.attrs.get('id')===id)&&classes.every(c=>(this.attrs.get('class')??'').split(' ').includes(c))&&attrs.every(([,key,value])=>this.attrs.has(key)&&(value===undefined||this.attrs.get(key)===value));}
- querySelectorAll(selector){const selectors=selector.split(',').map(s=>s.trim()),out=[];const visit=node=>{for(const child of node.children){if(selectors.some(s=>child.matches(s)))out.push(child);visit(child);}};visit(this);return out;}querySelector(s){return this.querySelectorAll(s)[0]??null;}
+ querySelectorAll(selector){const selectors=selector.split(',').map(s=>s.trim()),out=[];const matches=(node,selector)=>{const parts=selector.split(/\s+/);if(!node.matches(parts.pop()))return false;let parent=node.parent;while(parts.length){const part=parts.pop();while(parent&&!parent.matches(part))parent=parent.parent;if(!parent)return false;parent=parent.parent;}return true;};const visit=node=>{for(const child of node.children){if(selectors.some(s=>matches(child,s)))out.push(child);visit(child);}};visit(this);return out;}querySelector(s){return this.querySelectorAll(s)[0]??null;}
  setAttribute(name,value){this.attrs.set(name,String(value));}
  addEventListener(event,fn){const list=this.listeners.get(event)??[];list.push(fn);this.listeners.set(event,list);}close(){for(const fn of this.listeners.get('close')??[])fn();this.live=false;}
 }
@@ -76,4 +77,41 @@ test('late series lookup after changing bookshelf cannot replace newer options; 
  const first=deferred();const ui=mount({shelves:[{id:'a',name:'A'},{id:'b',name:'B'}],api:path=>path.includes('/a/')?first.promise:Promise.resolve({series:[{id:'b-series',title:'Only B'}]})});
  const form=ui.node.querySelector('form');form.elements.shelf.value='b';form.elements.shelf.onchange();await tick();first.resolve({series:[{id:'a-series',title:'Only A'}]});await tick();
  assert.equal(form.elements.seriesId.querySelectorAll('option').some(o=>o.value==='a-series'),false);assert.equal(form.elements.seriesId.querySelectorAll('option').some(o=>o.value==='b-series'),true);ui.node.close();
+});
+
+test('series preparation failure keeps the selection editable and creates no phantom transfer',async()=>{
+ clearTransferRecords();const sent=[];let reject=true;
+ const ui=mount({api:async(_path,options)=>{if(options?.method==='POST'){if(reject)throw Error('同じ名前のシリーズがあります。');return {series:{id:'new-series'}};}return {series:[]};},upload:(_s,files,title)=>{sent.push({file:files[0].name,title});return {promise:Promise.resolve()};}});
+ await ui.select([file('one.pdf')]);const form=ui.node.querySelector('form');form.elements.seriesId.value='new';form.elements.seriesId.onchange();form.elements.seriesTitle.value='Existing';await ui.submit();
+ assert.equal(form.elements.seriesTitle.disabled,false);assert.equal(form.elements.file.disabled,false);assert.equal(ui.node.querySelector('[data-entry-title]').value,'one');assert.equal(transferRows().length,0);assert.equal(ui.node.querySelector('[type="submit"]').textContent,'アップロードする');
+ reject=false;form.elements.seriesTitle.value='Corrected';await ui.submit();assert.deepEqual(sent,[{file:'one.pdf',title:'one'}]);assert.equal(ui.node.isConnected,false);clearTransferRecords();
+});
+
+test('adding another folder preserves title edits and excluded files and does not duplicate selected paths',async()=>{
+ const ui=mount(),folder=path=>{const value=file(path.split('/').at(-1));Object.defineProperty(value,'webkitRelativePath',{value:path});return value;},picker=ui.node.querySelector('form').elements.folder;
+ picker.files=[folder('A/one.pdf'),folder('A/two.pdf')];await picker.onchange();ui.node.querySelector('[data-remove-entry="0"]').onclick();const title=ui.node.querySelector('[data-entry-title="0"]');title.value='My custom title';title.oninput();
+ picker.files=[folder('B/three.pdf')];await picker.onchange();assert.deepEqual(ui.node.querySelectorAll('[data-entry-title]').map(el=>el.value),['My custom title','three']);assert.equal(ui.node.querySelectorAll('[data-remove-entry]').length,2);
+ picker.files=[folder('B/three.pdf')];await picker.onchange();assert.deepEqual(ui.node.querySelectorAll('[data-entry-title]').map(el=>el.value),['My custom title','three']);ui.node.close();
+});
+
+test('import review checks every candidate before sending and explicitly skips, renames or excludes conflicts',async()=>{
+  const requests=[],sent=[],messages=[];let previewCalls=0;
+  const ui=mount({config:{maxUploadBytes:1000,maxBookPages:500,maxImageBytes:1000,uploadPreview:true},toast:message=>messages.push(message),api:async(path,options)=>{
+    requests.push({path,options});if(path==='/transfers/upload-preview'){previewCalls++;return {assets:options.body.assets.map((asset,index)=>({...asset,conflict:index<3,reason:index<3?'asset':null,suggestedTitle:asset.title+' (2)'}))};}return {series:[]};
+  },upload:(_s,files,title)=>{sent.push({name:files[0].name,title});return {promise:Promise.resolve()};}});
+  await ui.select(['one.pdf','two.pdf','three.pdf','four.pdf'].map(file));await ui.submit();assert.equal(sent.length,0);assert.equal(previewCalls,1);assert.equal(requests.filter(row=>row.options?.method==='POST').length,1);assert.equal(ui.node.querySelectorAll('[data-review-key]').length,4);
+  let options=ui.node.querySelectorAll('[data-review-key]');options[1].value='rename';options[1].onchange();options=ui.node.querySelectorAll('[data-review-key]');options[2].value='remove';options[2].onchange();
+  assert.match(ui.node.querySelector('.upload-review-total').textContent,/追加 2件.*スキップ 1件.*除外 1件/);await ui.submit();assert.deepEqual(sent,[{name:'two.pdf',title:'two (2)'},{name:'four.pdf',title:'four'}]);assert.equal(previewCalls,1);assert(messages.some(message=>/スキップ 1件.*除外 1件/.test(message)));
+});
+
+test('import review refreshes after title edits and preflight errors do not freeze choices or register transfers',async()=>{
+  clearTransferRecords();let reject=true,previews=0,sent=0;
+  const ui=mount({config:{maxUploadBytes:1000,maxBookPages:500,maxImageBytes:1000,uploadPreview:true},api:async(path,options)=>{if(path==='/transfers/upload-preview'){previews++;if(reject)throw Error('接続できません。');return {assets:options.body.assets.map(asset=>({...asset,conflict:false,suggestedTitle:asset.title}))};}return {series:[]};},upload:()=>{sent++;return {promise:Promise.resolve()};}});
+  await ui.select([file('one.pdf')]);await ui.submit();assert.equal(ui.node.querySelector('form').elements.file.disabled,false);assert.equal(transferRows().length,0);assert.equal(sent,0);
+  reject=false;await ui.submit();assert.equal(previews,2);const title=ui.node.querySelector('[data-entry-title]');title.value='Edited';title.oninput();assert.equal(ui.node.querySelector('.upload-import-review').hidden,true);await ui.submit();assert.equal(previews,3);assert.equal(sent,0);await ui.submit();assert.equal(sent,1);clearTransferRecords();
+});
+
+test('skipping all existing folder assets creates no series or transfers',async()=>{
+  let mutations=0,sent=0;const ui=mount({config:{maxUploadBytes:1000,maxBookPages:500,maxImageBytes:1000,uploadPreview:true},api:async(path,options)=>{if(path==='/transfers/upload-preview')return {assets:options.body.assets.map(asset=>({...asset,conflict:true,reason:'asset',suggestedTitle:asset.title+' (2)'}))};if(options?.method)mutations++;return {series:[]};},upload:()=>{sent++;return {promise:Promise.resolve()};}});
+  const value=file('one.pdf');Object.defineProperty(value,'webkitRelativePath',{value:'Books/one.pdf'});const picker=ui.node.querySelector('form').elements.folder;picker.files=[value];await picker.onchange();await ui.submit();await ui.submit();assert.equal(mutations,0);assert.equal(sent,0);assert.equal(ui.node.isConnected,false);
 });

@@ -1,42 +1,31 @@
-# 自前サーバー（直接起動／コンテナ）＋Cloudflare Tunnel／Proxy
+# Cloudflareを使う場合の接続設計
 
-2026-10-19時点の公式資料を確認しています。サーバーはNode.jsの直接起動とコンテナ起動のどちらでも使えます。SQLite・メディアは直接起動ならホストの保存先、コンテナなら永続ボリュームまたはホストディレクトリに保存します。WorkersやCloudflare Containersへの移植ではありません。Cloudflare側への実デプロイ・実回線試験はまだ行っていません。
+対象: Mirea `1.0.0`。Cloudflare側の設定は2026-11-02に公式資料を確認しました。契約・制限は導入時にも確認してください。
 
-## 先に決めること：動画の配信経路
+Mireaのサーバーを用意した後に読む任意の構成例です。Cloudflareを使うことは必須ではなく、通常のLAN利用は[HTTPSの手順](install/https.md)で構成できます。
 
-公開Tunnelのホスト名もCloudflareのProxyを通ります。Free / Pro / Businessで動画や大容量ファイルを通常のCDN経路から配信する場合、Cloudflareのサービス条件を満たす必要があります。キャッシュを無効化したり、ファイルを小さく分割したりしても、この条件の回避にはなりません。[Cloudflareの動画配信案内](https://developers.cloudflare.com/fundamentals/reference/policies-compliances/delivering-videos-with-cloudflare/)
+## 1. メディアの配信経路を決める
 
-選択肢は次の通りです。
+Cloudflare Tunnelの公開ホスト名はCloudflareのProxyを通ります。Free / Pro / Businessでは動画や大容量配信に利用条件があります。キャッシュ無効化や小さなリクエストへの分割だけで条件を回避できるわけではありません。私設ネットワーク経路は公開ホスト名とは扱いが異なります。[公式の動画配信方針](https://developers.cloudflare.com/fundamentals/reference/policies-compliances/delivering-videos-with-cloudflare/)
 
-- Cloudflare Streamなど、用途に対応するサービスを使う。契約・費用と、サーバー側の保存／配信連携が別途必要です。現在は未接続です。
-- Cloudflareを経由しないDNS-onlyのHTTPS経路で配信する。自前の到達可能なサーバー・証明書・入口の保護が必要です。現行版は同一オリジンなので、まずサービス全体をその経路で動かす構成になります。動画だけ別ドメインへ分離する機能は未実装です。
-- 閉じた利用では、Cloudflare One Client（WARP）等で私設ネットワーク経路へ接続する。公開ホスト名のTunnelとは別です。公式案内では私設ネットワーク経路は上記制限の対象外とされています。利用者PC／Android側のネットワーク設定と、信頼できるHTTPS証明書が必要です。
+候補は次のように分けます。
 
-本棚のアカウント認証はどの経路でも維持します。以下の公開Tunnel例だけを設定して、本サービスの動画配信が本番対応済みとは扱わないでください。
+| 構成 | Mireaとの関係 |
+| --- | --- |
+| Cloudflareを経由しないHTTPS | 同一オリジンのWeb/APIとして利用可能。到達性とTLS入口は自分で管理 |
+| 私設ネットワーク経由 | 利用端末に必要なネットワーク設定を行い、MireaのHTTPSへ接続 |
+| 公開Tunnel／Proxy | メディア用途が契約に適合するかを事前確認 |
+| Cloudflare Streamなど | 別サービス。Mireaに保存・配信の自動連携はない |
 
-## 転送の実装
+Mireaは動画のHLSとRange配信に対応しますが、この対応自体がCloudflareの配信条件を満たす保証にはなりません。動画だけを別ホストへ分ける設定も、単にDNSを追加すれば動くものではありません。
 
-Cloudflareの1リクエストのアップロード上限はFree / Proで100 MBです。ゾーン設定でさらに低くされていることもあります。Mireaは標準8 MiBの独立したPUTへ分割します。HTTPのTransfer-Encoding: chunkedで大きな1リクエストを送る方式ではありません。[413の公式資料](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/4xx-client-error/error-413/)
+## 2. 接続先を決める
 
-結合・形式検査・サムネイル生成は202応答の後で処理し、短いGETで状態確認します。Cloudflareの既定Proxy Read Timeoutは125秒で、公式資料も長い処理には状態確認方式を案内しています。[524の公式資料](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-524/)
+Mireaと`cloudflared`を同じホストで動かし、Mireaがループバックだけで待ち受ける場合は`http://127.0.0.1:3000`へ接続できます。これは同一ホスト内の区間です。別のPCをまたぐなら、信頼されたHTTPSのオリジンを使用します。
 
-`.env` の例:
+別コンテナ内の`127.0.0.1`はMireaではありません。同じ私設Dockerネットワークのサービス名、または明示的に限定したホストの接続先を使います。
 
-```dotenv
-MAX_UPLOAD_BYTES=2147483648
-UPLOAD_CHUNK_BYTES=8388608
-CORS_ORIGINS=https://localhost
-```
-
-`UPLOAD_CHUNK_BYTES` の設定範囲は64 KiB〜16 MiB、合計上限は別の `MAX_UPLOAD_BYTES` です。低速回線で各PUTがタイムアウトする場合は `1048576`（1 MiB）へ下げます。すでに開始したアップロードの分割サイズは固定されるため、変更は新規開始分に適用されます。分割しても通信断やすべてのタイムアウトをなくせるわけではなく、失敗分を再送・再開できる設計です。
-
-動画はHTTP Rangeのプログレッシブ配信です。PDF.jsは必要範囲のRange読み出しを使い、不要な自動先読みを止めています。HLS／DASH・自動画質変換は未実装です。PDFの構造によってはページ表示に全体が必要です。
-
-## Web／API入口のTunnel設定例
-
-`cloudflared` をMireaと同じホストで動かす場合、Composeの `127.0.0.1:3000` へ接続します。CloudflareアカウントでTunnelとホスト名を作成してから、公開ホスト名のサービスを `http://127.0.0.1:3000` に設定します。ドメインやTunnel IDは利用するものに置き換えてください。
-
-ローカル管理Tunnelの設定ファイル例:
+ローカル管理Tunnelの構造例:
 
 ```yaml
 tunnel: YOUR-TUNNEL-UUID
@@ -47,16 +36,47 @@ ingress:
   - service: http_status:404
 ```
 
-`cloudflared` も別コンテナに入れる場合、そこでの127.0.0.1はMireaを指しません。同じDockerネットワークから `http://mirea:3000` へ接続する別構成が必要です。Tunnelの資格情報・トークンをGitへ保存しないでください。[設定ファイルの公式資料](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/local-management/configuration-file/)
+`example.com`とUUIDは説明用です。Tunnelの作成と実行は[Cloudflare公式手順](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/local-management/configuration-file/)に従います。資格情報ファイルやトークンをリポジトリへ保存しません。
 
-通常のProxyを使う場合も、WebとAPIを同じHTTPSホストから配信します。オリジン接続は有効な証明書を検証する構成にし、公開された3000番ポートへ直接接続させないでください。
+## 3. 私設CAを使うHTTPSオリジン
 
-## キャッシュ・ヘッダー・認証
+オリジンが私設CAの証明書を使う場合、`cloudflared`がそのCAを信頼し、証明書の名前を検証できるようにします。
 
-- `/api/*` はキャッシュをバイパスします。Cache Everything等で認証付き応答を共有キャッシュへ保存しないでください。
-- `Authorization`、`Range`、`Content-Range`、`Content-Length`、`X-Chunk-SHA256` とPUTを通します。
-- メディアAPIは `Cache-Control: private, no-store, no-transform` を返します。途中の圧縮・変換でRangeのバイト位置を変更しないでください。[Origin Cache Control](https://developers.cloudflare.com/cache/concepts/cache-control/)
-- ログはクエリを除外し、動画チケットを記録しません。アプリは任意のX-Forwarded-Forを信用しないため、入口側でもログイン試行を制限してください。
-- Android向けの信頼済みOriginは `https://localhost` です。Cloudflare Accessの対話ログインを前段へ追加する場合、現行Androidクライアントとの認証連携は別途必要です。Mireaの本棚認証だけでAccessが自動連携するわけではありません。
+```yaml
+ingress:
+  - hostname: mirea.example.com
+    service: https://origin.internal.example.com:3443
+    originRequest:
+      originServerName: origin.internal.example.com
+      caPool: /etc/cloudflared/certs/origin-ca.pem
+  - service: http_status:404
+```
 
-本番確認は、100 MBを超える検証用動画の分割送信、送信中の切断・再開、シーク時の206応答、PDFのRange取得、共有解除後の拒否、Androidからの接続で行ってください。ドメイン・配信経路・Cloudflareプランの選定後に、実環境で確認する必要があります。
+`caPool`は**cloudflaredから読めるCA公開証明書ファイルのパス**です。管理画面へPEM本文やCA秘密鍵を貼る欄ではありません。`cloudflared`がコンテナなら、そのコンテナ内へ公開CAを読み取り専用で配置します。`originServerName`にはオリジン証明書のSANに一致するDNS名を指定します。[公式TLSパラメーター](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/origin-parameters/)
+
+証明書検証を無効にする設定を解決策にしません。エラー時はCAチェーン、SAN、期限、ファイルの実在と読み取り権限を確認します。
+
+## 4. MireaのAPIをそのまま通す
+
+- WebとAPIを同じHTTPSオリジンから配信します。
+- `/api/*`を共有キャッシュへ保存しません。認証付きメディアにCache Everythingを適用しません。
+- `Authorization`、`Range`、`Content-Range`、`Content-Length`、`X-Chunk-SHA256`とPUTを通します。
+- Rangeのバイト位置を変える圧縮・変換を途中へ追加しません。
+- アクセスログにはメディアチケットを含むクエリ文字列を残しません。
+- Androidの同梱画面用Originは`https://localhost`です。CORSを`*`へ変更しません。
+
+標準アップロードは独立したPUTへ分割し、取り込み・変換は受付応答後に処理します。作品全体の上限と1リクエストの上限は別です。リクエスト制限・タイムアウトは契約や設定で変わるため、[413の説明](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/4xx-client-error/error-413/)と[524の説明](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-524/)を確認します。
+
+Mirea側の分割サイズは標準8 MiB、設定範囲は64 KiB〜16 MiBです。低速回線で失敗する場合は入口の制限を確認し、必要なら[管理設定](operations/settings.md)を調整します。既に開始した転送の分割サイズは途中で変更しません。
+
+Cloudflare Accessの対話ログインを追加する場合は、Androidアプリとの認証連携を別途確認します。MireaのログインだけでAccessにもログイン済みになるわけではありません。
+
+## 5. 接続確認と問題の切り分け
+
+1. Tunnelを通さず、信頼済みのオリジンへ接続してMireaが起動していることを確認します。
+2. 公開または私設経路からログインと小さな検証用作品の送信を試します。
+3. 送信の再開、動画のシーク、書籍のページ移動、Androidの接続を確認します。
+4. 一般アカウントで未共有本棚へアクセスできないことを確認します。
+5. 問題が入口だけで起きる場合、HTTP状態コードと該当時刻でCloudflareの制限を調べます。
+
+利用者の作品で試す必要はありません。接続できることと、契約・負荷・長時間再生の条件を満たすことは別々に確認してください。失敗時は既存の利用可能な経路を維持し、TLSや認証の保護を外さず原因を切り分けます。

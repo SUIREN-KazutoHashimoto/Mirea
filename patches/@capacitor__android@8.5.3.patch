@@ -1,0 +1,136 @@
+diff --git a/capacitor/src/main/java/com/getcapacitor/Bridge.java b/capacitor/src/main/java/com/getcapacitor/Bridge.java
+index 9a3c6e0739682c9ff3b1254324ef59bb4fb2f4bd..9154787a4efdd3ff6ad4f8bc81a0b35f96c699c2 100644
+--- a/capacitor/src/main/java/com/getcapacitor/Bridge.java
++++ b/capacitor/src/main/java/com/getcapacitor/Bridge.java
+@@ -286,7 +286,9 @@ public class Bridge {
+                 new ServiceWorkerClient() {
+                     @Override
+                     public WebResourceResponse shouldInterceptRequest(WebResourceRequest request) {
+-                        return getLocalServer().shouldInterceptRequest(request);
++                        // Apply the application's resource policy to worker
++                        // fetches as well as direct WebView requests.
++                        return getWebViewClient().shouldInterceptRequest(webView, request);
+                     }
+                 }
+             );
+diff --git a/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorCookies.java b/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorCookies.java
+index 6ba4605f34b54cbde7788c4b9c65e27acf2052a4..0350b59bf1976cbe54ac5c8889ee2a10847e05ba 100644
+--- a/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorCookies.java
++++ b/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorCookies.java
+@@ -17,9 +17,14 @@ import java.nio.charset.StandardCharsets;
+ public class CapacitorCookies extends Plugin {
+ 
+     CapacitorCookieManager cookieManager;
++    private boolean nativeBridgeEnabled;
+ 
+     @Override
+     public void load() {
++        // Applications using their own authentication can opt out of native
++        // cookie synchronization without replacing the process CookieHandler.
++        nativeBridgeEnabled = getConfig().getBoolean("nativeBridgeEnabled", true);
++        if (!nativeBridgeEnabled) return;
+         this.bridge.getWebView().addJavascriptInterface(this, "CapacitorCookiesAndroidInterface");
+         this.cookieManager = new CapacitorCookieManager(null, java.net.CookiePolicy.ACCEPT_ALL, this.bridge);
+         this.cookieManager.removeSessionCookies();
+@@ -30,22 +35,25 @@ public class CapacitorCookies extends Plugin {
+     @Override
+     protected void handleOnDestroy() {
+         super.handleOnDestroy();
+-        this.cookieManager.removeSessionCookies();
++        if (this.cookieManager != null) this.cookieManager.removeSessionCookies();
+     }
+ 
+     @JavascriptInterface
+     public boolean isEnabled() {
++        if (!nativeBridgeEnabled) return false;
+         PluginConfig pluginConfig = getBridge().getConfig().getPluginConfiguration("CapacitorCookies");
+         return pluginConfig.getBoolean("enabled", false);
+     }
+ 
+     @JavascriptInterface
+     public void setCookie(String domain, String action) {
++        if (!nativeBridgeEnabled) return;
+         cookieManager.setCookie(domain, action);
+     }
+ 
+     @PluginMethod
+     public void getCookies(PluginCall call) {
++        if (!requireNativeBridge(call)) return;
+         this.bridge.eval("document.cookie", (value) -> {
+             String cookies = value.substring(1, value.length() - 1);
+             String[] cookieArray = cookies.split(";");
+@@ -75,6 +83,7 @@ public class CapacitorCookies extends Plugin {
+ 
+     @PluginMethod
+     public void setCookie(PluginCall call) {
++        if (!requireNativeBridge(call)) return;
+         String key = call.getString("key");
+         if (null == key) {
+             call.reject("Must provide key");
+@@ -92,6 +101,7 @@ public class CapacitorCookies extends Plugin {
+ 
+     @PluginMethod
+     public void deleteCookie(PluginCall call) {
++        if (!requireNativeBridge(call)) return;
+         String key = call.getString("key");
+         if (null == key) {
+             call.reject("Must provide key");
+@@ -103,6 +113,7 @@ public class CapacitorCookies extends Plugin {
+ 
+     @PluginMethod
+     public void clearCookies(PluginCall call) {
++        if (!requireNativeBridge(call)) return;
+         String url = call.getString("url");
+         HttpCookie[] cookies = cookieManager.getCookies(url);
+         for (HttpCookie cookie : cookies) {
+@@ -113,7 +124,14 @@ public class CapacitorCookies extends Plugin {
+ 
+     @PluginMethod
+     public void clearAllCookies(PluginCall call) {
++        if (!requireNativeBridge(call)) return;
+         cookieManager.removeAllCookies();
+         call.resolve();
+     }
++
++    private boolean requireNativeBridge(PluginCall call) {
++        if (nativeBridgeEnabled) return true;
++        call.unavailable("Native cookie synchronization is disabled for this application");
++        return false;
++    }
+ }
+diff --git a/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java b/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java
+index 46bc17417ffa51e8c839b6bd375b4fc8cb7fa984..2a6736999f2fc4e10ffeba53b59888f2a5ac960c 100644
+--- a/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java
++++ b/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java
+@@ -26,9 +26,12 @@ public class CapacitorHttp extends Plugin {
+ 
+     private final Map<Runnable, PluginCall> activeRequests = new ConcurrentHashMap<>();
+     private final ExecutorService executor = Executors.newCachedThreadPool();
++    private boolean nativeBridgeEnabled;
+ 
+     @Override
+     public void load() {
++        nativeBridgeEnabled = getConfig().getBoolean("nativeBridgeEnabled", true);
++        if (!nativeBridgeEnabled) return;
+         this.bridge.getWebView().addJavascriptInterface(this, "CapacitorHttpAndroidInterface");
+         super.load();
+     }
+@@ -59,6 +62,10 @@ public class CapacitorHttp extends Plugin {
+     }
+ 
+     private void http(final PluginCall call, final String httpMethod) {
++        if (!nativeBridgeEnabled) {
++            call.unavailable("Native HTTP bridging is disabled for this application");
++            return;
++        }
+         Runnable asyncHttpCall = new Runnable() {
+             @Override
+             public void run() {
+@@ -83,6 +90,7 @@ public class CapacitorHttp extends Plugin {
+ 
+     @JavascriptInterface
+     public boolean isEnabled() {
++        if (!nativeBridgeEnabled) return false;
+         PluginConfig pluginConfig = getBridge().getConfig().getPluginConfiguration("CapacitorHttp");
+         return pluginConfig.getBoolean("enabled", false);
+     }

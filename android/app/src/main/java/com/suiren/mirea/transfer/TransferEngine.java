@@ -13,15 +13,17 @@ import java.util.concurrent.*;
 public final class TransferEngine {
     public static final class Job {
         public final String id=UUID.randomUUID().toString(),direction,title;
-        public final PlaybackApi api;public final JSONObject data;public volatile String state="queued",error="";public volatile long received,total;public volatile int status;
+        public final PlaybackApi api;public final JSONObject data;public volatile String state="queued",error="";public volatile long received,total,nextPollAt;public volatile int status,pollFailures;
         public final Set<HttpURLConnection> connections=ConcurrentHashMap.newKeySet();
-        public volatile boolean cancelled,executing,manual;public volatile HttpURLConnection connection;public volatile JSONObject result;
+        final List<DocumentGrants.Lease> sources=new ArrayList<>();
+        public volatile boolean cancelled,executing,workerStarted,manual;public volatile HttpURLConnection connection;public volatile JSONObject result;
         public Job(String direction,PlaybackApi api,JSONObject data)throws Exception{this.direction=direction;this.api=api;this.data=data;title=data.optString("title","Mirea");if(title.length()>200)throw new IllegalArgumentException();}
         public boolean active(){return state.equals("queued")||state.equals("running")||state.equals("processing");}
         public void cancel(){cancel(false);}
         public synchronized void cancel(boolean cleanupSource){if(cancelled)return;cancelled=true;
             String upload=data.optString("uploadId");if(cleanupSource&&direction.equals("upload")&&PlaybackApi.uuid(upload)&&!state.equals("complete"))try{PlaybackApi cleanup=api.fork();new Thread(()->{try{cleanup.json("/uploads/"+upload,"DELETE",null);}catch(Exception ignored){}finally{cleanup.close();}},"Mirea-cancel").start();}catch(Exception ignored){}
-            api.close();HttpURLConnection c=connection;if(c!=null)c.disconnect();for(HttpURLConnection active:connections)active.disconnect();if(active())state="cancelled";}
+            api.close();HttpURLConnection c=connection;if(c!=null)c.disconnect();for(HttpURLConnection active:connections)active.disconnect();if(active())state="cancelled";if(!executing)releaseSources();}
+        synchronized void releaseSources(){sources.forEach(DocumentGrants.Lease::close);sources.clear();}
         public void check()throws IOException{if(cancelled||api.closed||Thread.currentThread().isInterrupted())throw new InterruptedIOException("Transfer stopped");}
         public JSONObject snapshot()throws Exception{return new JSONObject().put("id",id).put("direction",direction).put("title",title).put("state",state).put("received",received).put("total",total).put("percent",total>0?Math.min(100,received*100/total):0).put("status",status).put("manual",manual).put("error",error).put("uploadId",data.optString("uploadId")).put("result",result==null?JSONObject.NULL:result);}
     }
@@ -35,47 +37,59 @@ public final class TransferEngine {
         try{
             if(body==null&&method.equals("POST"))body=new JSONObject();
             if(body!=null){byte[] bytes=body.toString().getBytes(StandardCharsets.UTF_8);c.setDoOutput(true);c.setRequestProperty("Content-Type","application/json");c.setFixedLengthStreamingMode(bytes.length);try(OutputStream out=c.getOutputStream()){out.write(bytes);}}
-            int code=c.getResponseCode();if(code<200||code>=300)throw new HttpFailure(code);
+            int code=c.getResponseCode();if(code<200||code>=300)throw new HttpFailure(code,c.getHeaderField("Retry-After"));
             return code==204?new JSONObject():new JSONObject(new String(PlaybackApi.read(c.getInputStream(),4*1024*1024),StandardCharsets.UTF_8));
         }finally{c.disconnect();j.connections.remove(c);j.connection=null;}
     }
-    static final class HttpFailure extends IOException{final int status;HttpFailure(int s){super("Transfer HTTP "+s);status=s;}}
+    static final class HttpFailure extends IOException{final int status;final String retryAfter;HttpFailure(int s){this(s,null);}HttpFailure(int s,String delay){super("Transfer HTTP "+s);status=s;retryAfter=delay;}}
     interface Work<T>{T run()throws Exception;}
     private <T>T retry(Job j,Work<T> work)throws Exception{
-        for(int n=0;;n++)try{j.check();return work.run();}catch(Exception e){j.check();if(n>=3||e instanceof HttpFailure&&((HttpFailure)e).status<500&&!Arrays.asList(408,409,425,429).contains(((HttpFailure)e).status))throw e;pause(j,500L<<n);}
+        for(int n=0;;n++)try{j.check();return work.run();}catch(Exception e){j.check();long delay=retryDelay(e,n,System.currentTimeMillis());if(delay<0)throw e;pause(j,delay);}
+    }
+    static long retryDelay(Exception failure,int attempt,long now){
+        if(attempt>=8)return -1;
+        if(failure instanceof HttpFailure){HttpFailure http=(HttpFailure)failure;if(http.status!=408&&http.status!=429&&http.status<500)return -1;return retryAfter(http.retryAfter,now,Math.min(30000,1000L<<attempt));}
+        if(failure instanceof javax.net.ssl.SSLException)return -1;
+        if(failure instanceof SocketException||failure instanceof UnknownHostException||failure instanceof java.io.InterruptedIOException||failure instanceof EOFException)return Math.min(30000,1000L<<attempt);
+        return -1; // Source mutations, hashes, invalid manifests and local storage errors are not network retries.
+    }
+    static long retryAfter(String value,long now,long fallback){
+        if(value==null)return fallback;try{double seconds=Double.parseDouble(value.trim());if(Double.isFinite(seconds)&&seconds>=0)return Math.min(300000,Math.max(fallback,(long)(seconds*1000)));}catch(NumberFormatException ignored){}
+        try{long delay=java.time.ZonedDateTime.parse(value,java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli()-now;return Math.min(300000,Math.max(fallback,delay));}catch(java.time.DateTimeException ignored){return fallback;}
     }
     private void pause(Job j,long ms)throws Exception{for(long n=0;n<ms;n+=100){j.check();Thread.sleep(Math.min(100,ms-n));}}
     public void run(Job j){
         try{j.check();j.state="running";changed.run();if(j.direction.equals("upload"))upload(j);else download(j);j.check();if(!j.state.equals("processing"))j.state="complete";}
         catch(Exception e){if(!j.cancelled){j.state="failed";j.status=e instanceof HttpFailure?((HttpFailure)e).status:e instanceof PlaybackApi.Failure?((PlaybackApi.Failure)e).status:0;j.error=j.status==401?"ログインの有効期限が切れました。":j.status==403?"転送する権限がありません。":j.status==429?"サーバーの同時処理上限です。転送状況を確認して再試行してください。":"転送に失敗しました。ネットワーク・空き容量を確認して再開してください。";}}
-        finally{if(!j.state.equals("processing"))j.api.close();changed.run();}
+        finally{j.releaseSources();if(!j.state.equals("processing"))j.api.close();changed.run();}
     }
     private void download(Job j)throws Exception{
         String asset=j.data.getString("assetId");if(!PlaybackApi.uuid(asset))throw new IllegalArgumentException();
         JSONObject body=new JSONObject();String quality=j.data.optString("quality","");if(!quality.isEmpty()){if(!quality.matches("[0-9]{2,4}p"))throw new IllegalArgumentException();body.put("quality",quality);}
         JSONObject m=DownloadManifest.validate(json(j,"/items/"+asset+"/download","POST",body).getJSONObject("manifest"));
         if(!asset.equals(m.getString("assetId")))throw new IllegalArgumentException();String id=m.getString("id");j.total=DownloadManifest.total(m);synchronized(j){j.check();cache.begin(j.api.partition,m);j.result=new JSONObject().put("manifest",m);}changed.run();
-        // Reserve enough free space for the native ciphertext and WebView import.
-        if(cache.folder(j.api.partition,id).getUsableSpace()<j.total*2+10485760L)throw new IOException("Insufficient storage");
+        // Timed media is promoted within private storage; books still use the WebView copy.
+        boolean timed=Arrays.asList("audio","video").contains(m.getString("kind"));
+        if(cache.folder(j.api.partition,id).getUsableSpace()<j.total*(timed?1:2)+10485760L)throw new IOException("Insufficient storage");
         JSONArray files=m.getJSONArray("files");
         for(int f=0;f<files.length();f++)for(int p=0;p<files.getJSONObject(f).getInt("chunks");p++){
             j.check();int file=f,part=p;int plain=(int)Math.min(DownloadManifest.CHUNK,files.getJSONObject(f).getLong("size")-(long)p*DownloadManifest.CHUNK);
             if(cache.get(j.api.partition,id,file,part)==null)retry(j,()->{
                 HttpURLConnection c=transport.open(j.api,"/api/v1/downloads/"+id+"/files/"+file+"/parts/"+part,"GET");j.connection=c;
-                try{int code=c.getResponseCode();if(code!=200)throw new HttpFailure(code);byte[] bytes=PlaybackApi.read(c.getInputStream(),DownloadManifest.CHUNK+28);j.check();cache.put(j.api.partition,id,file,part,bytes,c.getHeaderField("X-Chunk-SHA256"));return null;}finally{c.disconnect();j.connection=null;}
+                try{int code=c.getResponseCode();if(code!=200)throw new HttpFailure(code,c.getHeaderField("Retry-After"));byte[] bytes=PlaybackApi.read(c.getInputStream(),DownloadManifest.CHUNK+28);j.check();cache.put(j.api.partition,id,file,part,bytes,c.getHeaderField("X-Chunk-SHA256"));return null;}finally{c.disconnect();j.connection=null;}
             });
             j.received+=plain;changed.run();
         }
-        j.check();JSONObject grant=json(j,"/downloads/"+id+"/open","POST",null);
+        j.check();JSONObject grant=retry(j,()->json(j,"/downloads/"+id+"/open","POST",null));
         if(!grant.getJSONObject("manifest").getString("id").equals(id))throw new IOException("Lease mismatch");
         try{
             HttpURLConnection cover=transport.open(j.api,"/api/v1/items/"+asset+"/thumbnail","GET");j.connection=cover;
             try{if(cover.getResponseCode()==200){byte[] image=PlaybackApi.read(cover.getInputStream(),2097152);grant.put("cover",new JSONObject().put("mime",cover.getContentType().split(";")[0]).put("bytes",Base64.getEncoder().encodeToString(image)));}}finally{cover.disconnect();j.connection=null;}
         }catch(IOException ignored){/* Missing artwork cannot invalidate encrypted content. */}
         synchronized(j){j.check();leases.save(j.api,grant);}grant.remove("cover");
-        if(m.getString("kind").equals("audio")||m.getString("kind").equals("video")){
+        if(timed){
             synchronized(j){j.check();new OfflineLease(context).save(j.api,grant);}PlaybackCache player=new PlaybackCache(context);
-            if(!player.begin(j.api.partition,m)){JSONObject f=files.getJSONObject(0);for(int p=0;p<f.getInt("chunks");p++){j.check();byte[] b=cache.get(j.api.partition,id,0,p);player.put(j.api.partition,id,p,b,TransferCache.hash(b));}player.complete(j.api.partition,id);}
+            j.check();player.promote(j.api.partition,m,cache.folder(j.api.partition,id),j::check);
         }
         grant.remove("key");cache.complete(j.api.partition,id);j.result=new JSONObject().put("manifest",m);
     }
@@ -107,7 +121,7 @@ public final class TransferEngine {
         SharedPreferences prefs=context.getSharedPreferences("mirea-upload-resume-v1",Context.MODE_PRIVATE);String saved=prefs.getString(fingerprint,null);JSONObject state=null;
         if(PlaybackApi.uuid(saved))try{state=retry(j,()->json(j,"/uploads/"+saved,"GET",null));if(Arrays.asList("cancelled","failed").contains(state.getString("state")))state=null;}catch(HttpFailure e){if(e.status!=404&&e.status!=410)throw e;}
         if(state==null||!j.data.optString("clientTransferId").isEmpty()&&!state.optString("state").equals("complete")){JSONObject body=new JSONObject().put("title",j.title).put("retainOriginal",j.data.optBoolean("retainOriginal",true)).put("files",publicFiles);if(j.data.optInt("protocolVersion",1)>=2)body.put("resume",true);String transfer=j.data.optString("clientTransferId");if(!transfer.isEmpty()){if(!PlaybackApi.uuid(transfer))throw new IllegalArgumentException();body.put("clientTransferId",transfer);}String series=j.data.optString("seriesId","");if(!series.isEmpty()){if(!PlaybackApi.uuid(series))throw new IllegalArgumentException();body.put("seriesId",series);}
-            for(;;){try{state=json(j,"/shelves/"+shelf+"/uploads","POST",body);break;}catch(HttpFailure error){if(error.status!=429)throw error;pause(j,2000);}}prefs.edit().putString(fingerprint,state.getString("id")).commit();
+            for(;;){try{state=json(j,"/shelves/"+shelf+"/uploads","POST",body);break;}catch(HttpFailure error){if(error.status!=429)throw error;pause(j,retryAfter(error.retryAfter,System.currentTimeMillis(),2000));}}prefs.edit().putString(fingerprint,state.getString("id")).commit();
         }
         String id=state.getString("id");j.data.put("uploadId",id);
         if("uploading".equals(state.getString("state"))){
@@ -144,20 +158,21 @@ public final class TransferEngine {
             HttpURLConnection c=transport.open(j.api,"/api/v1/uploads/"+id+"/files/"+file+"/parts/"+part,"PUT");j.connections.add(c);c.setReadTimeout(90000);
             try{c.setDoOutput(true);c.setRequestProperty("Content-Type","application/octet-stream");c.setRequestProperty("X-Chunk-SHA256",sha);c.setFixedLengthStreamingMode(bytes.length);
                 try(OutputStream out=c.getOutputStream()){for(int n=0;n<bytes.length;n+=65536){j.check();out.write(bytes,n,Math.min(65536,bytes.length-n));}}
-                int code=c.getResponseCode();if(code!=204)throw new HttpFailure(code);return null;
+                int code=c.getResponseCode();if(code!=204)throw new HttpFailure(code,c.getHeaderField("Retry-After"));return null;
             }finally{c.disconnect();j.connections.remove(c);}
         });
         synchronized(j){j.received+=bytes.length;}changed.run();
     }
 
     public void poll(Job j){
-        if(j.cancelled||!j.state.equals("processing"))return;
+        if(j.cancelled||!j.state.equals("processing")||System.currentTimeMillis()<j.nextPollAt)return;
         try{JSONObject state=json(j,"/uploads/"+j.data.getString("uploadId"),"GET",null);
+            j.pollFailures=0;j.nextPollAt=0;
             if("processing".equals(state.optString("state")))return;
             if(!"complete".equals(state.optString("state"))||!state.has("item"))throw new IOException("Server processing failed");
             context.getSharedPreferences("mirea-upload-resume-v1",Context.MODE_PRIVATE).edit().remove(j.data.optString("resumeKey")).commit();
             j.result=new JSONObject().put("item",state.getJSONObject("item")).put("seriesWarning",state.optString("seriesWarning",""));j.state="complete";j.api.close();
-        }catch(Exception error){if(error instanceof HttpFailure&&((HttpFailure)error).status<500){j.state="failed";j.error="サーバーの処理状況を確認できません。";j.api.close();}}
+        }catch(Exception error){long delay=retryDelay(error,Math.min(5,j.pollFailures++),System.currentTimeMillis());if(delay>=0)j.nextPollAt=System.currentTimeMillis()+delay;else if(error instanceof HttpFailure&&((HttpFailure)error).status<500){j.state="failed";j.error="サーバーの処理状況を確認できません。";j.api.close();}}
         finally{changed.run();}
     }
 }

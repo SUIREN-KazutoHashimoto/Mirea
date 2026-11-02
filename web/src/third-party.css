@@ -1,0 +1,6 @@
+.mirea-third-party { width:min(56rem,calc(100vw - 2rem)); }
+.third-party-notices details { border-bottom:1px solid var(--border); padding:.75rem 0; }
+.third-party-notices summary { cursor:pointer; overflow-wrap:anywhere; }
+.third-party-notices summary small { display:block; margin-top:.25rem; }
+.third-party-notices pre { font-size:.8rem; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; }
+.third-party-notices h3 { font-size:.9rem; overflow-wrap:anywhere; }

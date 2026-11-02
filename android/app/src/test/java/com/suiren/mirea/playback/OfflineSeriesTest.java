@@ -20,4 +20,19 @@ public class OfflineSeriesTest {
         req=request();req.getJSONObject("offlineSeries").getJSONArray("items").put(asset(one));try{OfflineSeries.context(req,one);fail();}catch(java.io.IOException expected){}
         JSONObject wrong=asset(two).put("offlineDownload",new JSONObject().put("id",download).put("assetId",one));try{OfflineSeries.nextRequest(request(),wrong,false,true);fail();}catch(java.io.IOException expected){}
     }
+    @Test public void savedNextStaysLocalEvenOnlineAndOfflineOrderSkipsUnavailableMediaAndBooks()throws Exception{
+        JSONObject req=request(),saved=req.getJSONObject("offlineSeries").getJSONArray("items").getJSONObject(1);
+        JSONObject online=OfflineSeries.nextRequest(req,saved,true,true,false);assertFalse(online.getBoolean("offline"));assertEquals(download,online.getJSONObject("download").getString("id"));
+        String missing="00000000-0000-4000-8000-000000000005",book="00000000-0000-4000-8000-000000000006";
+        JSONArray rows=new JSONArray().put(asset(one)).put(asset(missing)).put(asset(book).put("kind","book")).put(saved);
+        JSONArray usable=OfflineSeries.playable(rows,one,true);assertEquals(2,usable.length());assertEquals(two,usable.getJSONObject(1).getString("id"));
+        PlaybackOrder.Plan plan=new PlaybackOrder().plan(usable,one,series,1,false,false);assertEquals(two,plan.target.getString("id"));
+        assertEquals(3,OfflineSeries.playable(rows,one,false).length());
+        JSONObject streamed=OfflineSeries.nextRequest(online,asset(missing),false,false,false);assertFalse(streamed.has("download"));assertFalse(streamed.getBoolean("autoplay"));
+    }
+    @Test public void seriesBeyondOneThousandAreValidButPlaylistsKeepTheirBound()throws Exception{
+        JSONObject req=request();JSONArray rows=new JSONArray().put(asset(one));for(int i=10;i<1011;i++)rows.put(asset(String.format("00000000-0000-4000-8000-%012d",i)));
+        req.getJSONObject("offlineSeries").put("items",rows);assertEquals(1002,OfflineSeries.context(req,one).getJSONArray("items").length());
+        req.put("playlistId",series);try{OfflineSeries.context(req,one);fail();}catch(java.io.IOException expected){}
+    }
 }

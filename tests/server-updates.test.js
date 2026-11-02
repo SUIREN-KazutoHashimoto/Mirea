@@ -53,3 +53,13 @@ test('aborted requests retain reservations until actual asynchronous work finish
   await delay(100);assert.equal(acquired,false,'disconnection alone must not allow an inconsistent backup');finish();
   const unlock=await Promise.race([waiting,delay(1000).then(()=>{throw Error('Completed handler held a reservation');})]);assert.equal(gate.locked,true);unlock();assert.equal(gate.locked,false);
 });
+
+test('background filesystem reservations are atomic, idempotent and unavailable while maintenance is waiting',async t=>{
+ const app=Fastify(),gate=createMaintenanceGate(app);t.after(()=>app.close());
+ const finish=gate.tryReserve();assert.equal(typeof finish,'function');let acquired=false;
+ const waiting=gate.acquire().then(release=>{acquired=true;return release;});
+ assert.equal(gate.locked,true);assert.equal(gate.tryReserve(),null);
+ await delay(60);assert.equal(acquired,false);finish();finish();
+ const release=await waiting;assert.equal(gate.tryReserve(),null);release();
+ const next=gate.tryReserve();assert.equal(typeof next,'function');next();const unlock=await gate.acquire();unlock();
+});
