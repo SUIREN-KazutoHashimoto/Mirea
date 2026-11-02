@@ -15,6 +15,7 @@ import { mediaBinary } from './media-binary.js';
 import {recordVideoThumbnail} from './video-thumbnail.js';
 import {customThumbnail,ensureCustomThumbnail} from './custom-thumbnails.js';
 import {mediaFailure} from './media-failure.js';
+import {waitForMediaWorker} from './media-worker-lifecycle.js';
 export const IMAGE_BOOK_MIME = 'application/vnd.mirea.image-book';
 export const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 export const imageExtension = mime => ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' })[mime];
@@ -77,28 +78,15 @@ async function convertVideo(source, destination, mime, outputArgs, label, maxByt
   throw Object.assign(httpError(422, `動画の${label}を生成できません。映像フレーム・再生区間・対応形式を確認してください。`), { cause: failure });
 }
 
-function workerOperation(data) {
-  const signal=jobCancellationSignal();if(signal?.aborted)return Promise.reject(signal.reason);
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(mediaWorkerEntrypoint(), {
-      workerData: data, resourceLimits: { maxOldGenerationSizeMb: 256 }
-    });
-    const abort=()=>{receivedResult=true;clearTimeout(timer);worker.terminate();reject(signal.reason);};
-    signal?.addEventListener('abort',abort,{once:true});
-    let receivedResult = false;
-    const timer = setTimeout(() => { receivedResult=true;worker.terminate(); reject(Object.assign(httpError(422, '本・画像の処理が時間内に完了しませんでした。'),{code:'MEDIA_PROCESSING_TIMEOUT'})); }, 30_000);
-    worker.once('message', async result => {
-      receivedResult = true;
-      clearTimeout(timer);
-      // Native decoders may hold source files open until the worker exits on Windows.
-      await worker.terminate();
-      if (result.error && process.env.TEST_LOG === '1') console.error('Media worker:', result.error);
-      if (result.error) reject(mediaFailure(result,data.mode));
-      else resolve(result);
-    });
-    worker.once('error', error => { clearTimeout(timer); reject(error); });
-    worker.once('exit', () => { signal?.removeEventListener('abort',abort);clearTimeout(timer); if (!receivedResult) reject(Object.assign(httpError(503, 'メディア処理が中断されました。サーバーの稼働状態を確認してください。'),{code:'MEDIA_WORKER_FAILED'})); });
+async function workerOperation(data) {
+  const signal=jobCancellationSignal();if(signal?.aborted)throw signal.reason;
+  const worker = new Worker(mediaWorkerEntrypoint(), {
+    workerData: data, resourceLimits: { maxOldGenerationSizeMb: 256 }
   });
+  const result = await waitForMediaWorker(worker, {signal});
+  if (result.error && process.env.TEST_LOG === '1') console.error('Media worker:', result.error);
+  if (result.error) throw mediaFailure(result,data.mode);
+  return result;
 }
 
 // Bound decoder memory independently for thumbnails, previews and validation.
