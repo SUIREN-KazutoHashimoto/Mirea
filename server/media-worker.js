@@ -56,24 +56,30 @@ try {
     const require = createRequire(import.meta.url);
     const pdfRoot = dirname(require.resolve('pdfjs-dist/package.json'));
     const assetDirectory = name => join(pdfRoot, name).replaceAll('\\', '/') + '/';
-    const document = await getDocument({
+    const loadingTask = getDocument({
       url: pathToFileURL(source).href,
       cMapUrl: assetDirectory('cmaps'), cMapPacked: true,
       standardFontDataUrl: assetDirectory('standard_fonts'),
       wasmUrl: assetDirectory('wasm'),
       isEvalSupported: false, useSystemFonts: true, maxImageSize: 40_000_000,
       disableAutoFetch: true, disableStream: true
-    }).promise;
+    });
+    let pageCount;
     try {
+      const document = await loadingTask.promise;
       const page = await document.getPage(1);
       const original = page.getViewport({ scale: 1 });
       const viewport = page.getViewport({ scale: Math.min(1024 / original.width, 1024 / original.height, 1) });
       const canvas = createCanvas(Math.max(1, Math.ceil(viewport.width)), Math.max(1, Math.ceil(viewport.height)));
       await page.render({ canvasContext: canvas.getContext('2d'), viewport, background: '#ffffff' }).promise;
       await sharp(canvas.toBuffer('image/png')).jpeg({ quality: 82 }).toFile(destination);
-      parentPort.postMessage({ pageCount: document.numPages });
-    } finally { await document.destroy(); }
+      pageCount = document.numPages;
+    } finally { await loadingTask.destroy(); }
+    parentPort.postMessage({ pageCount });
   } else throw new Error('Unsupported media operation');
 } catch (error) {
   parentPort.postMessage({ error: error.message, code: error.code, stack: error.stack, ...(mode==='validate-image'||mode==='image-thumbnail'?{image}:{}) });
+} finally {
+  // Flush the single result and allow module/native cleanup to finish naturally.
+  parentPort.close();
 }
