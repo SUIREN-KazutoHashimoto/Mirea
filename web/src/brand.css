@@ -1,0 +1,11 @@
+.brand{gap:10px;letter-spacing:-1.2px}
+.brand .brand-symbol,.mobile-brand .brand-symbol,.footer-brand .brand-symbol{display:block;width:44px;height:27px;object-fit:contain;flex-shrink:0}
+.brand .brand-symbol-dark,.mobile-brand .brand-symbol-dark,.footer-brand .brand-symbol-dark{display:none}
+.brand-wordmark{font-family:Inter,"Segoe UI",system-ui,sans-serif;font-weight:750;line-height:1;letter-spacing:-1.2px}
+:root[data-theme="dark"] .brand-symbol-light{display:none}
+:root[data-theme="dark"] .brand .brand-symbol-dark,:root[data-theme="dark"] .mobile-brand .brand-symbol-dark,:root[data-theme="dark"] .footer-brand .brand-symbol-dark{display:block}
+.sidebar .brand .brand-symbol{width:42px;height:26px}
+.footer-brand{display:inline-flex;align-items:center;gap:7px}
+.footer-brand .brand-symbol{width:27px;height:17px}
+.footer-brand .brand-wordmark{font-size:16px;letter-spacing:-.7px;color:var(--text,#242d45)}
+@media(max-width:760px){.mobile-brand{display:flex;align-items:center;gap:12px;color:var(--text,#242d45)}.sidebar>.brand .brand-symbol{width:40px;height:25px}.mobile-brand .brand-wordmark{font-size:32px}.footer-brand .brand-symbol{width:25px;height:16px}}

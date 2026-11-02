@@ -1,0 +1,248 @@
+import {thumbnailWebp} from './thumbnail-webp.js';
+import {ensureVideoThumbnailAnchor,recordVideoThumbnail,recordVideoPreview} from './video-thumbnail.js';
+import {customThumbnail,ensureCustomThumbnail} from './custom-thumbnails.js';
+import {moveStorage} from './storage-move.js';
+import {randomUUID} from 'node:crypto';
+import {mkdir,rename,stat,lstat,unlink,open} from 'node:fs/promises';
+import {join} from 'node:path';
+import {httpError} from './security.js';
+import {transaction} from './database.js';
+import {IMAGE_BOOK_MIME,imageExtension,removeItemDirectory} from './media.js';
+import {EPUB_MIME} from './ebook-types.js';
+import {videoMetadata} from './video-stream.js';
+import {selectVideoSource} from './media-source.js';
+import {isTimedMime,isAudio} from './audio-types.js';
+import {audioThumbnail} from './audio-transcode.js';
+import {canRegenerateThumbnail} from './owner-media.js';
+import {recoveryCandidates,assessAssetRecovery} from './media-recovery.js';
+import {publishCanonical} from './canonical-publish.js';
+import {setTimeout as delay} from 'node:timers/promises';
+import {jobTiming} from './job-timing.js';
+import {adminJobPage} from './admin-job-list.js';
+
+// Owner explicitly approved password-free individual AND bulk reruns. Only
+// these media job actions change; destructive/privilege/backup/update APIs keep
+// their existing reauthentication. Admin session and explicit cost warning stay.
+const retryBody=(properties={})=>({type:'object',additionalProperties:false,properties:{acknowledgeCost:{const:true},...properties},required:['acknowledgeCost',...Object.keys(properties)]});
+
+export async function registerAdminJobs(app,context) {
+  const {db,adminAccess:a,media,videoTranscoder,uploadDir,booksDir,thumbnailDir,previewDir,videoDir,originalDir,dataDir,uploads,maintenance}=context;
+  const root=join(dataDir,'admin-work');await mkdir(root,{recursive:true,mode:0o700});
+  db.exec('CREATE INDEX IF NOT EXISTS asset_thumbnail_jobs ON admin_jobs(asset_id,kind,state,updated_at DESC)');
+  let closing=false;const pending=new Map();
+  const get=id=>db.prepare('SELECT * FROM admin_jobs WHERE id=?').get(id);
+  const assetLabel=db.prepare('SELECT i.title,s.name AS shelf FROM items i JOIN shelves s ON s.id=i.shelf_id WHERE i.id=?');
+  const safe=row=>{const item=row.asset_id?assetLabel.get(row.asset_id):null,source=db.prepare('SELECT 1 FROM media_tasks WHERE id=?').get(row.id)?'media':'admin';return {id:row.id,source,manual:context.jobPool.isManual(row.id),canStart:row.state==='queued'&&(source==='media'?context.mediaPipeline.canForce(row.id):row.kind!=='repair'||!isTimedMime(db.prepare('SELECT mime_type FROM items WHERE id=?').get(row.asset_id)?.mime_type??'')),...jobTiming(db,row.id),kind:row.kind,assetId:row.asset_id,title:item?.title??null,shelf:item?.shelf??null,state:row.state,progress:JSON.parse(row.progress_json),error:row.error,createdAt:row.created_at,updatedAt:row.updated_at};};
+  const retryableUpload=row=>row.state==='failed'&&(isTimedMime(JSON.parse(row.files_json)[0]?.mime)||row.expires_at>Date.now());
+  const uploadSafe=row=>({id:row.id,source:'upload',manual:context.jobPool.isManual(row.id),canStart:row.state==='processing'&&!context.mediaPipeline.has(row.id)&&context.jobPool.lane('ingest').canStart(row.id),...jobTiming(db,row.id,'upload'),title:row.title,state:row.state,error:row.error,processing:JSON.parse(row.processing_json),createdAt:row.created_at,assetExists:Boolean(db.prepare('SELECT 1 FROM items WHERE id=?').get(row.id)),retryable:retryableUpload(row),...(!isTimedMime(JSON.parse(row.files_json)[0]?.mime)&&row.state==='failed'?{sourceExpiresAt:row.expires_at}:{})});
+  const report=(id,value)=>db.prepare('UPDATE admin_jobs SET progress_json=?,updated_at=? WHERE id=?').run(JSON.stringify(value),Date.now(),id);
+  // Persist the complete asset snapshot, but keep only a bounded execution
+  // window in memory. Queued work is recovered from the database on restart.
+  function pump(){
+    if(closing)return;
+    const counts=new Map();for(const id of pending.keys()){const kind=get(id)?.kind;counts.set(kind,(counts.get(kind)??0)+1);}
+    for(const kind of ['thumbnail','owner_thumbnail','transcode','preview','repair']){
+      if((counts.get(kind)??0)>=20)continue;
+      for(const row of db.prepare("SELECT id FROM admin_jobs WHERE state='queued' AND kind=? ORDER BY created_at,id LIMIT 40").all(kind)){
+        if((counts.get(kind)??0)>=20)break;
+        if(!pending.has(row.id)){counts.set(kind,(counts.get(kind)??0)+1);schedule(row.id);}
+      }
+    }
+  }
+  function schedule(id){
+    if(pending.has(id)||closing)return;
+    const selected=get(id),asset=selected&&db.prepare('SELECT mime_type FROM items WHERE id=?').get(selected.asset_id);
+    // A repair coordinator waits on independent pipeline lanes. Holding a
+    // worker slot here would deadlock a large repair batch.
+    if(selected?.kind==='repair'&&asset&&isTimedMime(asset.mime_type)){
+      const job=repairTimed(id).catch(error=>app.log.error({err:error},'Media repair coordinator failed'));
+      pending.set(id,job);job.finally(()=>{pending.delete(id);pump();});return;
+    }
+    const job=context.jobPool.run(async()=>{
+      const stored=get(id);if(!stored||stored.state!=='queued')return;const ownerJob=stored.kind==='owner_thumbnail',row={...stored,kind:ownerJob||stored.kind==='repair'?'thumbnail':stored.kind};
+      const item=db.prepare('SELECT * FROM items WHERE id=?').get(row.asset_id);
+      const authorize=()=>{const current=db.prepare('SELECT * FROM items WHERE id=?').get(row.asset_id);if(!current||!a.enabled(row.requested_by)||(ownerJob?!canRegenerateThumbnail(db,current,row.requested_by):!a.isAdmin(row.requested_by)))throw httpError(403,'アセットが削除されたか、実行に必要な権限が解除されました。');};
+      db.prepare("UPDATE admin_jobs SET state='running',updated_at=? WHERE id=?").run(Date.now(),id);
+      const work=join(root,id);
+      const generationReferenced=()=>Boolean(row.asset_id&&(videoMetadata(db,row.asset_id)?.generation===id||db.prepare('SELECT 1 FROM video_generations WHERE item_id=? AND generation=?').get(row.asset_id,id)));
+      let published=row.kind==='transcode'&&generationReferenced(),selectedSource;
+      try{
+        authorize();await removeItemDirectory(root,id);await mkdir(work,{mode:0o700});
+        report(id,{stage:row.kind,percent:0});
+        if(row.kind==='transcode'){
+          // The DB promotion can commit just before a crash prevents marking
+          // this job complete. Never delete/re-encode its now-live generation.
+          if(published){
+            const committed=videoMetadata(db,item.id,id);
+            if(!committed)throw new Error('Committed generation metadata is missing');
+            for(const rendition of committed.renditions){
+              if((await stat(join(videoDir,item.id,id,rendition.quality+'.mp4'))).size!==rendition.size)throw new Error('Committed generation size mismatch');
+              for(const name of rendition.files)if(!(await stat(join(videoDir,item.id,id,name))).size)throw new Error('Committed generation file missing');
+            }
+            await commitCanonical(item,committed,id,authorize);
+            db.prepare("UPDATE admin_jobs SET state='complete',error=NULL,progress_json=?,updated_at=? WHERE id=?").run(JSON.stringify({stage:'complete',percent:100,recovered:true}),Date.now(),id);return;
+          }
+          // A crash before the DB promotion may have left an orphan directory.
+          await removeItemDirectory(join(videoDir,item.id),id);
+          selectedSource=await selectVideoSource({db,item,uploadDir,originalDir,videoDir});
+          const {path:source,kind:sourceKind}=selectedSource;
+          const metadata=await videoTranscoder.convert(source,join(work,'video'),{authorize,report:value=>report(id,{...value,source:sourceKind,sourceQuality:selectedSource.quality})});
+          for(const name of metadata.renditions.flatMap(r=>[r.quality+'.mp4',...r.files])){
+            const h=await open(join(work,'video',name),'r+');try{await h.sync();}finally{await h.close();}
+          }
+          authorize();await mkdir(join(videoDir,item.id),{recursive:true,mode:0o700});
+          await moveStorage(join(work,'video'),join(videoDir,item.id,id),{authorize});
+          authorize();
+          transaction(db,()=>{
+            const previous=videoMetadata(db,item.id);
+            if(previous)db.prepare('INSERT OR IGNORE INTO video_generations VALUES(?,?,?,?)').run(item.id,previous.generation??'base',JSON.stringify(previous),Date.now());
+            db.prepare("INSERT OR IGNORE INTO playback_generations SELECT token_hash,? FROM playback_tickets WHERE item_id=?").run(previous?.generation??'base',item.id);
+            metadata.generation=id;
+            db.prepare('INSERT INTO video_assets VALUES(?,?,?) ON CONFLICT(item_id) DO UPDATE SET metadata_json=excluded.metadata_json').run(item.id,JSON.stringify(metadata),sourceKind==='original'?1:0);
+            db.prepare('INSERT INTO video_generations VALUES(?,?,?,?)').run(item.id,id,JSON.stringify(metadata),Date.now());
+          });published=true;
+          await commitCanonical(item,metadata,id,authorize);
+        }else if(row.kind==='thumbnail'&&customThumbnail(db,thumbnailDir,item.id)){
+          await ensureCustomThumbnail(db,thumbnailDir,media,item.id,{force:true,authorize});
+          db.prepare('UPDATE items SET thumbnail_ready=1 WHERE id=?').run(item.id);
+        }else{
+          const first=item.mime_type===IMAGE_BOOK_MIME?db.prepare('SELECT mime_type FROM image_pages WHERE item_id=? AND page_number=1').get(item.id):null;
+          let source=first?join(booksDir,item.id,'1.'+imageExtension(first.mime_type)):join(uploadDir,item.id);if(isAudio(item.mime_type)){const raw=join(originalDir,item.id),info=await lstat(raw).catch(error=>{if(error.code!=='ENOENT')throw error;return null;});if(info?.isFile()&&!info.isSymbolicLink())source=raw;}
+          const temporary=join(work,row.kind==='preview'?'preview.mp4':'thumbnail.jpg');
+          let chosen,startSeconds;
+          if(row.kind==='preview'){startSeconds=await ensureVideoThumbnailAnchor({db,item,media,uploadDir,thumbnailDir,authorize});await media.preview(source,temporary,item.mime_type,{startSeconds});}
+          else chosen=isAudio(item.mime_type)?await audioThumbnail(source,temporary):await media.thumbnail(source,item.mime_type,temporary,item.mime_type===EPUB_MIME?join(work,'book.json'):undefined);
+          if(!(await stat(temporary)).size)throw new Error('Empty generated media');
+          if(row.kind==='thumbnail')await media.validateImage(temporary);
+          authorize();await rename(temporary,join(row.kind==='preview'?previewDir:thumbnailDir,item.id+(row.kind==='preview'?'.mp4':'.jpg')));
+          if(row.kind==='thumbnail'){await thumbnailWebp(join(thumbnailDir,item.id+'.jpg'),{force:true});db.prepare('UPDATE items SET thumbnail_ready=1 WHERE id=?').run(item.id);if(item.mime_type.startsWith('video/')){recordVideoThumbnail(db,item.id,chosen?.seekSeconds);context.videoPreviews.clearFailure(item.id);}}
+          if(row.kind==='preview')recordVideoPreview(db,item.id,startSeconds);
+          if(row.kind==='preview')context.videoPreviews.clearFailure(item.id);
+        }
+        db.prepare("UPDATE admin_jobs SET state='complete',progress_json=?,error=NULL,updated_at=? WHERE id=?").run(JSON.stringify({stage:'complete',percent:100,...(selectedSource?{source:selectedSource.kind,sourceQuality:selectedSource.quality}:{})}),Date.now(),id);
+      }catch(error){
+        if(error.code==='SERVER_CLOSING'){db.prepare("UPDATE admin_jobs SET state='queued',updated_at=? WHERE id=?").run(Date.now(),id);return;}
+        db.prepare("UPDATE admin_jobs SET state='failed',error=?,updated_at=? WHERE id=?").run(error.statusCode?error.message:'再生成に失敗しました。既存データは保持されています。容量やメディア設定を確認してください。',Date.now(),id);
+        app.log.error({err:error,jobId:id},'Admin media generation failed');
+      }finally{
+        await removeItemDirectory(root,id);
+        if(row.kind==='transcode'&&!published&&row.asset_id&&!generationReferenced())await removeItemDirectory(join(videoDir,row.asset_id),id);
+      }
+    },id,['owner_thumbnail','repair'].includes(get(id)?.kind)?'thumbnail':get(id)?.kind).catch(error=>app.log.error({err:error},'Admin job cleanup failed'));
+    pending.set(id,job);job.finally(()=>{pending.delete(id);pump();});
+  }
+  async function commitCanonical(item,metadata,id,authorize){
+    // Pre-pipeline libraries keep their only original in uploads/. Their new
+    // HLS/renditions are already published; never replace that retained source.
+    if(!db.prepare('SELECT 1 FROM media_ingest WHERE asset_id=?').get(item.id))return;
+    const best=metadata.renditions.slice().sort((a,b)=>b.width*b.height-a.width*a.height||b.size-a.size)[0];
+    if(!best||!/^\d{2,4}p$/.test(best.quality))throw Error('Invalid canonical rendition');
+    await publishCanonical({source:join(videoDir,item.id,id,best.quality+'.mp4'),id:item.id,jobId:id,uploadDir,authorize});
+    transaction(db,()=>{authorize();db.prepare("UPDATE items SET mime_type='video/mp4',filename=?,size=? WHERE id=?").run(item.filename.replace(/\.[^.]+$/,'')+'.mp4',best.size,item.id);db.prepare('UPDATE media_ingest SET canonical_ready=1 WHERE asset_id=?').run(item.id);db.prepare("UPDATE media_tasks SET state='complete',error=NULL,progress_json=?,updated_at=? WHERE asset_id=? AND kind='transcode' AND state NOT IN ('queued','running')").run(JSON.stringify({stage:'complete',percent:100,recovered:true}),Date.now(),item.id);});
+    context.mediaPipeline.pump();
+  }
+  async function repairTimed(id){
+    const row=get(id);if(!row||row.state!=='queued')return;
+    const check=()=>{if(closing){const error=Error('Server closing');error.code='SERVER_CLOSING';throw error;}if(!db.prepare('SELECT 1 FROM items WHERE id=?').get(row.asset_id)||!a.enabled(row.requested_by)||!a.isAdmin(row.requested_by))throw httpError(403,'アセットが削除されたか、管理権限が解除されました。');};
+    try{
+      check();db.prepare("UPDATE admin_jobs SET state='running',error=NULL,updated_at=? WHERE id=?").run(Date.now(),id);
+      const active=()=>db.prepare("SELECT 1 FROM media_tasks WHERE asset_id=? AND state IN ('queued','running')").get(row.asset_id);
+      // On restart the durable pipeline can already be processing this repair.
+      if(!active()){const kinds=await context.mediaPipeline.repair(row.asset_id,id);report(id,{stage:'repair',kinds});}
+      while(active()){check();const tasks=db.prepare('SELECT kind,state,progress_json FROM media_tasks WHERE asset_id=?').all(row.asset_id);report(id,{stage:'repair',tasks:tasks.map(t=>({kind:t.kind,state:t.state})),percent:Math.round(tasks.reduce((n,t)=>n+(t.state==='complete'?100:Number(JSON.parse(t.progress_json).percent)||0),0)/Math.max(1,tasks.length))});await delay(200);}
+      check();if(db.prepare("SELECT 1 FROM media_tasks WHERE asset_id=? AND state IN ('failed','cancelled')").get(row.asset_id))throw httpError(422,'一部の後処理を完了できませんでした。原本と公開済みデータは保持されています。');
+      db.prepare("UPDATE admin_jobs SET state='complete',error=NULL,progress_json=?,updated_at=? WHERE id=?").run(JSON.stringify({stage:'complete',percent:100}),Date.now(),id);
+    }catch(error){if(error.code==='SERVER_CLOSING')db.prepare("UPDATE admin_jobs SET state='queued',updated_at=? WHERE id=?").run(Date.now(),id);else{db.prepare("UPDATE admin_jobs SET state='failed',error=?,updated_at=? WHERE id=?").run(error.statusCode?error.message:'未完了アセットを修復できませんでした。原本と公開済みデータは保持されています。',Date.now(),id);app.log.error({err:error,jobId:id},'Media repair failed');}}
+  }
+  const stopAvailability=context.jobPool.onAvailable?.(()=>{try{pump();}catch(error){app.log.error({err:error},'Admin queue replenishment failed');}});
+  db.prepare("UPDATE admin_jobs SET state='queued' WHERE state='running' AND kind IN ('thumbnail','owner_thumbnail','preview','transcode','repair')").run();
+  pump();
+  app.addHook('onClose',async()=>{closing=true;stopAvailability?.();await Promise.allSettled([...pending.values()]);});
+  const auth={onRequest:async req=>a.requireAdmin(req)};
+  const ownerAuth={onRequest:async req=>context.authenticate(req)};
+  const ownItem=req=>context.findItem(req.params.id,req.user.id);
+  app.get('/api/v1/admin/assets/repair-preview',auth,async req=>{
+    const result=await recoveryCandidates(context);a.requireAdmin(req);return {count:result.assets.length,busy:result.busy,healthy:result.healthy,assets:result.assets.slice(0,100)};
+  });
+  app.post('/api/v1/admin/assets/repair-incomplete',{...auth,config:{rateLimit:context.rateLimit===false?false:{max:2,timeWindow:'1 minute'}},schema:{body:retryBody()}},async(req,reply)=>{
+    if(maintenance.locked)throw httpError(409,'保守処理中です。');const result=await recoveryCandidates(context);a.requireAdmin(req);if(maintenance.locked)throw httpError(409,'保守処理中です。');let accepted=0,skipped=result.busy;
+    transaction(db,()=>{for(const item of result.assets){if(!db.prepare('SELECT 1 FROM items WHERE id=?').get(item.id)||db.prepare("SELECT 1 FROM admin_jobs WHERE asset_id=? AND state IN ('queued','running') UNION ALL SELECT 1 FROM media_tasks WHERE asset_id=? AND state IN ('queued','running')").get(item.id,item.id)){skipped++;continue;}const now=Date.now();db.prepare("INSERT INTO admin_jobs(id,kind,asset_id,state,requested_by,created_at,updated_at) VALUES(?,'repair',?,'queued',?,?,?)").run(randomUUID(),item.id,req.user.id,now,now);accepted++;}a.audit(req,'media.repair.incomplete',null,{accepted,skipped,healthy:result.healthy});});
+    pump();return reply.code(202).send({accepted,skipped,healthy:result.healthy});
+  });
+  app.get('/api/v1/items/:id/thumbnail-job',ownerAuth,async req=>{
+    const item=ownItem(req),allowed=canRegenerateThumbnail(db,item,req.user.id);
+    const row=allowed?db.prepare("SELECT * FROM admin_jobs WHERE asset_id=? AND kind='owner_thumbnail' AND requested_by=? ORDER BY created_at DESC,id LIMIT 1").get(item.id,req.user.id):null;
+    return {allowed,job:row?safe(row):null};
+  });
+  app.post('/api/v1/items/:id/thumbnail-job',{...ownerAuth,config:{rateLimit:context.rateLimit===false?false:{max:10,timeWindow:'1 minute'}},schema:{body:retryBody()}},async(req,reply)=>{
+    const item=ownItem(req);if(!canRegenerateThumbnail(db,item,req.user.id))throw httpError(403,'自分が追加したアセット、または所有する本棚のアセットのみ再生成できます。');
+    if(maintenance.locked)throw httpError(409,'保守処理中です。');
+    if(db.prepare("SELECT 1 FROM admin_jobs WHERE asset_id=? AND state IN ('queued','running')").get(item.id)||db.prepare("SELECT 1 FROM media_tasks WHERE asset_id=? AND state IN ('queued','running')").get(item.id))throw httpError(409,'このアセットの後処理を実行中です。完了後に再生成してください。');
+    const id=randomUUID(),now=Date.now();db.prepare("INSERT INTO admin_jobs(id,kind,asset_id,state,requested_by,created_at,updated_at) VALUES(?,'owner_thumbnail',?,'queued',?,?,?)").run(id,item.id,req.user.id,now,now);a.audit(req,'media.thumbnail.owner',item.id,{jobId:id});pump();return reply.code(202).send({job:safe(get(id))});
+  });
+  app.get('/api/v1/admin/jobs/list',{...auth,schema:{querystring:{type:'object',additionalProperties:false,properties:{view:{enum:['current','history'],default:'current'},state:{enum:['all','running','queued','complete','failed','cancelled'],default:'all'},q:{type:'string',maxLength:200,default:''},sort:{enum:['newest','oldest','state'],default:'newest'},offset:{type:'integer',minimum:0,maximum:100000000,default:0},limit:{type:'integer',minimum:1,maximum:200,default:100}}}}},async req=>{
+    const page=adminJobPage(db,req.query),tables={admin:'admin_jobs',media:'media_tasks',upload:'upload_sessions'};
+    return {...page,rows:page.rows.map(entry=>{const row=db.prepare('SELECT * FROM '+tables[entry.source]+' WHERE id=?').get(entry.id);return {...(entry.source==='upload'?{...uploadSafe(row),upload:true}:safe(row)),filterState:entry.filter_state};}),manualSlot:context.jobPool.manualFor(req.user.id),automatic:req.query.view==='current'?[...context.videoPreviews.inspect().map(row=>({...row,id:row.assetId,automatic:true,kind:'preview',title:'自動動画プレビュー'})),...context.ensureThumbnail.inspect().map(row=>({...row,id:row.assetId,automatic:true,kind:'thumbnail',title:'自動サムネイル'})),...(media.inspect?.()??[]).map(row=>({...row,kind:'processor',automatic:true}))]:[]};
+  });
+  app.get('/api/v1/admin/jobs',auth,async req=>({
+    manualSlot:context.jobPool.manualFor(req.user.id),
+    currentSummary:db.prepare(`SELECT SUM(state='running') AS running,SUM(state='queued') AS queued FROM (SELECT state FROM admin_jobs WHERE state IN ('queued','running') UNION ALL SELECT state FROM media_tasks WHERE state IN ('queued','running') UNION ALL SELECT CASE state WHEN 'uploading' THEN 'running' ELSE 'queued' END FROM upload_sessions WHERE state='processing' AND NOT EXISTS(SELECT 1 FROM media_ingest WHERE asset_id=upload_sessions.id) OR state='uploading' AND expires_at>?)`).get(Date.now()),
+    jobs:[...db.prepare("SELECT * FROM admin_jobs ORDER BY created_at DESC LIMIT 100").all(),...db.prepare('SELECT * FROM media_tasks ORDER BY created_at DESC LIMIT 100').all()].map(safe),
+    currentJobs:[...db.prepare("SELECT * FROM admin_jobs WHERE state IN ('queued','running') ORDER BY CASE state WHEN 'running' THEN 0 ELSE 1 END,created_at,id LIMIT 100").all(),...db.prepare("SELECT * FROM media_tasks WHERE state IN ('queued','running') ORDER BY CASE state WHEN 'running' THEN 0 ELSE 1 END,created_at,id LIMIT 100").all()].map(safe),
+    currentUploads:db.prepare("SELECT * FROM upload_sessions WHERE state='processing' AND NOT EXISTS(SELECT 1 FROM media_ingest WHERE asset_id=upload_sessions.id) OR state='uploading' AND expires_at>? ORDER BY created_at,id LIMIT 100").all(Date.now()).map(uploadSafe),
+    currentCount:db.prepare("SELECT (SELECT COUNT(*) FROM admin_jobs WHERE state IN ('queued','running'))+(SELECT COUNT(*) FROM media_tasks WHERE state IN ('queued','running'))+(SELECT COUNT(*) FROM upload_sessions WHERE state='processing' AND NOT EXISTS(SELECT 1 FROM media_ingest WHERE asset_id=upload_sessions.id) OR state='uploading' AND expires_at>?) AS n").get(Date.now()).n,
+    history:{jobs:[...db.prepare("SELECT * FROM admin_jobs WHERE state IN ('complete','failed') ORDER BY updated_at DESC,id LIMIT 100").all(),...db.prepare("SELECT * FROM media_tasks WHERE state IN ('complete','failed') ORDER BY updated_at DESC,id LIMIT 100").all()].map(safe),uploads:db.prepare("SELECT * FROM upload_sessions WHERE state IN ('complete','failed','cancelled') ORDER BY created_at DESC,id LIMIT 100").all().map(uploadSafe)},
+    uploads:db.prepare('SELECT id,title,state,error,processing_json,created_at,files_json,expires_at FROM upload_sessions ORDER BY created_at DESC LIMIT 100').all().map(row=>({id:row.id,title:row.title,state:row.state,error:row.error,processing:JSON.parse(row.processing_json),createdAt:row.created_at,assetExists:Boolean(db.prepare('SELECT 1 FROM items WHERE id=?').get(row.id)),retryable:retryableUpload(row),...(!isTimedMime(JSON.parse(row.files_json)[0]?.mime)&&row.state==='failed'?{sourceExpiresAt:row.expires_at}:{})})),
+    previews:context.videoPreviews.inspect().map(row=>({...row,id:row.assetId,automatic:true,title:'自動動画プレビュー'})),thumbnails:context.ensureThumbnail.inspect().map(row=>({...row,id:row.assetId,automatic:true,title:'自動サムネイル'})),processors:media.inspect?.()??[],lanes:context.jobPool.inspect?.()
+  }));
+  app.post('/api/v1/admin/jobs/:id/start',{...auth,schema:{params:{type:'object',required:['id'],properties:{id:{type:'string',format:'uuid'}}},body:retryBody({source:{enum:['admin','media','upload']}})}},async(req,reply)=>{
+    if(maintenance.locked)throw httpError(409,'保守処理中です。');
+    if(context.jobPool.manualFor(req.user.id))throw httpError(409,'手動開始の追加枠は使用中です。管理者1アカウントにつき同時に1件までです。');
+    const source=req.body.source;let result;
+    if(source==='media')result=context.mediaPipeline.forceStart(req.params.id,req.user.id);
+    else if(source==='upload')result=uploads.forceStart(req.params.id,req.user.id);
+    else{
+      const row=get(req.params.id);
+      if(!row)throw httpError(404,'ジョブが見つかりません。');
+      if(row.state!=='queued')throw httpError(409,'待機中のジョブを選んでください。');
+      if(row.kind==='navigation')result=context.navigation.forceStart(row.id,req.user.id);
+      else{if(!['thumbnail','owner_thumbnail','transcode','preview','repair'].includes(row.kind))throw httpError(409,'このジョブは手動開始できません。');schedule(row.id);result=context.jobPool.forceStart(row.id,req.user.id);}
+    }
+    if(!result.started)throw httpError(409,result.reason==='busy'?'手動開始の追加枠は使用中です。':'すでに開始済みか、先行ジョブの完了待ちです。更新して確認してください。');
+    a.audit(req,'job.manual.start',req.params.id,{source});
+    return reply.code(202).send({started:true,id:req.params.id});
+  });
+  app.get('/api/v1/admin/assets',{...auth,schema:{querystring:{type:'object',additionalProperties:false,properties:{q:{type:'string',maxLength:100},after:{type:'string',maxLength:36}}}}},async req=>{
+    const rows=db.prepare('SELECT i.id,i.title,i.mime_type AS mimeType,s.name AS shelf FROM items i JOIN shelves s ON s.id=i.shelf_id WHERE i.id>? AND instr(lower(i.title),lower(?))>0 ORDER BY i.id LIMIT 101').all(req.query.after??'',req.query.q??'');
+    return {assets:rows.slice(0,100).map(item=>({...item,hasHls:Boolean(videoMetadata(db,item.id)),originalRetained:Boolean(videoMetadata(db,item.id)?.originalRetained)})),nextCursor:rows.length>100?rows[99].id:null};
+  });
+  function enqueue(assetId,kind,req){
+    a.requireAdmin(req);if(maintenance.locked)throw httpError(409,'保守処理中です。');
+    const item=db.prepare('SELECT * FROM items WHERE id=?').get(assetId);if(!item)throw httpError(404,'アセットが見つかりません。');
+    if(kind!=='thumbnail'&&!item.mime_type.startsWith('video/'))throw httpError(400,'プレビュー・配信画質の再生成は動画のみです。');
+    if(db.prepare("SELECT 1 FROM admin_jobs WHERE asset_id=? AND state IN ('queued','running')").get(item.id))throw httpError(409,'このアセットは処理中です。');
+    if(db.prepare("SELECT 1 FROM media_tasks WHERE asset_id=? AND state IN ('queued','running')").get(item.id))throw httpError(409,'アップロード後の後処理を実行中です。');
+    const id=randomUUID(),now=Date.now();db.prepare("INSERT INTO admin_jobs(id,kind,asset_id,state,requested_by,created_at,updated_at) VALUES(?,?,?,'queued',?,?,?)").run(id,kind,item.id,req.user.id,now,now);a.audit(req,'media.regenerate',item.id,{jobId:id,kind});pump();return safe(get(id));
+  }
+  app.post('/api/v1/admin/assets/:id/regenerate',{...auth,config:{rateLimit:context.rateLimit===false?false:{max:20,timeWindow:'1 minute'}},schema:{body:retryBody({kind:{enum:['thumbnail','preview','transcode']}})}},async(req,reply)=>{
+    return reply.code(202).send({job:enqueue(req.params.id,req.body.kind,req)});
+  });
+  app.post('/api/v1/admin/assets/regenerate-all',{...auth,config:{rateLimit:context.rateLimit===false?false:{max:2,timeWindow:'1 minute'}},schema:{body:retryBody({kind:{enum:['thumbnail','preview','transcode']}})}},async(req,reply)=>{
+    a.requireAdmin(req);if(maintenance.locked)throw httpError(409,'保守処理中です。');
+    const kind=req.body.kind,now=Date.now();let accepted=0,skipped=0;
+    transaction(db,()=>{
+      for(const item of db.prepare("SELECT id,mime_type FROM items WHERE ?='thumbnail' OR mime_type LIKE 'video/%' ORDER BY id").iterate(kind)){
+        if(db.prepare("SELECT 1 FROM admin_jobs WHERE asset_id=? AND state IN ('queued','running')").get(item.id)){skipped++;continue;}
+        if(db.prepare("SELECT 1 FROM media_tasks WHERE asset_id=? AND state IN ('queued','running')").get(item.id)){skipped++;continue;}
+        db.prepare("INSERT INTO admin_jobs(id,kind,asset_id,state,requested_by,created_at,updated_at) VALUES(?,?,?,'queued',?,?,?)").run(randomUUID(),kind,item.id,req.user.id,now,now);accepted++;
+      }
+      a.audit(req,'media.regenerate.all',null,{kind,accepted,skipped});
+    });
+    pump();return reply.code(202).send({accepted,skipped,kind});
+  });
+  app.post('/api/v1/admin/uploads/:id/retry',{...auth,config:{rateLimit:context.rateLimit===false?false:{max:20,timeWindow:'1 minute'}},schema:{body:retryBody()}},async(req,reply)=>{await uploads.adminRetry(req.params.id,req.user.id,req.session.id);a.audit(req,'upload.retry',req.params.id);return reply.code(202).send({accepted:true});});
+  // History is read-only. Old clients get an explicit migration error instead
+  // of replaying operations selected from historical rows.
+  app.post('/api/v1/admin/jobs/retry',auth,async()=>{throw httpError(410,'履歴からの再実行は廃止しました。現存アセットの再生成を利用してください。');});
+  return {get busy(){return pending.size>0;}};
+}

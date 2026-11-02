@@ -1,0 +1,16 @@
+export function mountAdminCleanup({panel,api,esc,bytes,confirm,valid,status}){
+  panel.innerHTML='<h3>閲覧不能なアセット・残存ファイルの整理</h3><p class="admin-warning">自動削除はしません。候補を確認して選択したものだけを削除します。「有効な所属者が0人」のアセットは、アカウントの再有効化や本棚へのメンバー追加で閲覧を復旧できる場合があります。削除するとメディア・派生データ・端末ダウンロードのサーバー登録は復旧できません。必要なら先に全体バックアップを取得してください。</p><p class="muted">参照のない残存メディアは更新から1時間以上経過したものだけを候補にします。処理中・再試行用原本・現役アセットの過去配信世代・暗号鍵・DB・バックアップは除外します。スキャン中と削除中は整合性のためAPI操作を一時制限します。</p><button class="button secondary scan-cleanup">削除候補をスキャン</button><p class="cleanup-summary" role="status"></p><div class="admin-toolbar"><button class="button secondary select-cleanup" disabled>表示中の候補を選択（最大100件）</button><button class="button danger delete-cleanup" disabled>選択した候補を一括削除</button></div><div class="cleanup-candidates"></div>';
+  const scanButton=panel.querySelector('.scan-cleanup'),remove=panel.querySelector('.delete-cleanup'),select=panel.querySelector('.select-cleanup'),summary=panel.querySelector('.cleanup-summary'),list=panel.querySelector('.cleanup-candidates');let scan,selected=new Set();
+  const update=()=>{remove.disabled=!selected.size;remove.textContent=`選択した${selected.size}件を一括削除`;list.querySelectorAll('[data-cleanup]').forEach(b=>{b.checked=selected.has(b.dataset.cleanup);});};
+  scanButton.onclick=async()=>{scanButton.disabled=true;try{
+    const result=await api('/admin/cleanup/scan',{method:'POST'});if(!valid())return;scan=result;selected.clear();
+    summary.textContent=`候補 ${scan.candidates.length}件 · ${bytes(scan.candidates.reduce((n,c)=>n+c.bytes,0))} · 確認有効期限10分`+(scan.limited?' · スキャン上限あり。整理後に再スキャンしてください。':'')+(scan.skippedUnsafe?' · 安全に確認できない領域 '+scan.skippedUnsafe+'件は除外しました。':'');
+    list.innerHTML=scan.candidates.map(c=>`<article class="admin-card"><label class="confirm-row"><input type="checkbox" data-cleanup="${esc(c.id)}">${esc(c.title)}</label><small>${c.kind==='asset'?'有効な本棚所属者が0人（権限の修復で復旧できる場合があります）':'DBから参照のない残存メディア'}${c.shelf?' · '+esc(c.shelf):''}</small><small>${c.files}ファイル · ${bytes(c.bytes)}</small></article>`).join('')||'<p>削除候補はありません。</p>';
+    list.querySelectorAll('[data-cleanup]').forEach(b=>b.onchange=()=>{if(b.checked){if(selected.size>=100){b.checked=false;status('一度に100件まで選択してください。');return;}selected.add(b.dataset.cleanup);}else selected.delete(b.dataset.cleanup);update();});select.disabled=!scan.candidates.length;update();
+  }catch(error){status(error);}finally{if(valid())scanButton.disabled=false;}};
+  select.onclick=()=>{selected=new Set(scan.candidates.slice(0,100).map(c=>c.id));update();};
+  remove.onclick=()=>{const ids=[...selected],total=scan.candidates.filter(c=>selected.has(c.id)).reduce((n,c)=>n+c.bytes,0);confirm(ids.length+'件を削除',`${bytes(total)}を削除します。有効ユーザーを追加・再有効化すれば戻せる本棚のアセットも含まれる場合があります。メディアと配信世代は削除され、端末の保存データもオンライン認可を通らなくなります。必要な全体バックアップを別に保管してください。`, '<label>確認のため DELETE と入力<input name="confirmDelete" required pattern="DELETE" autocomplete="off"></label>',async fields=>{
+    const result=await api('/admin/cleanup/delete',{method:'POST',body:{scanId:scan.scanId,ids,currentPassword:fields.currentPassword,confirmDelete:fields.confirmDelete,acknowledgeUnrecoverable:true}}),deleted=result.results.filter(r=>r.deleted).length;
+    return {message:`${deleted}件を削除、${result.results.length-deleted}件は除外または失敗しました。ファイルはバックアップがある場合のみ復元可能です。再スキャンして残存候補を確認してください。`};
+  });};
+}

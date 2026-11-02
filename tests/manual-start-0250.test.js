@@ -1,0 +1,146 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm,writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {randomUUID,createHash} from 'node:crypto';
+import {setTimeout as delay} from 'node:timers/promises';
+import sharp from 'sharp';
+import {createApp} from '../server/app.js';
+import {openDatabase} from '../server/database.js';
+import {createJobLanes} from '../server/job-pool.js';
+import {jobCancellationSignal} from '../server/job-context.js';
+import {createMediaProcessor} from '../server/media.js';
+import {createUploadBatch} from '../web/src/upload-batch.js';
+import {registerManualUploadBatch} from '../web/src/manual-upload-client.js';
+import {serverUploadTransfer,filterTransfers} from '../web/src/transfer-manager.js';
+import {makePdf} from './fixtures.js';
+const password='isolated-manual-start-password';
+const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
+const tick=()=>new Promise(resolve=>setImmediate(resolve));
+async function until(check){for(let n=0;n<1500;n++){if(await check())return;await delay(10);}throw Error('Synthetic manual-start timeout');}
+async function setup(t,extra={}){
+ const dataDir=await mkdtemp(join(tmpdir(),'mirea-manual-0250-')),options={dataDir,rateLimit:false,chunkSize:1024,serverAdminUserIds:[],...extra};
+ const c={dataDir,options,app:await createApp(options),db:openDatabase(join(dataDir,'mirea.sqlite'))};
+ t.after(async()=>{await c.app.close();c.db.close();await rm(dataDir,{recursive:true,force:true});});
+ c.req=(method,path,user,payload)=>c.app.inject({method,url:'/api/v1'+path,headers:user?{authorization:'Bearer '+user.token}:{},...(payload===undefined?{}:{payload})});
+ c.register=async name=>{const r=await c.req('POST','/auth/register',null,{name,email:name+'@example.test',password});assert.equal(r.statusCode,201,r.body);return r.json();};
+ c.owner=await c.register('owner');c.admin=await c.register('admin');options.serverAdminUserIds.push(c.admin.user.id);
+ c.shelf=(await c.req('POST','/shelves',c.owner,{name:'Destination'})).json().id;
+ const settings=await c.req('PATCH','/admin/processing-settings',c.admin,{maxConcurrentUploads:1,maxConcurrentJobs:1,maxConcurrentThumbnails:1,maxConcurrentPreviews:1,maxConcurrentIngest:1,maxUploadAssets:1000,currentPassword:password});assert.equal(settings.statusCode,200,settings.body);
+ return c;
+}
+test('upload extra slot is account-wide, independent of normal admission, owner-only, expiring and restart-safe; destination includes nested series',async t=>{
+ const c=await setup(t),other=await c.register('other'),pdf=makePdf();
+ const parent=(await c.req('POST','/shelves/'+c.shelf+'/series',c.owner,{title:'Parent'})).json().series.id;
+ const child=(await c.req('POST','/shelves/'+c.shelf+'/series',c.owner,{title:'Child',parentId:parent})).json().series.id;
+ const assets=Array.from({length:6},(_,n)=>({id:randomUUID(),shelfId:c.shelf,seriesId:child,title:'Asset '+n,mimeType:'application/pdf',totalBytes:pdf.length}));
+ assert.equal((await c.req('POST','/transfers/upload-queue',c.owner,{assets})).statusCode,200);
+ const second=(await c.req('POST','/auth/login',null,{email:'owner@example.test',password})).json();
+ const start=n=>c.req('POST','/shelves/'+c.shelf+'/uploads',c.owner,{title:assets[n].title,seriesId:child,clientTransferId:assets[n].id,files:[{filename:'fixture.pdf',mime:'application/pdf',size:pdf.length}]});
+ const first=await start(0);assert.equal(first.statusCode,201,first.body);
+ assert.equal((await start(1)).statusCode,429);
+ assert.equal((await c.req('POST','/transfers/upload-queue/'+assets[4].id+'/start',null)).statusCode,401);
+ assert.equal((await c.req('POST','/transfers/upload-queue/'+assets[4].id+'/start',other)).statusCode,404);
+ let r=await c.req('POST','/transfers/upload-queue/'+assets[4].id+'/start',second);assert.equal(r.statusCode,202,r.body);
+ assert.equal((await c.req('POST','/transfers/upload-queue/'+assets[2].id+'/start',c.owner)).statusCode,409);
+ const forced=await start(4);assert.equal(forced.statusCode,201,forced.body);
+ assert.equal(c.db.prepare("SELECT COUNT(*) n FROM upload_sessions WHERE state='uploading'").get().n,2);
+ assert.equal((await start(1)).statusCode,429,'manual work must not grant a second normal bypass');
+ assert.equal((await c.req('DELETE','/uploads/'+first.json().id,c.owner)).statusCode,204);
+ const normalAgain=await start(1);assert.equal(normalAgain.statusCode,201,normalAgain.body);
+ assert.equal((await start(2)).statusCode,429,'manual transfer must leave the configured normal limit intact');
+ r=await c.req('GET','/transfers/uploads',second);assert.equal(r.statusCode,200,r.body);
+ const selected=r.json().queue.find(row=>row.clientTransferId===assets[4].id);
+ assert.equal(selected.destination.label,'Destination › Parent › Child');
+ assert.equal(selected.destination.seriesId,child);assert.deepEqual(selected.destination.seriesPath.map(s=>s.id),[parent,child]);
+ assert(!r.body.includes(c.dataDir));assert.equal((await c.req('GET','/transfers/uploads',other)).json().queue.length,0);
+ assert.equal((await c.req('DELETE','/uploads/'+forced.json().id,c.owner)).statusCode,204);
+ const attempts=await Promise.all([2,3].map(n=>c.req('POST','/transfers/upload-queue/'+assets[n].id+'/start',second)));
+ assert.deepEqual(attempts.map(r=>r.statusCode).sort(),[202,409]);
+ const reserved=attempts[0].statusCode===202?2:3;
+ await c.app.close();c.app=await createApp(c.options);
+ assert.equal((await c.req('GET','/transfers/manual-upload',second)).json().slot.transferId,assets[reserved].id);
+ c.db.prepare('UPDATE manual_upload_starts SET expires_at=0').run();
+ assert.equal((await c.req('GET','/transfers/manual-upload',second)).json().slot,null);
+ assert.equal((await c.req('POST','/transfers/upload-queue/'+assets[2].id+'/start',second)).statusCode,202);
+ assert.equal((await c.req('DELETE','/transfers/upload-queue/'+assets[2].id,second)).statusCode,204);
+ assert.equal((await c.req('GET','/transfers/manual-upload',second)).json().slot,null);
+ assert.equal(c.db.prepare('SELECT version FROM schema_version').get().version,25);
+});
+test('manual reservations are additive migrations and survive reopening without changing accounts or queued metadata',async t=>{
+ const dir=await mkdtemp(join(tmpdir(),'mirea-manual-migration-')),path=join(dir,'state.sqlite');let db=openDatabase(path);
+ t.after(async()=>{db.close();await rm(dir,{recursive:true,force:true});});
+ db.exec("INSERT INTO users VALUES('u','keep@example.test','Keep','opaque',1);INSERT INTO shelves(id,name,created_at) VALUES('s','Keep',1);INSERT INTO memberships VALUES('s','u','owner');INSERT INTO upload_queue VALUES('q','u','s',NULL,'Keep','application/pdf',1,1,9999999999999,NULL);DROP TABLE manual_upload_starts;UPDATE schema_version SET version=24;");
+ const before=db.prepare('SELECT * FROM upload_queue').all(),user=db.prepare('SELECT * FROM users').all();
+ db.close();db=openDatabase(path);assert.equal(db.prepare('SELECT version FROM schema_version').get().version,25);
+ assert.deepEqual(db.prepare('SELECT * FROM upload_queue').all(),before);assert.deepEqual(db.prepare('SELECT * FROM users').all(),user);
+ db.prepare("INSERT INTO manual_upload_starts VALUES('u','q',1,9999999999999)").run();db.close();db=openDatabase(path);
+ assert.equal(db.prepare('SELECT COUNT(*) n FROM manual_upload_starts').get().n,1);assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
+});
+test('job manual slot spans all lanes per administrator and never consumes normal capacity; failure and cancellation release it',async()=>{
+ const pool=createJobLanes(()=>({maxConcurrentJobs:1,maxConcurrentThumbnails:1})),normal=deferred(),manual=deferred(),thumbnail=deferred();let ordinaryStarted=false;
+ const a=pool.run(()=>normal.promise,'normal','transcode'),b=pool.run(()=>manual.promise,'manual','transcode'),c=pool.run(()=>{ordinaryStarted=true;},'ordinary','transcode');
+ const d=pool.run(()=>thumbnail.promise,'cover-normal','thumbnail');
+ const e=pool.run(()=>new Promise((_resolve,reject)=>jobCancellationSignal().addEventListener('abort',()=>reject(Error('cancelled')),{once:true})),'cover-manual','thumbnail');e.catch(()=>{});
+ await tick();assert.deepEqual(pool.forceStart('manual','admin1'),{started:true});await tick();
+ assert.equal(pool.lane('transcode').normalRunning,1);assert.equal(pool.lane('transcode').manualRunning,1);assert.equal(ordinaryStarted,false);
+ assert.equal(pool.forceStart('cover-manual','admin1').reason,'busy');
+ assert.equal(pool.forceStart('cover-manual','admin2').started,true);await tick();pool.cancel('cover-manual');await assert.rejects(e,/cancelled/);assert.equal(pool.manualFor('admin2'),null);
+ manual.resolve();await b;assert.equal(pool.manualFor('admin1'),null);assert.equal(ordinaryStarted,false);
+ const failed=pool.run(()=>{throw Error('expected failure');},'failed','transcode');failed.catch(()=>{});
+ assert.equal(pool.forceStart('failed','admin1').started,true);await assert.rejects(failed,/expected failure/);assert.equal(pool.manualFor('admin1'),null);
+ normal.resolve();thumbnail.resolve();await Promise.all([a,c,d]);assert.equal(ordinaryStarted,true);assert.equal(pool.running,0);
+});
+test('browser starts the selected later asset alongside all normal transfers, retaining completion monitoring and no duplicate sends',async()=>{
+ const tasks=new Map(),started=[],jobs=Array.from({length:6},(_,key)=>({key,transferId:'q'+key}));
+ const batch=createUploadBatch(jobs,{concurrency:2,start:job=>{
+  started.push(job.key);const send=deferred(),monitor=deferred();tasks.set(job.key,{send,monitor});
+  return {transferred:send.promise,promise:monitor.promise,abort(){send.reject(Error('cancelled'));monitor.reject(Error('cancelled'));}};
+ }});
+ await tick();assert.deepEqual(started,[0,1]);assert.equal(batch.forceStart(5),true);await tick();assert.deepEqual(started,[0,1,5]);
+ assert.equal(batch.forceStart(4),false);tasks.get(0).send.resolve({id:'u0'});await tick();assert.deepEqual(started,[0,1,5,2]);
+ tasks.get(1).send.resolve();tasks.get(2).send.resolve();await tick();
+ tasks.get(3).send.resolve();tasks.get(4).send.resolve();tasks.get(5).send.resolve();
+ await batch.transferred;assert.equal(started.length,6);assert.equal(new Set(started).size,6);
+ for(const {monitor}of tasks.values())monitor.resolve({item:{id:'ready'}});assert.equal((await batch.promise).rows.filter(r=>r.state==='complete').length,6);
+});
+test('remote request is received without an open transfer dialog and destination participates in search',async()=>{
+ const gate=deferred(),started=[];let current=true;
+ const jobs=[{key:0,transferId:'first'},{key:1,transferId:'remote'}],batch=createUploadBatch(jobs,{concurrency:1,start:job=>{started.push(job.key);return {promise:gate.promise,abort(){gate.reject(Error('cancelled'));}};}});
+ await tick();registerManualUploadBatch({batch,jobs,isCurrent:()=>current,api:async()=>({slot:{transferId:'remote'}})});
+ await tick();assert.deepEqual(started,[0,1]);gate.resolve();await batch.promise;current=false;
+ const row=serverUploadTransfer({id:'u',clientTransferId:'q',title:'Asset',state:'queued',destination:{label:'Shelf › Nested'},createdAt:1});
+ assert.equal(filterTransfers([row],{query:'Nested'}).length,1);assert.equal(row.destination.label,'Shelf › Nested');
+});
+test('manual media start never bypasses unfinished or failed prerequisites',async t=>{
+ const c=await setup(t),asset=randomUUID(),ids=Object.fromEntries(['thumbnail','transcode','preview'].map(kind=>[kind,randomUUID()]));
+ c.db.prepare("INSERT INTO items(id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at) VALUES(?,?,'Dependency','fixture.mp4','video/mp4',100,?,1)").run(asset,c.shelf,c.owner.user.id);
+ for(const [kind,id]of Object.entries(ids))c.db.prepare("INSERT INTO media_tasks(id,asset_id,kind,state,created_at,updated_at) VALUES(?,?,?,'queued',1,1)").run(id,asset,kind);
+ const request=()=>c.req('POST','/admin/jobs/'+ids.preview+'/start',c.admin,{source:'media',acknowledgeCost:true});
+ assert.equal((await request()).statusCode,409);
+ c.db.prepare("UPDATE media_tasks SET state='complete' WHERE id=?").run(ids.thumbnail);
+ c.db.prepare("UPDATE media_tasks SET state='running' WHERE id=?").run(ids.transcode);assert.equal((await request()).statusCode,409);
+ c.db.prepare("UPDATE media_tasks SET state='failed' WHERE id=?").run(ids.transcode);assert.equal((await request()).statusCode,409);
+ const row=(await c.req('GET','/admin/jobs',c.admin)).json().currentJobs.find(r=>r.id===ids.preview);assert.equal(row.canStart,false);assert.equal(row.state,'queued');
+ assert.equal((await c.req('GET','/admin/jobs',c.admin)).json().manualSlot,null);
+});
+test('administrator can start a specific job outside the in-memory window, with ACL and per-account slot shared by logins',async t=>{
+ const gate=deferred();t.after(()=>gate.resolve());const media=createMediaProcessor();let executing=0,started=[];
+ media.thumbnail=async(source,_mime,destination)=>{started.push(source.split(/[\\/]/).at(-1));executing++;try{await gate.promise;await sharp({create:{width:2,height:2,channels:3,background:'#567'}}).jpeg().toFile(destination);}finally{executing--;}};
+ const c=await setup(t,{mediaProcessor:media}),pdf=makePdf(),assets=[];
+ for(let n=0;n<25;n++){const id=randomUUID();assets.push(id);await writeFile(join(c.dataDir,'uploads',id),pdf);c.db.prepare('INSERT INTO items(id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at) VALUES(?,?,?,\'fixture.pdf\',\'application/pdf\',?,?,?)').run(id,c.shelf,'Job '+n,pdf.length,c.owner.user.id,Date.now()+n);}
+ const jobIds=[];for(const id of assets){const r=await c.req('POST','/admin/assets/'+id+'/regenerate',c.admin,{kind:'thumbnail',acknowledgeCost:true});assert.equal(r.statusCode,202,r.body);jobIds.push(r.json().job.id);}
+ await until(()=>executing===1);assert.equal(started[0],assets[0]);
+ const body={source:'admin',acknowledgeCost:true};
+ assert.equal((await c.req('POST','/admin/jobs/'+jobIds[24]+'/start',null,body)).statusCode,401);
+ assert.equal((await c.req('POST','/admin/jobs/'+jobIds[24]+'/start',c.owner,body)).statusCode,403);
+ const chosen=await c.req('POST','/admin/jobs/'+jobIds[24]+'/start',c.admin,body);assert.equal(chosen.statusCode,202,chosen.body);
+ await until(()=>executing===2);assert(started.includes(assets[24]));assert.equal(started.length,2);
+ const login=(await c.req('POST','/auth/login',null,{email:'admin@example.test',password})).json();
+ assert.equal((await c.req('POST','/admin/jobs/'+jobIds[23]+'/start',login,body)).statusCode,409);
+ const listing=await c.req('GET','/admin/jobs',c.admin);assert.equal(listing.json().manualSlot,jobIds[24]);assert.equal(listing.json().lanes.thumbnail.normalRunning,1);assert.equal(listing.json().lanes.thumbnail.manualRunning,1);
+ gate.resolve();await until(()=>c.db.prepare("SELECT COUNT(*) n FROM admin_jobs WHERE state IN ('queued','running')").get().n===0);
+ assert.equal((await c.req('GET','/admin/jobs',c.admin)).json().manualSlot,null);assert.equal(started.length,25);
+ assert.equal((await c.req('POST','/admin/jobs/'+jobIds[24]+'/start',c.admin,body)).statusCode,409);
+});

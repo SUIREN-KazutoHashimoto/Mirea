@@ -1,0 +1,2 @@
+.pwa-install{display:grid;gap:10px}.pwa-install>.button{justify-self:start}.pwa-install p{margin:0;line-height:1.8;font-size:12px}.pwa-install small{color:var(--muted);line-height:1.7;font-size:11px}.pwa-install [hidden]{display:none!important}.auth-pwa{margin-top:24px;padding-top:20px;border-top:1px solid var(--border)}
+@media(display-mode:standalone){html,body{min-height:100dvh;overscroll-behavior-y:none}}

@@ -1,0 +1,17 @@
+node_modules/
+dist/
+data/
+.env
+*.log
+android/.gradle/
+android/.idea/
+android/local.properties
+android/**/build/
+android/app/src/main/assets/public/
+android/capacitor-cordova-android-plugins/
+android/app/src/main/assets/capacitor.config.json
+android/app/src/main/assets/capacitor.plugins.json
+test-results/
+.local/
+releases/
+.codex-remote-attachments/

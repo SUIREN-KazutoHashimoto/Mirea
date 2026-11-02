@@ -1,0 +1,12 @@
+{
+  "appId": "com.suiren.mirea",
+  "appName": "Mirea",
+  "webDir": "dist",
+  "server": { "androidScheme": "https", "appStartPath": "/index.html?mirea-native-shell=1" },
+  "plugins": {
+    "CapacitorCookies": { "enabled": false, "nativeBridgeEnabled": false },
+    "CapacitorHttp": { "enabled": false, "nativeBridgeEnabled": false },
+    "SystemBars": { "insetsHandling": "css", "initialViewportFitValueHint": "cover" }
+  },
+  "android": { "allowMixedContent": false, "backgroundColor": "#0d121d", "resolveServiceWorkerRequests": true }
+}

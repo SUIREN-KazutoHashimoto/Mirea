@@ -1,0 +1,59 @@
+import {mountPersonalExport} from './admin-downloads.js';
+import {sectionNavigation,bindSections} from './management-ui.js';
+
+export function openSettings({ dialog, api, esc, theme, apkUrl, version, onUpdated, onDeleted, manageShelf, manageDownloads,manageCatalog,manageDiagnostics, mountUpdates,mountPwa,flush=async()=>{},isCurrent=()=>true,offlineUser=null }) {
+  const items=[['display','表示','テーマ・この端末'],['account','アカウント','名前・メール・パスワード'],['storage','保存とオフライン','作品・一覧・表紙'],['updates','アプリと更新','Android・PWA'],['records','記録と診断','書き出し・エラーの詳細'],['delete','アカウントの削除','退会について']];
+  const node = dialog('設定', `<div class="manager-layout settings-layout">${sectionNavigation(items,{esc,prefix:'settings',label:'設定の項目'})}<div class="modal-body manager-panel settings-body"><p role="status">アカウントを確認しています…</p></div></div>`, 'settings-modal');
+  const body = node.querySelector('.modal-body');
+  let disposed = false, disposeUpdates,disposeExport,disposePwa;
+  node.addEventListener('close', () => { disposed = true; disposeUpdates?.();disposeExport?.();disposePwa?.(); }, { once: true });
+  (offlineUser?Promise.resolve({user:offlineUser,ownedShelves:[],lastServerAdmin:false}):api('/account')).then(account => {
+    if (disposed||!isCurrent()) return;
+    const user = account.user;
+    const blocked = account.ownedShelves.filter(s => s.assetCount > 0 || s.memberCount > 1);
+    body.innerHTML = `<section class="settings-section"><span class="eyebrow">YOUR PREFERENCES</span><h3>あなたに合う表示に。</h3><label>テーマ<select class="theme-select"><option value="system">端末に合わせる</option><option value="light">ライト</option><option value="dark">ダーク</option></select></label><p class="muted">テーマはこの端末に保存されます。本のページや動画の色は変更しません。</p></section>
+      <section class="settings-section"><h3>アカウント情報</h3><p class="muted">ユーザーUUID：<code>${esc(user.id)}</code></p>${user.defaultCredentialWarning?'<p class="permission-note">初期管理者のメールアドレスとパスワードの両方を変更してください。変更が終わるまで管理操作は利用できません。</p>':''}<p class="muted">変更すると他の端末はログアウトします。この端末のログインは更新されます。</p><form class="account-form"><label>表示名<input name="name" maxlength="80" autocomplete="name" value="${esc(user.name)}" required></label><label>メールアドレス<input name="email" type="email" maxlength="254" autocomplete="email" value="${esc(user.email)}" required></label><label>新しいパスワード（変更する場合）<input name="newPassword" type="password" minlength="12" maxlength="128" autocomplete="new-password" placeholder="変更しない場合は空欄"></label><label>現在のパスワード<input name="currentPassword" type="password" maxlength="128" autocomplete="current-password" required></label><p class="form-error" role="alert" hidden></p><button class="button primary" type="submit">変更を保存</button></form></section>
+      <section class="settings-section"><h3>端末のダウンロード</h3><div class="catalog-save-controls"></div><p class="muted">この端末に暗号化して保存した作品を管理します。最終接続から7日間はオフラインで閲覧できます。再接続時に権限・期限・閲覧記録・続き位置を自動同期します。</p><button class="button secondary manage-downloads">端末のダウンロードを開く</button></section>
+      <section class="settings-section"><h3>閲覧記録のダウンロード</h3><div class="personal-export-container"></div></section>
+      ${mountPwa?'<section class="settings-section"><h3>ブラウザーアプリ（PWA）</h3><div class="pwa-container"></div></section>':''}
+      <section class="settings-section"><h3>Androidアプリ</h3>${mountUpdates ? '<div class="update-container"></div>' : `<p class="muted">サーバー ${esc(version)} · 専用署名版APKです。旧テスト署名版からの初回移行は手動で行ってください。署名が異なるAPKは上書きできません。アンインストールすると端末内ダウンロードは失われます。</p><a class="button secondary apk-download" href="${esc(apkUrl)}" target="_blank" rel="noopener noreferrer">Android版APKをダウンロード ↗</a>`}</section>
+      <section class="settings-section"><h3>エラーの詳細</h3><p class="muted">この画面で発生したエラーの、個人情報を含まない診断情報を確認・コピーできます。再読み込みやアカウント／接続先の変更で消去します。</p><button type="button" class="button secondary manage-diagnostics">エラーの詳細を開く</button></section>
+      <section class="settings-section account-danger"><h3>アカウントを削除</h3><p>アカウント・個人の閲覧記録・続き位置・暗号化ダウンロードの登録と、この端末の保存データを削除します。他の端末の暗号化データは開けなくなりますが、物理的な消去は各端末で行ってください。共有本棚の作品は残り、アップロード者の紐付けだけが外れます。自分だけの空の本棚も削除します。元に戻せません。</p>
+      ${blocked.length ? `<div class="account-blockers"><strong>先に本棚の管理を引き継いでください</strong>${blocked.map(s => `<button class="text-button" type="button" data-manage-shelf="${esc(s.id)}">${esc(s.name)} · ${s.assetCount}作品／${s.memberCount}人 →</button>`).join('')}<small>自分だけの本棚なら、作品を削除して空にすることでも退会できます。</small></div>` : ''}
+      ${account.lastServerAdmin ? '<p class="permission-note">最後のサーバー管理者です。先にサーバー管理メニューで別の管理者を指定する必要があります。</p>' : ''}
+      <form class="account-delete"><label>確認のためメールアドレスを入力<input name="confirmEmail" type="email" autocomplete="off" required></label><label>現在のパスワード<input name="currentPassword" type="password" autocomplete="current-password" required maxlength="128"></label><label class="confirm-row"><input name="confirm" type="checkbox" required>削除内容を確認しました</label><p class="form-error" role="alert" hidden></p><button class="button danger" type="submit" ${blocked.length || account.lastServerAdmin ? 'disabled' : ''}>アカウントを完全に削除</button></form></section>`;
+    const section=selector=>body.querySelector(selector)?.closest('.settings-section');
+    const groups={display:[section('.theme-select')],account:[section('.account-form')],storage:[section('.manage-downloads')],updates:[section('.pwa-container'),section('.update-container, .apk-download')],records:[section('.personal-export-container'),section('.manage-diagnostics')],delete:[body.querySelector('.account-danger')]};
+    for(const [id,title,hint]of items){const page=document.createElement('section');page.id='settings-'+id;page.className='settings-page';page.dataset.managerPanel=id;page.hidden=true;const header=document.createElement('header');header.className='manager-page-heading';const h=document.createElement('h3');h.textContent=title;const p=document.createElement('p');p.textContent=hint;header.append(h,p);page.append(header,...groups[id].filter(Boolean));body.append(page);}
+    const display=groups.display[0];display.querySelector('.eyebrow')?.remove();display.querySelector('h3')?.remove();
+    for(const heading of body.querySelectorAll('.settings-section h3')){const h=document.createElement('h4');h.textContent=heading.textContent;heading.replaceWith(h);}
+    const identity=body.querySelector('.account-form').closest('section').querySelector('code');if(identity){const details=document.createElement('details'),summary=document.createElement('summary');details.className='account-uuid';summary.textContent='ユーザーUUID';details.append(summary,identity.cloneNode(true));identity.parentElement.replaceWith(details);}
+    bindSections(node,{items,initial:'display'});
+    body.querySelector('.manage-diagnostics').onclick=()=>manageDiagnostics?.();
+    const themeSelect = body.querySelector('.theme-select'); themeSelect.value = theme.value; themeSelect.onchange = () => theme.set(themeSelect.value);
+    body.querySelector('.manage-downloads').onclick=()=>{node.close();manageDownloads?.();};
+    manageCatalog?.(body.querySelector('.catalog-save-controls'));
+    if(offlineUser)body.querySelector('.personal-export-container').textContent='記録の書き出しは接続後に利用できます。';else disposeExport=mountPersonalExport(body.querySelector('.personal-export-container'),{api,flush});
+    if(mountPwa)disposePwa=mountPwa(body.querySelector('.pwa-container'));
+    if (mountUpdates) disposeUpdates = mountUpdates(body.querySelector('.update-container'), { onClose: () => node.close() });
+    body.querySelectorAll('[data-manage-shelf]').forEach(button => { button.onclick = () => { node.close(); manageShelf(button.dataset.manageShelf); }; });
+    const handle = (selector, action) => { const form = body.querySelector(selector); form.onsubmit = async event => {
+      event.preventDefault();if(!isCurrent()){node.close();return;} const button = form.querySelector('button'), error = form.querySelector('.form-error'); button.disabled = true; error.hidden = true;
+      try { await action(form); } catch (err) { if (!disposed) { error.textContent = err.message; error.hidden = false; button.disabled = false; } }
+    }; };
+    body.querySelector('.account-form').setAttribute('data-unsaved','');
+    handle('.account-form', async form => {
+      const fields = form.elements, payload = { name: fields.name.value.trim(), email: fields.email.value.trim(), currentPassword: fields.currentPassword.value };
+      if (fields.newPassword.value) payload.newPassword = fields.newPassword.value;
+      const result = await api('/account', { method: 'PATCH', body: payload });
+      form.reset(); node.close(); await onUpdated(result);
+    });
+    handle('.account-delete', async form => {
+      if (!form.elements.confirm.checked) return;
+      await api('/account', { method: 'DELETE', body: { confirmEmail: form.elements.confirmEmail.value.trim(), currentPassword: form.elements.currentPassword.value } });
+      form.reset(); node.close(); await onDeleted();
+    });
+    if(offlineUser)for(const form of body.querySelectorAll('.account-form,.account-delete')){for(const field of form.querySelectorAll('input,button'))field.disabled=true;const note=document.createElement('p');note.className='muted';note.textContent='アカウントの変更は接続後に利用できます。';form.before(note);}
+  }).catch(error => { if (!disposed) body.textContent = error.message; });
+  return node;
+}

@@ -1,0 +1,117 @@
+import {canonicalName} from '../../server/name-rules.js';
+import {VIDEO_EXTENSIONS,VIDEO_TYPES} from '../../server/video-types.js';
+import {AUDIO_EXTENSIONS,AUDIO_TYPES} from '../../server/audio-types.js';
+export const MAX_UPLOAD_FILES=1000;
+const fileOrder=new Intl.Collator('ja',{numeric:true,sensitivity:'base'});
+const images=new Set(['image/jpeg','image/png','image/webp']);
+const mimeByExtension={jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png',webp:'image/webp',pdf:'application/pdf',epub:'application/epub+zip',...VIDEO_EXTENSIONS,...AUDIO_EXTENSIONS};
+const supported=new Set([...Object.values(mimeByExtension),...VIDEO_TYPES,...AUDIO_TYPES]);
+export const isUploadImage=file=>images.has(file.type);
+const titleOf=file=>file.name.replace(/\.[^.]+$/,'').slice(0,200)||'無題';
+export const isSupportedUploadFile=file=>supported.has(mimeByExtension[file.name.split('.').pop().toLowerCase()]||file.type);
+const folderKey=job=>(job.folderPath??'').split('/').map(canonicalName).join('/');
+// Generated titles may collide after stripping different extensions. Preserve
+// filename distinctions before the user edits them; never rename saved assets.
+export function distinguishInitialTitles(jobs){
+ const groups=new Map();for(const job of jobs){const key=JSON.stringify([folderKey(job),canonicalName(job.title)]);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(job);}
+ for(const group of groups.values())if(group.length>1)for(const job of group){const name=job.files[0].name,ext=name.includes('.')?name.slice(name.lastIndexOf('.')):'';job.title=name.length<=200?name:name.slice(0,Math.max(0,200-ext.length))+ext;}
+ return jobs;
+}
+export function planUploads(incoming) {
+  incoming=Array.from(incoming);if(incoming.length>MAX_UPLOAD_FILES)throw Error('一度に選択できるファイルは1000件までです。');
+  const files=incoming.map(file=>{
+    const ext=file.name.split('.').pop().toLowerCase(),mime=ext==='webm'&&file.type==='audio/webm'?'audio/webm':mimeByExtension[ext]||file.type||'application/octet-stream';
+    return file.nativeId?{...file,type:mime}:file.type===mime?file:new File([file],file.name,{type:mime,lastModified:file.lastModified});
+  });
+  const pages=files.filter(isUploadImage).sort((a,b)=>fileOrder.compare(a.name,b.name)),jobs=[];
+  let book=false;
+  for (const file of files) {
+    if (isUploadImage(file)) { if(book)continue;book=true;jobs.push({key:'images',files:pages,title:titleOf(pages[0]),imageBook:true}); }
+    else jobs.push({key:'file-'+jobs.length,files:[file],title:titleOf(file),imageBook:false});
+  }
+  return distinguishInitialTitles(jobs);
+}
+export function validateUploadPlan(jobs,{maxUploadBytes,maxBookPages,maxImageBytes,maxEpubBytes=64*1024*1024,maxUploadAssets=1000}) {
+  if(!jobs.length)return 'ファイルを選択してください。';
+  if(jobs.reduce((n,job)=>n+job.files.length,0)>MAX_UPLOAD_FILES)return '一度に選択できるファイルは1000件までです。';
+  if(jobs.length>Math.min(MAX_UPLOAD_FILES,maxUploadAssets))return `一度に選択できるアセットは${maxUploadAssets}件までです。`;
+  const identities=new Set(),names=new Map();
+  for(const job of jobs) {
+    const name=JSON.stringify([folderKey(job),canonicalName(job.title)]);if(names.has(name)){const first=names.get(name);return `同じ階層でタイトル「${canonicalName(job.title)}」が重複しています。対象：${first.relativePath??first.files[0].name} ／ ${job.relativePath??job.files[0].name}。タイトルまたは追加先を変更してください。`;}names.set(name,job);
+    const prefix=job.title||job.files[0]?.name||'アセット';
+    if(!job.title.trim()||job.title.trim().length>200)return `${prefix}：タイトルを1〜200文字で入力してください。`;
+    if(!job.files.length||job.files.some(f=>!supported.has(f.type)))return `${prefix}：対応していないファイル形式です。`;
+    if(job.files.some(f=>f.name.length>255))return `${prefix}：ファイル名は255文字以内にしてください。`;
+    if(job.files.some(f=>!Number.isSafeInteger(f.size)||f.size<=0))return `${prefix}：空のファイルは追加できません。`;
+    if(job.files.length>1&&!job.files.every(isUploadImage))return `${prefix}：複数ファイルを1冊にできるのは画像だけです。`;
+    if(job.files.length>maxBookPages)return `${prefix}：1冊は${maxBookPages}ページまでです。`;
+    if(job.files.some(f=>isUploadImage(f)&&f.size>maxImageBytes))return `${prefix}：画像1枚のサイズ上限を超えています。`;
+    if(job.files.some(f=>f.type==='application/epub+zip'&&f.size>maxEpubBytes))return `${prefix}：EPUBのサイズ上限を超えています。`;
+    if(job.files.reduce((sum,f)=>sum+f.size,0)>maxUploadBytes)return `${prefix}：1アセットのサイズ上限を超えています。`;
+    if(!job.imageBook){const f=job.files[0],key=JSON.stringify([job.relativePath??f.name,f.type,f.size,f.lastModified]);if(identities.has(key))return `${prefix}：同じ名前・サイズ・更新日時のファイルが重複しています。別々に追加してください。`;identities.add(key);}
+  }
+  return '';
+}
+
+// Transfer slots are released at server acceptance; completion is monitored separately.
+// A failed file is not silently retried/re-created; completed jobs are never resent.
+export function createUploadBatch(jobs,{start,concurrency=3,isCurrent=()=>true,changed=()=>{},eager=false,progressIntervalMs=0}) {
+ const rows=jobs.map(job=>({job,state:'queued',percent:0,processing:null,error:''})),active=new Map(),transferring=new Set(),monitors=[],cancelledKeys=new Set();
+ const limit=Math.min(eager?rows.length:32,Math.max(1,Math.floor(concurrency)||1));
+ let cancelled=false,halted=false,finished=false,emission,resolveTransferred;
+ const transferred=new Promise(resolve=>{resolveTransferred=resolve;});
+ const emit=(force=false)=>{if(force||!progressIntervalMs){clearTimeout(emission);emission=null;changed(rows.map(row=>({...row})));}else if(!emission)emission=setTimeout(()=>{emission=null;changed(rows.map(row=>({...row})));},progressIntervalMs);};
+ const result=()=>({rows:rows.map(row=>({...row})),cancelled,halted});
+ function finish(){if(!finished&&!transferring.size&&(cancelled||halted||!rows.some(r=>r.state==='queued'))){finished=true;emit(true);resolveTransferred(result());}}
+ function cancel({detachProcessing=false}={}){
+  if(cancelled)return;cancelled=true;
+  for(const row of rows)if(row.state==='queued')row.state='cancelled';
+  for(const [row,task]of active){row.state=detachProcessing&&task.processing?'detached':'cancelled';try{detachProcessing&&task.processing?task.detach():task.abort();}catch{}}
+  emit(true);finish();
+ }
+ async function launch(row){
+  transferring.add(row);row.state='uploading';emit();
+  let settled=false,task;
+  try{
+   if(!isCurrent()){cancel();return;}
+   task=start(row.job,(percent,processing)=>{
+    if(settled||cancelled||cancelledKeys.has(row.job.key))return;
+    row.uploadId??=task?.uploadId;if(!isCurrent()){cancel();return;}
+    row.percent=Math.max(0,Math.min(100,Number(percent)||0));row.processing=processing;row.state=row.percent===100?'processing':'uploading';emit();
+   });
+   active.set(row,task);if(cancelled||!isCurrent()){row.state='cancelled';try{task.abort();}catch{}}
+   const monitoring=task.promise.then(value=>{
+    row.warning=value?.seriesWarning??'';row.item=value?.item;
+    if(!cancelled&&!cancelledKeys.has(row.job.key)&&isCurrent()){row.state=value?.accepted?'processing':'complete';row.uploadId??=value?.uploadId;row.percent=100;if(!value?.accepted)row.processing=null;}emit();
+   },error=>{if(!cancelled&&!cancelledKeys.has(row.job.key)&&isCurrent()){row.state='failed';row.error=error.message;emit();}}).finally(()=>{settled=true;active.delete(row);});
+   monitors.push(monitoring);
+   const accepted=await(task.transferred??task.promise);row.uploadId=accepted?.id??accepted?.uploadId??row.uploadId;
+   if(!cancelled&&!cancelledKeys.has(row.job.key)&&isCurrent()&&task.transferred&&!['complete','failed'].includes(row.state)){row.state='processing';emit();}
+  }catch(error){
+   if(!cancelled&&!cancelledKeys.has(row.job.key)&&isCurrent()){row.state='failed';row.error=error.message||'アップロードに失敗しました。';if([401,403].includes(error.status))halted=true;}
+  }finally{transferring.delete(row);if(!isCurrent())cancel();emit();pump();}
+ }
+ function pump(){
+  if(finished)return;
+  if(!isCurrent())cancel();
+  while(!cancelled&&!halted&&[...transferring].filter(r=>!r.manual).length<limit){
+   const row=rows.find(r=>r.state==='queued'&&!cancelledKeys.has(r.job.key));if(!row)break;void launch(row);
+  }
+  finish();
+ }
+ const promise=transferred.then(async()=>{await Promise.all(monitors);emit(true);return result();});
+ queueMicrotask(pump);
+ return {promise,transferred,cancel,
+  forceStart(key){
+   if(finished||cancelled||halted||!isCurrent())return false;
+   const row=rows.find(r=>r.job.key===key);if(!row||!['queued','uploading'].includes(row.state)||cancelledKeys.has(key))return false;
+   if([...transferring].some(r=>r.manual&&r!==row))return false;
+   row.manual=true;if(row.state==='queued')void launch(row);pump();return true;
+  },
+  cancelAsset(key,{detachProcessing=false}={}){
+   const row=rows.find(r=>r.job.key===key);if(!row||['complete','failed'].includes(row.state))return;
+   cancelledKeys.add(key);const task=active.get(row);row.state=detachProcessing&&task?.processing?'detached':'cancelled';
+   try{if(task)detachProcessing&&task.processing?task.detach():task.abort();}finally{emit(true);pump();}
+  }
+ };
+}

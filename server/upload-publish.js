@@ -1,0 +1,87 @@
+import {assertUploadName} from './name-integrity.js';
+import {moveStorage} from './storage-move.js';
+import { open, rename, unlink } from 'node:fs/promises';
+import { join } from 'node:path';
+import { transaction } from './database.js';
+import {attachUploadSeries} from './upload-series.js';
+import { httpError, matchesFileType } from './security.js';
+import { IMAGE_TYPES, IMAGE_BOOK_MIME, imageExtension, removeItemDirectory } from './media.js';
+import { EPUB_MIME } from './ebook-types.js';
+import { isVideo } from './video-types.js';
+import { isAudio } from './audio-types.js';
+import { publishAudio } from './audio-publish.js';
+import { publishVideo } from './video-publish.js';
+import {imageBookFailure} from './media-failure.js';
+
+// Only fully verified media is published. An upload ID also becomes its item ID,
+// allowing a persisted job to recognize publication after an interrupted restart.
+export async function publishStagedUpload(context, upload, authorize) {
+  const { db, media, uploadDir, stagingDir, booksDir, thumbnailDir, publicItem } = context;
+  const { id, shelf_id: shelfId, user_id: userId, title } = upload;
+  const files = JSON.parse(upload.files_json);
+  const stage = join(stagingDir, id);
+  const finalPath = join(uploadDir, id);
+  const finalThumbnail = join(thumbnailDir, `${id}.jpg`);
+  const existing = db.prepare('SELECT * FROM items WHERE id=?').get(id);
+  if (existing) return publicItem(existing);
+  if (isVideo(files[0].mime)) return publishVideo(context, upload, authorize);
+  if (isAudio(files[0].mime)) return publishAudio(context, upload, authorize);
+  const isBook = IMAGE_TYPES.includes(files[0].mime);
+  const isEpub = files[0].mime === EPUB_MIME;
+  const pages = [];
+  try {
+    // Recover uncommitted filesystem moves from a process crash. Chunk sources
+    // live in another directory and remain available until publication commits.
+    await removeItemDirectory(booksDir, id);
+    await Promise.all([finalPath, finalThumbnail].map(path => unlink(path).catch(error => { if (error.code !== 'ENOENT') throw error; })));
+    authorize();
+    for (const [index, file] of files.entries()) {
+      const source = join(stage, `raw-${index + 1}`);
+      const handle = await open(source, 'r');
+      let head;
+      try {
+        head = Buffer.alloc(16);
+        const { bytesRead } = await handle.read(head, 0, head.length, 0);
+        head = head.subarray(0, bytesRead);
+      } finally { await handle.close(); }
+      if (!matchesFileType(file.mime, head)) {const error=httpError(415,'ファイルの内容と形式が一致しません。');throw isBook?imageBookFailure(Object.assign(error,{code:'IMAGE_TYPE_MISMATCH'}),{page:index+1,pages:files.length,stage:'page-validation',phase:'read'}):error;}
+      if (isBook) {
+        db.prepare('UPDATE upload_sessions SET processing_json=? WHERE id=?').run(JSON.stringify({stage:'image-validation',page:index+1,pages:files.length}),id);
+        let metadata;
+        try { metadata = await media.validateImage(source); }
+        catch(error) { throw imageBookFailure(error,{page:index+1,pages:files.length,stage:'page-validation'}); }
+        await rename(source, join(stage, `${index + 1}.${imageExtension(file.mime)}`));
+        pages.push({ ...metadata, ...file, number: index + 1 });
+      }
+      authorize();
+    }
+    const first = files[0];
+    if(isBook)db.prepare('UPDATE upload_sessions SET processing_json=? WHERE id=?').run(JSON.stringify({stage:'thumbnail',page:1,pages:files.length}),id);
+    let thumbnail;
+    try { thumbnail = await media.thumbnail(join(stage, isBook ? `1.${imageExtension(first.mime)}` : 'raw-1'), first.mime, join(stage, 'thumbnail.jpg'), isEpub ? join(stage,'book.json') : undefined); }
+    catch(error) { throw isBook?imageBookFailure(error,{page:1,pages:files.length,stage:'thumbnail'}):error; }
+    authorize();
+    await moveStorage(join(stage, 'thumbnail.jpg'), finalThumbnail,{authorize});
+    if (isBook) await rename(stage, join(booksDir, id));
+    else {
+      await rename(join(stage, 'raw-1'), finalPath);
+      if (isEpub) await rename(stage,join(booksDir,id));
+      else await removeItemDirectory(stagingDir, id);
+    }
+    authorize();
+    transaction(db, () => {
+      assertUploadName(db,upload);
+      db.prepare(`INSERT INTO items (id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at,page_count,thumbnail_ready)
+        VALUES(?,?,?,?,?,?,?,?,?,1)`).run(id, shelfId, title, first.filename, isBook ? IMAGE_BOOK_MIME : first.mime,
+        files.reduce((sum, file) => sum + file.size, 0), userId, Date.now(), isBook ? pages.length : thumbnail.pageCount);
+      const insert = db.prepare('INSERT INTO image_pages VALUES(?,?,?,?,?,?,?)');
+      for (const page of pages) insert.run(id, page.number, page.filename, page.size, page.width, page.height, page.mime);
+      attachUploadSeries(db,upload);
+      db.prepare("UPDATE upload_sessions SET state='complete', error=NULL WHERE id=?").run(id);
+    });
+    return publicItem(db.prepare('SELECT * FROM items WHERE id=?').get(id));
+  } catch (error) {
+    await Promise.allSettled([removeItemDirectory(stagingDir, id), removeItemDirectory(booksDir, id), unlink(finalPath), unlink(finalThumbnail)]);
+    throw error;
+  }
+}

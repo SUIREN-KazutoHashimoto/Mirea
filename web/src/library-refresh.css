@@ -1,0 +1,23 @@
+html.library-refresh-enabled{overscroll-behavior-y:contain}
+.main-content{position:relative}
+.collection-refresh{flex:none;width:40px;height:40px;border:1px solid var(--border);border-radius:12px;background:var(--surface);color:var(--text);display:inline-grid;place-items:center;cursor:pointer}
+.collection-refresh:hover{background:var(--surface-raised,var(--surface))}
+.collection-refresh:focus-visible{outline:2px solid var(--blue);outline-offset:3px}
+.collection-refresh:disabled{opacity:.5;cursor:wait}
+.pull-refresh{--pull-distance:0px;position:absolute;z-index:6;top:81px;left:50%;transform:translate(-50%,calc(var(--pull-distance) - 48px));display:flex;align-items:center;gap:10px;max-width:calc(100% - 32px);width:max-content;padding:10px 16px;border:1px solid var(--border);border-radius:24px;background:var(--surface);color:var(--text);box-shadow:0 4px 18px #0002;font-size:13px;pointer-events:none;opacity:1;transition:opacity .16s}
+.pull-refresh[data-state="idle"]{opacity:0;visibility:hidden}
+.pull-refresh-symbol{font-size:20px;line-height:1;display:inline-block}
+.pull-refresh[data-state="armed"] .pull-refresh-symbol{transform:rotate(180deg)}
+.pull-refresh[data-state="refreshing"] .pull-refresh-symbol{font-size:0;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;width:17px;height:17px;animation:pull-refresh-spin .7s linear infinite}
+.pull-refresh[data-state="done"] .pull-refresh-symbol{font-size:0}
+.pull-refresh[data-state="done"] .pull-refresh-symbol:before{content:'✓';font-size:18px}
+.pull-refresh[data-state="failed"] .pull-refresh-symbol{font-size:0}
+.pull-refresh[data-state="failed"] .pull-refresh-symbol:before{content:'!';font-size:18px}
+.compact-library .pull-refresh{top:64px}
+.compact-library .collection-caption{display:grid;grid-template-columns:minmax(0,1fr) 40px auto;gap:4px 8px}
+.compact-library .collection-caption>h2{grid-column:1;grid-row:1;min-width:0}
+.compact-library .collection-caption>#result-count{grid-column:1;grid-row:2}
+.compact-library .collection-refresh{grid-column:2;grid-row:1/span 2}
+.compact-library #bulk-download{grid-column:3;grid-row:1/span 2}
+@keyframes pull-refresh-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.pull-refresh{transition:none}.pull-refresh[data-state="refreshing"] .pull-refresh-symbol{animation:none}}

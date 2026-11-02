@@ -1,0 +1,85 @@
+import groovy.json.JsonOutput
+import groovy.xml.XmlSlurper
+import java.util.zip.ZipFile
+import java.util.zip.ZipInputStream
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+
+// Use the resolved runtime graph, not a manually maintained dependency list.
+// No private Gradle properties, absolute cache paths, or credentials enter it.
+def noticeAssets = layout.buildDirectory.dir('generated/thirdPartyNotices/assets')
+def runtimeModules = providers.provider { configurations.releaseRuntimeClasspath.incoming.resolutionResult.allComponents.collect { it.id }.findAll { it instanceof ModuleComponentIdentifier }.sort { it.toString() } }
+def generateNotices = tasks.register('generateThirdPartyNotices') {
+    inputs.property('runtimeModules', runtimeModules.map { it.collect { id -> id.toString() }.join('\n') })
+    inputs.file(rootProject.file('../LICENSE'))
+    inputs.file(rootProject.file('third-party-notices.gradle'))
+    outputs.dir(noticeAssets)
+    doLast {
+        def apache = rootProject.file('../LICENSE').getText('UTF-8')
+        def pomCache = [:]
+        def pomInfo
+        pomInfo = { String coordinate, int depth ->
+            if (depth > 8) throw new GradleException('License POM parent recursion: ' + coordinate)
+            if (pomCache.containsKey(coordinate)) return pomCache[coordinate]
+            def parts = coordinate.split(':')
+            def cache = new File(gradle.gradleUserHomeDir, 'caches/modules-2/files-2.1/' + parts.join('/'))
+            def cached = fileTree(cache).matching { include '*/' + parts[1] + '-' + parts[2] + '.pom' }.files
+            File pomFile
+            if (cached) {
+                if (cached.collect { it.getText('UTF-8') }.toSet().size() != 1) throw new GradleException('Conflicting cached POM notices: ' + coordinate)
+                pomFile = cached.first()
+            } else {
+                def pom = configurations.detachedConfiguration(dependencies.create(coordinate + '@pom'))
+                pom.transitive = false
+                pomFile = pom.singleFile
+            }
+            def xml = new XmlSlurper(false, false).parse(pomFile)
+            def licenses = xml.licenses.license.collect { [name: it.name.text(), url: it.url.text()] }
+            if (!licenses && xml.parent.groupId.text()) {
+                def parent = xml.parent
+                licenses = pomInfo(parent.groupId.text() + ':' + parent.artifactId.text() + ':' + parent.version.text(), depth + 1).licenses
+            }
+            def info = [licenses: licenses, source: xml.url.text(), packaging: xml.packaging.text() ?: 'jar']
+            pomCache[coordinate] = info
+            return info
+        }
+        def isNotice = { String path -> path.tokenize('/').last() ==~ /(?i).*(?:license|licence|notice|copying|copyright)(?:[-_.].*)?/ }
+        def readNotices = { File artifact ->
+            def documents = []
+            new ZipFile(artifact).withCloseable { zip ->
+                zip.entries().each { entry ->
+                    if (!entry.directory && isNotice(entry.name)) {
+                        documents << [path: entry.name, text: zip.getInputStream(entry).withCloseable { it.getText('UTF-8') }]
+                    }
+                    if (entry.name == 'classes.jar') {
+                        new ZipInputStream(zip.getInputStream(entry)).withCloseable { nested ->
+                            def inner
+                            while ((inner = nested.nextEntry) != null) {
+                                if (!inner.directory && isNotice(inner.name)) documents << [path: 'classes.jar!/' + inner.name, text: new String(nested.readAllBytes(), 'UTF-8')]
+                                nested.closeEntry()
+                            }
+                        }
+                    }
+                }
+            }
+            return documents.sort { it.path }
+        }
+        def packages = []
+        configurations.releaseRuntimeClasspath.incoming.artifactView { componentFilter { it instanceof ModuleComponentIdentifier } }.artifacts.artifacts.each { artifact ->
+            def id = artifact.id.componentIdentifier
+            def coordinate = id.group + ':' + id.module + ':' + id.version
+            def info = pomInfo(coordinate, 0)
+            if (!info.licenses) throw new GradleException('Missing runtime license declaration: ' + coordinate)
+            def documents = readNotices(artifact.file)
+            def apacheOnly = info.licenses.every { it.url ==~ /https?:\/\/(?:www\.)?apache.org\/licenses\/LICENSE-2.0(?:\.txt)?\/?/ || it.name in ['Apache License, Version 2.0', 'The Apache Software License, Version 2.0', 'Apache 2.0', 'Apache-2.0'] }
+            if (apacheOnly) documents << [path: 'Apache-2.0.txt', text: apache]
+            else if (!documents) throw new GradleException('Runtime license text needs review: ' + coordinate + ' ' + info.licenses)
+            packages << [name: id.group + ':' + id.module, version: id.version, license: info.licenses.collect { it.name }.join(' / '), source: info.source, licenseDeclarations: info.licenses, documents: documents]
+        }
+        def output = noticeAssets.get().file('public/third-party-native.json').asFile
+        output.parentFile.mkdirs()
+        output.setText(JsonOutput.toJson([schemaVersion: 1, scope: 'android-runtime', description: 'Resolved Android runtime artifacts. Original packaged notices and declared license texts; Capacitor project licenses are included in the npm catalog.', packages: packages.sort { it.name + '@' + it.version }]) + '\n', 'UTF-8')
+        logger.lifecycle('Android third-party notices: ' + packages.size() + ' runtime artifacts')
+    }
+}
+android.sourceSets.main.assets.srcDir(noticeAssets)
+tasks.named('preBuild').configure { dependsOn(generateNotices) }

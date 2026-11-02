@@ -1,0 +1,14 @@
+/* Library chrome stays in place without a second fixed-height spacer. */
+html:not(.native-app) .topbar{position:sticky;top:0;z-index:30;background:var(--surface);flex:none}
+.about-body dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:10px 20px}.about-body dd{margin:0;overflow-wrap:anywhere}.about-body a{color:var(--blue)}
+.collection-drop-target{outline:2px dashed var(--action);outline-offset:-6px}
+.collection-drop-hint{position:fixed;z-index:150;inset:15% 12%;display:grid;place-items:center;pointer-events:none;border:3px dashed var(--action);border-radius:24px;background:color-mix(in srgb,var(--surface) 94%,transparent);color:var(--text);font-size:clamp(16px,3vw,28px);padding:30px;text-align:center;box-shadow:0 20px 80px #0005}
+.collection-drop-hint[hidden]{display:none}
+.asset-context-menu{position:fixed;z-index:1000;min-width:210px;max-width:calc(100vw - 16px);display:grid;gap:2px;padding:6px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 40px #0005}
+.asset-context-menu button{background:transparent;border:0;text-align:left;border-radius:5px;padding:10px 18px;min-height:38px;color:var(--text);font-size:13px}
+.asset-context-menu button:hover,.asset-context-menu button:focus-visible{background:var(--soft);outline:2px solid var(--action);outline-offset:-2px}
+.asset-context-menu button:disabled{opacity:.4}.asset-context-menu button.danger-text{color:var(--danger,#dc4960)}
+.item-grid .card-art>.media-type,.item-grid .card-art>.series-count,.item-grid .card-art>.card-open-label{display:none}
+.card-content>.video-preview-label{position:static;display:block;transform:none;margin-top:6px;padding:0;background:none;color:var(--muted);font-size:10px;pointer-events:none}
+.item-grid[data-details=compact] .video-preview-label{display:none}
+@media(max-width:760px){.item-grid[data-layout=grid5]{gap:6px}.item-grid[data-layout=grid5] .card-content{padding:6px}.item-grid[data-layout=grid5] .card-art{margin:3px}.item-grid[data-layout=grid5] .card-content h3{font-size:10px;line-height:1.4}}

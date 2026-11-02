@@ -1,0 +1,10 @@
+# Optional: use an existing host directory instead of the default named volume.
+# Stop direct execution first. The container's node user (UID 1000) needs access.
+services:
+  mirea:
+    volumes:
+      - type: bind
+        source: ${DATA_DIR:-./data}
+        target: /data
+        bind:
+          create_host_path: false

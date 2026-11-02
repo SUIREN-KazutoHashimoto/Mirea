@@ -1,0 +1,8 @@
+engineStrict: true
+saveExact: true
+allowBuilds:
+  esbuild: true
+  ffmpeg-static: true
+  '@derhuerst/ffprobe-static': true
+patchedDependencies:
+  '@capacitor/android@8.5.3': patches/@capacitor__android@8.5.3.patch

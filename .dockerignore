@@ -1,0 +1,24 @@
+# A source-only allowlist. Never send production data, attachments, certificates,
+# signing identities, local credentials or release archives to the builder.
+**
+!Dockerfile
+!container/
+!container/launcher.c
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!patches/
+!patches/@capacitor__android@8.5.3.patch
+!.npmrc
+!vite.config.js
+!LICENSE
+!server/
+!server/**
+!scripts/
+!scripts/prepare-media-storage.mjs
+!scripts/pwa-icons.mjs
+!scripts/third-party-notices.mjs
+!third-party/
+!third-party/**
+!web/
+!web/**

@@ -1,0 +1,24 @@
+import {httpError} from './security.js';
+export function registerProcessingSettings(app,{processingSettings,jobPool,adminAccess}){
+  const auth={onRequest:async req=>adminAccess.requireAdmin(req)};
+  app.get('/api/v1/admin/processing-settings',auth,async()=>processingSettings.value);
+  app.get('/api/v1/admin/series-name-conflicts',auth,async()=>({groups:dbConflicts()}));
+  function dbConflicts(){return processingSettings.conflicts;}
+  app.patch('/api/v1/admin/processing-settings',{...auth,schema:{body:{type:'object',additionalProperties:false,required:['maxConcurrentUploads','maxConcurrentJobs','maxUploadAssets','currentPassword'],properties:{maxConcurrentUploads:{type:'integer',minimum:1,maximum:32},maxConcurrentJobs:{type:'integer',minimum:1,maximum:16},maxConcurrentThumbnails:{type:'integer',minimum:1,maximum:8},maxConcurrentPreviews:{type:'integer',minimum:1,maximum:8},maxConcurrentIngest:{type:'integer',minimum:1,maximum:8},maxUploadAssets:{type:'integer',minimum:1,maximum:1000},currentPassword:{type:'string',minLength:1,maxLength:128}}}}},async req=>{
+    await adminAccess.reauthenticate(req);const {currentPassword,...value}=req.body;
+    const saved=processingSettings.update(value);jobPool.pump();adminAccess.audit(req,'processing.settings',null,saved);return saved;
+  });
+}
+export function createProcessingSettings(db,env=process.env){
+  const defaults={maxConcurrentUploads:3,maxConcurrentJobs:5,maxConcurrentThumbnails:2,maxConcurrentPreviews:1,maxConcurrentIngest:2,maxUploadAssets:1000};
+  const variables={maxConcurrentUploads:'MAX_CONCURRENT_UPLOADS',maxConcurrentJobs:'MAX_CONCURRENT_JOBS',maxConcurrentThumbnails:'MAX_CONCURRENT_THUMBNAILS',maxConcurrentPreviews:'MAX_CONCURRENT_PREVIEWS',maxConcurrentIngest:'MAX_CONCURRENT_INGEST',maxUploadAssets:'MAX_UPLOAD_ASSETS'},overrides={};
+  for(const [key,name] of Object.entries(variables))if(env[name]!==undefined)overrides[key]=key==='maxUploadAssets'?Math.min(1000,Number(env[name])):Number(env[name]);
+  const bounds={maxConcurrentUploads:32,maxConcurrentJobs:16,maxConcurrentThumbnails:8,maxConcurrentPreviews:8,maxConcurrentIngest:8,maxUploadAssets:1000};
+  const valid=value=>Object.keys(defaults).every(key=>Number.isInteger(value[key])&&value[key]>=1&&value[key]<=bounds[key]);
+  if(!valid({...defaults,...overrides}))throw Error('Invalid upload/job concurrency settings');
+  let current={...defaults,...JSON.parse(db.prepare("SELECT value FROM server_settings WHERE key='processing'").get()?.value??'{}')};
+  current.maxUploadAssets=Math.min(1000,current.maxUploadAssets);
+  if(!valid(current))throw Error('Invalid saved processing settings');
+  return {get conflicts(){return db.prepare('SELECT COUNT(*) n FROM (SELECT shelf_id,parent_id,title FROM series GROUP BY shelf_id,parent_id,title HAVING COUNT(*)>1)').get().n;},get value(){return {...current,...overrides};},get overrides(){return Object.fromEntries(Object.entries(overrides).map(([key,value])=>[key,{variable:variables[key],value}]));},update(value){value={...current,...Object.fromEntries(Object.entries(value).filter(([key])=>!(key in overrides)))};if(!valid(value))throw httpError(400,'転送は1〜32件、変換は1〜16件、その他の処理は1〜8件、一括選択は1〜1000件で指定してください。');
+    db.prepare("INSERT INTO server_settings(key,value) VALUES('processing',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(value));current={...value};return {...current,...overrides};}};
+}

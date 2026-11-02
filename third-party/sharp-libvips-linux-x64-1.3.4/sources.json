@@ -1,0 +1,44 @@
+{
+  "package": "@img/sharp-libvips-linux-x64",
+  "version": "1.3.4",
+  "licenseDeclaration": "LGPL-3.0-or-later",
+  "registryMetadata": "https://registry.npmjs.org/@img%2fsharp-libvips-linux-x64/1.3.4",
+  "tarball": "https://registry.npmjs.org/@img/sharp-libvips-linux-x64/-/sharp-libvips-linux-x64-1.3.4.tgz",
+  "integrity": "sha512-GJ//SSXbnwSDes02umB3nDJLFcQzw8a18V8fyhqr6tV515tOEMdImjjxj1AoafMRz56F3PHgftnj1QEKSU1zkw==",
+  "gitHead": "ebb95f8add54eee8bed840e3fb587e4cbec857d7",
+  "retrievedAt": "2026-11-02",
+  "files": [
+    {
+      "file": "package.json",
+      "source": "https://registry.npmjs.org/@img/sharp-libvips-linux-x64/-/sharp-libvips-linux-x64-1.3.4.tgz",
+      "member": "package/package.json",
+      "sha256": "2c5f6f9abf74c1492622d5dc4e4da056ab0712fd71de61e03a687c88b8cdab4e",
+      "bytes": 935,
+      "kind": "unmodified npm package document"
+    },
+    {
+      "file": "versions.json",
+      "source": "https://registry.npmjs.org/@img/sharp-libvips-linux-x64/-/sharp-libvips-linux-x64-1.3.4.tgz",
+      "member": "package/versions.json",
+      "sha256": "e2611d5d854815a8b33c8a3d2ec649511a9596ccf16844e8eae7cf81e79881c4",
+      "bytes": 596,
+      "kind": "unmodified npm package document"
+    },
+    {
+      "file": "README.md",
+      "source": "https://registry.npmjs.org/@img/sharp-libvips-linux-x64/-/sharp-libvips-linux-x64-1.3.4.tgz",
+      "member": "package/README.md",
+      "sha256": "b4fb1a9f5909cfd58edb4177c2028ce3033cf8651aef740a554c1dc58b3c5ee3",
+      "bytes": 4331,
+      "kind": "unmodified npm package document"
+    },
+    {
+      "file": "LICENSE.LGPL-3.0-or-later.txt",
+      "source": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/LGPL-3.0-or-later.txt",
+      "sha256": "996af0513df21f7496288951c41428a03c174e9e4a9d63665c57d670f845ccb1",
+      "bytes": 42098,
+      "kind": "unmodified SPDX license-list text, containing LGPLv3 and incorporated GPLv3; supplementary to the npm declaration"
+    }
+  ],
+  "note": "The npm tarball omits a standalone license. Its README and versions.json identify the embedded libraries. The root Apache-2.0 LICENSE in sharp-libvips applies to build tooling and is not substituted for the binary LGPL declaration. GNU direct text endpoints were unavailable; the fixed SPDX release supplies the verbatim standard terms without inferred copyright attribution."
+}

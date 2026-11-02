@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Capacitor's file input camera capture writes only here. Do not expose
+         the entire external storage or app cache (which also holds updates). -->
+    <external-files-path name="camera_images" path="Pictures/" />
+</paths>
