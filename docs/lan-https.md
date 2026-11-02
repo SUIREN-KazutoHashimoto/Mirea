@@ -1,23 +1,45 @@
-# LANでのHTTPS利用
+# LAN内でHTTPSを使う
 
-暗号化ダウンロード・Service Worker・Web Cryptoなどを使うため、LAN内もHTTPSを使用します。IPアドレスへの平文HTTPはセキュアコンテキストになりません。ブラウザーの警告無視や証明書検証無効化で対応しないでください。
+通常の導入手順は[HTTPSと証明書](install/https.md)へ移しました。LAN内でもAndroidアプリ、Service Worker、端末保存には信頼されたHTTPSを使います。証明書の警告を無視したりTLS検証を無効化したりしません。
 
-## 証明書
+## PowerShellでローカルCAを用意する場合
 
-既存の信頼できる証明書があればそれを使えます。自己署名運用ではPowerShell 7以上の `scripts/New-LanCertificate.ps1 -AuthorityDirectory <アプリ外のCA領域> -OutputDirectory <空フォルダ> -DnsName <ホスト名> -IpAddress <LANのIPv4>` が共通ルートCAとサーバー証明書を生成します。Windowsでは管理者として実行してください。既存CAは再利用し、既存サーバー証明書は上書きしません。CA秘密鍵はアプリとは別のprivateフォルダへ保存し、WindowsではSYSTEM／AdministratorsだけのACLにします。証明書ストアや端末の信頼設定は自動変更しません。
+既に組織のCAや信頼済み証明書がある場合は、それを管理者の手順で発行します。新しくローカルCAを作る必要がある場合だけ、[New-LanCertificate.ps1](../scripts/New-LanCertificate.ps1)を使用できます。この補助手順は証明書の発行のみで、サーバーやDNS、信頼ストアを自動設定しません。
 
-- `server-key.pem`: 秘密鍵。配布・Git登録不可。稼働アカウントと管理者だけに読取を許可。
-- `server-chain.pem`: サーバー証明書＋CAチェーン。
-- `lan-ca.cer` / `lan-ca.pem`: 利用端末へ配布するCA公開証明書。SHA-256指紋を別経路で確認してから信頼してください。
+前提:
 
-サーバー証明書は1年、ルートCAは5年有効です。各端末で共通ルートCAを一度信頼すると、同CAで署名したMireaや他のLANサービスの証明書を個別に再登録する必要はありません（各アプリが端末CAを利用する必要はあります）。更新時は同じCA領域を指定して、新しい空のサーバー証明書フォルダへ発行します。CAそのものの更新時だけ再信頼が必要です。
+- PowerShell 7以上。WindowsではCAの保護ACLを設定するため管理者PowerShellを使います。
+- サーバーのDNS名とLANのIPアドレスが決まっていること。
+- CAを保管する領域と、サーバー証明書を出力する空の領域を分けること。
+- MireaプロセスにCA秘密鍵の読み取り権限を付けないこと。
 
-CA秘密鍵の漏洩は署名したサービス全体へ影響します。MireaのプロセスにはCA秘密鍵を読ませず、管理者だけが発行時に使用します。CA領域は暗号化したオフラインバックアップ等で保護し、Git・リリース・クライアントへ配布しないでください。失効／削除時は利用端末からCAを除去してください。知らないCAを導入せず、利用する端末だけへ必要な期間導入してください。
+リポジトリのルートから実行します。質問には自分のパス・名前を入力します。パスに空白があっても引数として扱われます。
 
-Windowsのブラウザーでは、CAを利用者の「信頼されたルート証明機関」へ明示インポートします。Androidでは設定の証明書インストールからCA証明書として導入します（表示名は端末ごとに異なる）。Mireaアプリは明示導入されたユーザーCAを信頼しますが、名前不一致・期限切れ・不正署名は引き続き拒否します。詳細は [Android公式のNetwork Security Configuration](https://developer.android.com/privacy-and-security/security-config) を参照してください。
+```powershell
+$certificateAuthorityPath = Read-Host 'アプリ外のCA保管フォルダー'
+$serverCertificatePath = Read-Host '空のサーバー証明書フォルダー'
+$serverDnsName = Read-Host '端末から使うサーバーDNS名'
+$serverLanIp = Read-Host 'サーバーのLAN IPアドレス'
+./scripts/New-LanCertificate.ps1 -AuthorityDirectory $certificateAuthorityPath -OutputDirectory $serverCertificatePath -DnsName $serverDnsName -IpAddress $serverLanIp
+```
 
-## 待受・ファイアウォール
+成功すると期限・CAのSHA-256指紋・出力先が表示されます。次のファイルが生成されます。
 
-`HOST`には目的のLANアドレスを指定し、`PORT`に専用ポート（例3443）、`HTTPS_KEY_FILE`／`HTTPS_CERT_FILE`に上記PEMを指定します。Windows Firewallもそのアドレス・ポート・LANサブネットだけに限定します。ネットワーク全体をPublicからPrivateへ変更したり、ルーターの外向けポートを開ける必要はありません。IPv6／別NICまで意図せず公開しないよう確認します。
+| ファイル | 用途と取り扱い |
+| --- | --- |
+| `server-key.pem` | サーバー秘密鍵。サーバー実行者と管理者だけが読めるよう保護 |
+| `server-chain.pem` | サーバー証明書とCAチェーン。HTTPSサーバーへ配置 |
+| `lan-ca.cer` / `lan-ca.pem` | CA公開証明書。信頼する端末だけへ配布 |
+| CA領域の `private/root-key.pem` | CA秘密鍵。サーバーや端末、Git、コンテナへ配布しない |
 
-再起動対応はサービスかWindowsタスクスケジューラで起動します。リリースコード・Node実行環境と永続DATA_DIRを分離してください。ログイン不要で動かすタスクは、ネットワークアクセス不要の専用S4U／最小権限アカウントなどを選び、秘密鍵とDATA_DIRのACLを限定します。既存タスク・ポート・保存先と競合したら上書きせず確認してください。
+サーバー証明書は1年、作成するCAは5年の有効期限です。既存の完全なCA領域は再利用しますが、既存サーバー証明書を上書きしません。CAが不足・不整合・期限不足なら処理を止めます。エラー時は元の領域を消して再作成せず、入力先と期限を確認してください。
+
+LinuxなどWindows以外では、保管先の権限を管理者が別途制限します。証明書を生成できたことと秘密鍵の適切な保護は別です。
+
+## 信頼、更新、復旧
+
+CA公開証明書の指紋を別の信頼できる経路で照合し、利用端末の証明書管理から明示的に信頼します。MireaのAndroidアプリはユーザー導入CAに対応しますが、ホスト名不一致・期限切れ・不正署名は引き続き拒否します。
+
+更新では同じCA領域と、新しい空の出力先を指定して発行します。旧証明書を保存してからプロキシまたはMireaのTLSパスを切り替え、[HTTPSの確認手順](install/https.md)で検証します。既存の専用事前検査を使うコンテナは指紋も固定しているため、単純なファイル置換を行わず[契約を確認](container-security.md#truenas-https事前検査)してください。
+
+CA秘密鍵はアクセス制限されたバックアップへ保管します。漏洩や廃止時には、利用端末から旧CAの信頼を除去します。秘密鍵の公開やTLS検証の回避を復旧策にしません。

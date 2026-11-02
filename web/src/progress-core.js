@@ -1,7 +1,7 @@
 // One in-flight update per viewer, optimistic revisions across viewers/devices.
-export function createProgressSync({revision=0,pending=null,desired=null,lastValue=null,read,send,persist=()=>{},status=()=>{},saved=()=>{},uuid=()=>crypto.randomUUID(),now=Date.now}) {
+export function createProgressSync({revision=0,pending=null,desired=null,conflict=null,lastValue=null,read,send,persist=()=>{},status=()=>{},saved=()=>{},uuid=()=>crypto.randomUUID(),now=Date.now}) {
   let running,stopped=false,last=desired?JSON.stringify(desired):lastValue?JSON.stringify(lastValue):null;
-  const store=()=>persist(pending || desired ? {pending,desired,revision,at:now()}:null);
+  const store=()=>persist(pending || desired || conflict ? {pending,desired,revision,conflict,at:now()}:null);
   function prepare(){if(!pending && desired && revision!==null)pending={revision,updateId:uuid(),...desired};}
   function update(value){
     if(stopped || !value)return;
@@ -9,7 +9,7 @@ export function createProgressSync({revision=0,pending=null,desired=null,lastVal
     last=key;desired={...value};prepare();store();
   }
   async function flush(){
-    if(running)return running;if(stopped)return;
+    if(running)return running;if(stopped||conflict)return;
     running=(async()=>{
       try{
         if(revision===null){const result=await read();revision=result.revision;}
@@ -24,20 +24,38 @@ export function createProgressSync({revision=0,pending=null,desired=null,lastVal
           if(!pending)return;
         }
       }catch(error){
-        if([400,403,404,409,422].includes(error.status)){
+        if(error.status===409){
+          conflict={revision,at:now()};store();status('conflict');
+        }else if([400,403,404,422].includes(error.status)){
           stopped=true;pending=null;desired=null;store();status(error.status===409?'conflict':'forbidden');
         }else{store();status(error.status===401?'unauthorized':'pending');}
       }
     })().finally(()=>{running=null;});
     return running;
   }
-  return {update,flush,get stopped(){return stopped;}};
+  async function resolveConflict(choice){
+    if(!['local','remote'].includes(choice))throw new Error('続き位置の選択が不正です。');
+    if(running)await running;
+    const remote=await read();
+    const local=desired??(pending?Object.fromEntries(Object.entries(pending).filter(([key])=>!['revision','updateId'].includes(key))):null);
+    revision=remote.revision;pending=null;conflict=null;stopped=false;
+    if(choice==='remote'){
+      desired=null;last=remote.progress?JSON.stringify(remote.progress):null;
+      saved(remote.progress);store();status('saved');return remote.progress;
+    }
+    desired=local;last=local?JSON.stringify(local):null;prepare();store();await flush();
+    if(conflict)throw Object.assign(new Error('別の端末で続き位置が再び更新されました。使う位置をもう一度選択してください。'),{code:'PROGRESS_CONFLICT',status:409});
+    if(stopped)throw Object.assign(new Error('続き位置を保存する権限を確認できません。ライブラリから開き直してください。'),{code:'PROGRESS_FORBIDDEN'});
+    if(pending||desired)throw Object.assign(new Error('この端末の続き位置は保持しています。接続後に自動で再送します。'),{code:'PROGRESS_PENDING'});
+    return local;
+  }
+  return {update,flush,resolveConflict,get conflicted(){return Boolean(conflict);},get stopped(){return stopped;}};
 }
 
 const clamp=value=>Math.max(0,Math.min(1,Number.isFinite(value)?value:0));
-export function bookPosition(stage,page,zoom='fit') {
+export function bookPosition(stage,page,zoom='fit',completed) {
   if(!stage.clientWidth || !stage.clientHeight)return null;
-  return {page,scrollX:clamp(stage.scrollLeft/Math.max(1,stage.scrollWidth-stage.clientWidth)),scrollY:clamp(stage.scrollTop/Math.max(1,stage.scrollHeight-stage.clientHeight)),zoom};
+  return {page,scrollX:clamp(stage.scrollLeft/Math.max(1,stage.scrollWidth-stage.clientWidth)),scrollY:clamp(stage.scrollTop/Math.max(1,stage.scrollHeight-stage.clientHeight)),zoom,...(typeof completed==='boolean'?{completed}:{})};
 }
 export function restoreBookPosition(stage,position) {
   stage.scrollLeft=clamp(position?.scrollX)*Math.max(0,stage.scrollWidth-stage.clientWidth);

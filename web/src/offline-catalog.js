@@ -37,7 +37,7 @@ export function normalizeCatalog(input,userId){
     if(!Array.isArray(p.assetIds)||p.assetIds.length>1000||new Set(p.assetIds).size!==p.assetIds.length||p.assetIds.some(id=>!uuid.test(id)))throw Error('プレイリスト情報が不正です。');
     return {id:p.id,title:text(p.title,200),revision:number(p.revision),createdAt:number(p.createdAt),updatedAt:number(p.updatedAt),assetIds:p.assetIds.filter(id=>assetIds.has(id))};
   });
-  return {version:1,userId,serverTime:input.serverTime,shelves,series,items,playlists};
+  return {version:1,userId,serverTime:input.serverTime,...(typeof input.etag==='string'&&/^[\x21-\x7e]{1,200}$/.test(input.etag)?{etag:input.etag}:{}),shelves,series,items,playlists};
 }
 
 export function offlineCollection(catalog,rows,playable){
@@ -73,6 +73,11 @@ export function createCatalogCache(vault,{now=Date.now}={}){
       if(!saved||saved.url!==item.thumbnailUrl||!['image/jpeg','image/png','image/webp'].includes(saved.mime)||typeof saved.base64!=='string'||saved.base64.length>2796204)return null;
       return new Blob([Uint8Array.from(atob(saved.base64),c=>c.charCodeAt(0))],{type:saved.mime});
     },
+    async storedCover(partition,assetId){
+      const saved=await vault.unseal(partition,coverSlot(assetId));
+      if(!saved||!validCover({id:assetId},saved.url)||!['image/jpeg','image/png','image/webp'].includes(saved.mime)||typeof saved.base64!=='string'||saved.base64.length>2796204)return null;
+      return new Blob([Uint8Array.from(atob(saved.base64),c=>c.charCodeAt(0))],{type:saved.mime});
+    },
     async saveCover(partition,item,blob,{current=()=>true}={}){
       if(!current()||!blob?.size||blob.size>COVER_BYTES||!['image/jpeg','image/png','image/webp'].includes(blob.type)||!validCover(item,item.thumbnailUrl))return false;
       const bytes=new Uint8Array(await blob.arrayBuffer());let raw='';for(let i=0;i<bytes.length;i+=8192)raw+=String.fromCharCode(...bytes.subarray(i,i+8192));
@@ -80,10 +85,10 @@ export function createCatalogCache(vault,{now=Date.now}={}){
       await vault.seal(partition,coverSlot(item.id),{url:item.thumbnailUrl,mime:blob.type,base64:btoa(raw),savedAt:now()});return current();
     },
     async syncCovers(partition,catalog,fetchCover,{current=()=>true,force=false,onProgress=()=>{}}={}){
-      const queue=[...catalog.items];let saved=0,failed=0,skipped=0,done=0;
+      const queue=catalog.items;let next=0,saved=0,failed=0,skipped=0,done=0;
       const active=()=>current();
-      const worker=async()=>{while(queue.length&&active()){
-        const item=queue.shift();try{
+      const worker=async()=>{while(next<queue.length&&active()){
+        const item=queue[next++];try{
           const cached=await vault.unseal(partition,coverSlot(item.id));if(!active())break;
           if(!force&&cached?.url===item.thumbnailUrl&&cached.savedAt<=now()&&cached.savedAt>now()-COVER_AGE){skipped++;continue;}
           let blob;for(let attempt=0;attempt<3;attempt++){try{blob=await fetchCover(item,AbortSignal.timeout(force?30000:10000));break;}catch(error){if(!active()||attempt===2)throw error;await new Promise(resolve=>setTimeout(resolve,300*(attempt+1)));}}

@@ -1,5 +1,7 @@
 # Androidのオフライン視聴期限更新エラー（0.6.2beta）
 
+> 過去版の変更・検証記録です。現行の操作は[利用ガイド](user/first-steps.md)、設定と制限は[設定リファレンス](reference/configuration.md)、実装は[設計書](design/overview.md)を参照してください。
+
 ## 原因
 
 WebViewで暗号化ダウンロードが完了しても、動画・音声のネイティブ再生へ取り込む前の追加認可で失敗していた。`MireaPlaybackPlugin.leaseSave` / `OfflineLease.authorize` は `PlaybackApi.json(...,"POST",null)` を呼び出すが、本文がnullの場合にContent-Typeと本文を指定していなかった。

@@ -34,15 +34,43 @@ export function registerPrivateShelves(app,{db,authenticate,membership,rateLimit
   if(!tokens.some(token=>/^[A-Za-z0-9_-]{43}$/.test(token)&&db.prepare('SELECT 1 FROM shelf_unlocks g JOIN users u ON u.id=? AND u.password_hash=g.password_hash WHERE g.token_hash=? AND g.session_id=? AND g.shelf_id=? AND g.expires_at>?').get(req.user.id,hashToken(token),req.session.id,shelfId,Date.now())))throw Object.assign(httpError(423,'プライベート本棚を開くには本人確認が必要です。'),{shelfUnlockRequired:shelfId});
  }
  app.addHook('preHandler',async req=>{
-  const path=req.url.split('?')[0];let id;
+  // Match the route that Fastify actually selected, using its decoded params.
+  // Matching the raw URL would let percent-encoded IDs miss this guard while
+  // the handler still resolves the same private shelf/asset.
+  const route=req.routeOptions?.url;if(typeof route!=='string')return; // No matched resource: preserve the 404 handler.
+  const path=route.replace(/:([A-Za-z0-9_]+)/g,(_,name)=>encodeURIComponent(req.params[name]??''));let id;
   const direct=path.match(/^\/api\/v1\/shelves\/([^/]+)\/(?:items|series|uploads)(?:\/|$)/);if(direct)id=direct[1];
-  const asset=path.match(/^\/api\/v1\/items\/([^/]+)\/(playback-ticket|content|epub|pages|download|hls|renditions|preview)(?:\/|$)/);if(asset){
-   // Issued playback tickets are independent of the library's current view.
-   // Their own routes still validate session, expiry and current membership.
-   if(req.method==='GET'||req.method==='HEAD'){if(req.query?.ticket)return;}
+   const shelfSetting=path.match(/^\/api\/v1\/shelves\/([^/]+)$/);if(shelfSetting&&req.method==='PATCH')id=shelfSetting[1];
+   const assetChange=path.match(/^\/api\/v1\/items\/([^/]+)(?:\/(?:thumbnail|thumbnail-job))?$/);if(assetChange&&!['GET','HEAD','OPTIONS'].includes(req.method))id=db.prepare('SELECT shelf_id FROM items WHERE id=?').get(assetChange[1])?.shelf_id;
+  const asset=path.match(/^\/api\/v1\/items\/([^/]+)\/(playback-ticket|content|epub|pages|download|hls|renditions|preview|series)(?:\/|$)/);if(asset){
+    // Only routes that authenticate tickets may use an issued capability.
+    // A query parameter alone must never bypass shelf reauthentication.
+    if((req.method==='GET'||req.method==='HEAD')&&['content','hls','renditions'].includes(asset[2])&&typeof req.query?.ticket==='string'&&/^[A-Za-z0-9_-]{43}$/.test(req.query.ticket)){
+     const ticket=db.prepare('SELECT s.user_id FROM playback_tickets t JOIN sessions s ON s.id=t.session_id WHERE t.token_hash=? AND t.item_id=? AND t.expires_at>? AND s.expires_at>?').get(hashToken(req.query.ticket),asset[1],Date.now(),Date.now());
+     if(ticket){const target=db.prepare('SELECT shelf_id FROM items WHERE id=?').get(asset[1]);if(target){membership(target.shelf_id,ticket.user_id);return;}}
+    }
    id=db.prepare('SELECT shelf_id FROM items WHERE id=?').get(asset[1])?.shelf_id;
   }
   const download=path.match(/^\/api\/v1\/downloads\/([^/]+)\/open$/);if(download)id=db.prepare('SELECT i.shelf_id FROM encrypted_downloads d JOIN items i ON i.id=d.asset_id WHERE d.id=?').get(download[1])?.shelf_id;
+   const series=path.match(/^\/api\/v1\/series\/([^/]+)(?:\/|$)/);if(series&&series[1]!=='bulk')id=db.prepare('SELECT shelf_id FROM series WHERE id=?').get(series[1])?.shelf_id;
+   if(series?.[1]==='bulk'&&Array.isArray(req.body?.ids))for(const seriesId of req.body.ids)requireUnlock(req,db.prepare('SELECT shelf_id FROM series WHERE id=?').get(seriesId)?.shelf_id);
+   const playlist=path.match(/^\/api\/v1\/playlists\/([^/]+)(?:\/(playback))?$/);
+   if(playlist){
+    authenticate(req);
+    const own=db.prepare('SELECT 1 FROM playlists WHERE id=? AND user_id=?').get(playlist[1],req.user.id);
+    if(own&&req.method==='PUT'&&Array.isArray(req.body?.assetIds)){
+     const previous=new Set(db.prepare('SELECT asset_id FROM playlist_items WHERE playlist_id=?').all(playlist[1]).map(row=>row.asset_id));
+     // Preserve already saved, hidden references without opening those shelves.
+     // Adding another private asset still needs its separate unlock grant.
+     for(const assetId of req.body.assetIds)if(!previous.has(assetId))requireUnlock(req,db.prepare('SELECT shelf_id FROM items WHERE id=?').get(assetId)?.shelf_id);
+    }
+    if(own&&playlist[2]==='playback')id=db.prepare('SELECT i.shelf_id FROM items i JOIN playlist_items p ON p.asset_id=i.id WHERE p.playlist_id=? AND i.id=?').get(playlist[1],req.query.assetId)?.shelf_id;
+   }
+   if(path==='/api/v1/thumbnails/custom'&&['POST','DELETE'].includes(req.method)){
+    if(req.body?.seriesId)id=db.prepare('SELECT shelf_id FROM series WHERE id=?').get(req.body.seriesId)?.shelf_id;
+    if(Array.isArray(req.body?.assetIds))for(const assetId of req.body.assetIds)requireUnlock(req,db.prepare('SELECT shelf_id FROM items WHERE id=?').get(assetId)?.shelf_id);
+   }
+   if(path==='/api/v1/transfers/upload-preview'&&Array.isArray(req.body?.assets))for(const shelfId of new Set(req.body.assets.map(asset=>asset.shelfId)))requireUnlock(req,shelfId);
   if(id)requireUnlock(req,id);
  });
  return {requireUnlock};

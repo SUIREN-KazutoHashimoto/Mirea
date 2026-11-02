@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {mkdtemp,mkdir,rm,readFile,writeFile,access} from 'node:fs/promises';
+import {mkdtemp,mkdir,rm,readFile,writeFile,access,utimes,stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID,createHash} from 'node:crypto';
@@ -47,6 +47,16 @@ test('only enabled server admins see admin APIs; content ACL and personal teleme
   assert(!text.includes('password_hash')&&!text.includes('watch_ms')&&!text.includes('auth_session_id'));
   assert.equal((await c.req('GET','/analytics/global/events',c.admin)).statusCode,404);
   assert.equal((await c.req('GET','/analytics/me/events',c.admin)).json().events.length,0);
+});
+
+test('admin job pages can find waiting and failed records beyond the first hundred without exposing them to members',async t=>{
+ const c=await setup(t),ids=[];const insert=c.db.prepare('INSERT INTO admin_jobs(id,kind,state,requested_by,created_at,updated_at) VALUES(?,?,?,?,?,?)');
+ for(let n=0;n<125;n++){const queued=randomUUID(),failed=randomUUID();ids.push({queued,failed});insert.run(queued,'navigation','queued',c.admin.user.id,n,n);insert.run(failed,'navigation','failed',c.admin.user.id,n,n);}
+ assert.equal((await c.req('GET','/admin/jobs/list',c.reader)).statusCode,403);assert.equal((await c.req('GET','/admin/jobs/list?limit=201',c.admin)).statusCode,400);
+ const first=(await c.req('GET','/admin/jobs/list',c.admin)).json();assert.equal(first.rows.length,100);assert.equal(first.total,125);assert.equal(first.summary.queued,125);assert.equal(first.summary.failed,125);
+ const second=(await c.req('GET','/admin/jobs/list?offset='+first.nextOffset,c.admin)).json();assert.equal(second.rows.length,25);assert.equal(second.nextOffset,null);assert.equal(new Set([...first.rows,...second.rows].map(row=>row.id)).size,125);
+ const oldest=(await c.req('GET','/admin/jobs/list?q='+ids[0].queued,c.admin)).json();assert.equal(oldest.total,1);assert.equal(oldest.rows[0].id,ids[0].queued);assert.equal(oldest.rows[0].canStart,true);
+ const historical=(await c.req('GET','/admin/jobs/list?view=history&state=failed&q='+ids[0].failed,c.admin)).json();assert.equal(historical.total,1);assert.equal(historical.rows[0].id,ids[0].failed);assert.equal(historical.summary.failed,125);
 });
 
 test('account CRUD reauthenticates, invalidates sessions/tickets and persists explicit admin overrides without losing last admin',async t=>{
@@ -122,6 +132,8 @@ test('video generation preserves old HLS tickets, canonical MP4 and existing enc
 
 test('metadata/full backups are authenticated encrypted, bounded/range downloadable and recoverable; wrong passwords/tampering leave no plaintext',async t=>{
   const c=await setup(t),id=await c.asset();
+  const original=join(c.dataDir,'uploads',id);await utimes(original,1700000000.1234567,1700000000.1234567);const originalStamp=(await stat(original)).mtimeMs,originalNs=(await stat(original,{bigint:true})).mtimeNs;
+  const download=(await c.req('POST',`/items/${id}/download`,c.reader,{})).json().manifest,grant=(await c.req('POST',`/downloads/${download.id}/open`,c.reader)).json();
   const config=join(c.dataDir,'test.env');await writeFile(config,'TEST_CONFIG_SECRET=not-for-display\n');c.options.backupConfigFile=config;
   for(const mode of ['metadata','full']){
     const r=await c.req('POST','/admin/backups',c.admin,{currentPassword:password,mode,backupPassword:'backup-specific-password',acknowledgeSensitive:true});assert.equal(r.statusCode,202,r.body);
@@ -136,6 +148,14 @@ test('metadata/full backups are authenticated encrypted, bounded/range downloada
     const restored=join(c.dataDir,'restored-'+mode);await mkdir(restored);execFileSync(tar,['-xf',output,'-C',restored],{windowsHide:true});
     const db=new DatabaseSync(join(restored,'data','mirea.sqlite'),{readOnly:true});try{assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check,'ok');assert.equal(db.prepare('SELECT COUNT(*) n FROM users').get().n,3);assert.equal(db.prepare('SELECT COUNT(*) n FROM items').get().n,1);}finally{db.close();}
     assert.deepEqual(await readFile(join(restored,'data','keys','download-master.key')),await readFile(join(c.dataDir,'keys','download-master.key')));
+    if(mode==='full'){
+      const restoredSource=join(restored,'data','uploads',id);assert.equal((await stat(restoredSource)).mtimeMs,originalStamp,'restored media must match the existing download stamp');assert.equal((await stat(restoredSource,{bigint:true})).mtimeNs,originalNs);
+      const recovered=await createApp({dataDir:join(restored,'data'),rateLimit:false});
+      try{
+        const opened=await recovered.inject({method:'POST',url:`/api/v1/downloads/${download.id}/open`,headers:{authorization:'Bearer '+c.reader.token}});assert.equal(opened.statusCode,200,opened.body);assert.equal(opened.json().manifest.id,download.id);assert.equal(opened.json().key,grant.key);
+        const chunk=await recovered.inject({url:`/api/v1/downloads/${download.id}/files/0/parts/0`,headers:{authorization:'Bearer '+c.reader.token}});assert.equal(chunk.statusCode,200,chunk.body);
+      }finally{await recovered.close();}
+    }
     await assert.rejects(decryptBackup(archive,join(c.dataDir,'wrong.tar.gz'),'incorrect-password'));await assert.rejects(access(join(c.dataDir,'wrong.tar.gz')));await assert.rejects(access(join(c.dataDir,'wrong.tar.gz.partial')));
     const changed=Buffer.from(encrypted);changed[changed.length-20]^=1;const tampered=join(c.dataDir,'tampered');await writeFile(tampered,changed);await assert.rejects(decryptBackup(tampered,join(c.dataDir,'tampered.tar.gz'),'backup-specific-password'));await assert.rejects(access(join(c.dataDir,'tampered.tar.gz')));
   }

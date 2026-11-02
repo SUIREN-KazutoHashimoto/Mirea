@@ -17,9 +17,9 @@ import java.util.concurrent.*;
 
 @CapacitorPlugin(name="MireaTransfer",permissions={@Permission(alias="notifications",strings={Manifest.permission.POST_NOTIFICATIONS})})
 public final class MireaTransferPlugin extends Plugin {
-    private final Map<String,Uri> selected=new ConcurrentHashMap<>();private final ExecutorService io=Executors.newSingleThreadExecutor();private boolean visible=true;private long lastFolderProgress;
+    private final Map<String,Uri> selected=new ConcurrentHashMap<>();private final Map<String,DocumentGrants.Lease> selectedGrants=new HashMap<>();private final Object selectionLock=new Object();private boolean destroyed;private final ExecutorService io=Executors.newSingleThreadExecutor();private boolean visible=true;private long lastFolderProgress;
     private final BroadcastReceiver receiver=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent i){if(visible)notifyListeners("transferChanged",new JSObject());}};
-    @Override public void load(){ContextCompat.registerReceiver(getContext(),receiver,new IntentFilter(TransferService.EVENT),ContextCompat.RECEIVER_NOT_EXPORTED);}
+    @Override public void load(){ContextCompat.registerReceiver(getContext(),receiver,new IntentFilter(TransferService.EVENT),ContextCompat.RECEIVER_NOT_EXPORTED);io.submit(()->{try{DocumentGrants.prepare(getContext(),Collections.emptyList());}catch(Exception ignored){/* Picker acquisition retries tracking before granting access. */}});}
     @PluginMethod public void notifications(PluginCall call){
         if(android.os.Build.VERSION.SDK_INT<33||getPermissionState("notifications")==PermissionState.GRANTED){call.resolve(new JSObject().put("granted",true));return;}
         requestPermissionForAlias("notifications",call,"notificationResult");
@@ -38,16 +38,20 @@ public final class MireaTransferPlugin extends Plugin {
     @ActivityCallback private void chosenFolder(PluginCall call,ActivityResult result){
         if(call==null)return;if(result.getResultCode()!=Activity.RESULT_OK||result.getData()==null||result.getData().getData()==null){call.resolve(new JSObject().put("files",new JSArray()));return;}
         Uri tree=result.getData().getData();
-        io.submit(()->{try{
+        io.submit(()->{DocumentGrants.Lease grant=null;Map<String,DocumentGrants.Lease> pendingGrants=new HashMap<>();try{
             if(!"content".equals(tree.getScheme()))throw new IllegalArgumentException();
-            getContext().getContentResolver().takePersistableUriPermission(tree,Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            DocumentGrants.prepare(getContext(),Collections.singletonList(tree));
+            grant=DocumentGrants.acquire(getContext().getContentResolver(),tree,true);
             String root=DocumentsContract.getTreeDocumentId(tree),name=null;
             try(Cursor c=getContext().getContentResolver().query(DocumentsContract.buildDocumentUriUsingTree(tree,root),new String[]{DocumentsContract.Document.COLUMN_DISPLAY_NAME},null,null,null)){if(c!=null&&c.moveToFirst())name=c.getString(0);}
             folderProgress(0,0,true);folderName(name);JSArray files=new JSArray();Map<String,Uri> pending=new HashMap<>();Set<String> seen=new HashSet<>();int[] count={0};long deadline=android.os.SystemClock.elapsedRealtime()+120000;
             readFolder(tree,root,name,1,files,pending,seen,count,deadline);
-            if(selected.size()+pending.size()>10000)throw new IllegalArgumentException();selected.putAll(pending);folderProgress(count[0],files.length(),true);call.resolve(new JSObject().put("files",files));
-        }catch(Exception e){call.reject("フォルダを取得できません。端末内の1000ファイル・16階層以内のフォルダを選んでください。");}});
+            for(String id:pending.keySet())pendingGrants.put(id,grant.retain());
+            keepSelections(pending,pendingGrants);folderProgress(count[0],files.length(),true);call.resolve(new JSObject().put("files",files));
+        }catch(Exception e){call.reject("フォルダを取得できません。端末内の1000ファイル・16階層以内のフォルダを選んでください。");}finally{pendingGrants.values().forEach(DocumentGrants.Lease::close);if(grant!=null)grant.close();}});
     }
+    private void keepSelections(Map<String,Uri> pending,Map<String,DocumentGrants.Lease> grants){synchronized(selectionLock){if(destroyed||selected.size()+pending.size()>10000)throw new IllegalArgumentException();selected.putAll(pending);selectedGrants.putAll(grants);grants.clear();}}
+    private void clearSelections(){synchronized(selectionLock){selected.clear();selectedGrants.values().forEach(DocumentGrants.Lease::close);selectedGrants.clear();}}
     private static void folderName(String name){if(name==null||name.trim().isEmpty()||name.length()>200||name.equals(".")||name.equals("..")||name.chars().anyMatch(c->c<32||c==127||c=='/'||c=='\\'))throw new IllegalArgumentException();}
     private void readFolder(Uri tree,String document,String path,int depth,JSArray files,Map<String,Uri> pending,Set<String> seen,int[] count,long deadline)throws Exception{
         if(depth>16||!seen.add(document)||++count[0]>300||android.os.SystemClock.elapsedRealtime()>deadline)throw new IllegalArgumentException();
@@ -64,35 +68,35 @@ public final class MireaTransferPlugin extends Plugin {
     }
     @ActivityCallback private void chosenFiles(PluginCall call,ActivityResult result){
         if(call==null)return;if(result.getResultCode()!=Activity.RESULT_OK||result.getData()==null){call.resolve(new JSObject().put("files",new JSArray()));return;}
-        io.submit(()->{try{
+        io.submit(()->{Map<String,Uri> pending=new HashMap<>();Map<String,DocumentGrants.Lease> pendingGrants=new HashMap<>();try{
             folderProgress(0,0,true);Intent data=result.getData();List<Uri> uris=new ArrayList<>();if(data.getClipData()!=null){for(int n=0;n<data.getClipData().getItemCount();n++)uris.add(data.getClipData().getItemAt(n).getUri());}else if(data.getData()!=null)uris.add(data.getData());
             if(uris.size()>1000||selected.size()+uris.size()>10000)throw new IllegalArgumentException();JSArray files=new JSArray();
+            DocumentGrants.prepare(getContext(),uris);
             for(Uri uri:uris){
                 if(!"content".equals(uri.getScheme()))throw new IllegalArgumentException();String name=null;long size=-1;
                 try(Cursor cursor=getContext().getContentResolver().query(uri,new String[]{OpenableColumns.DISPLAY_NAME,OpenableColumns.SIZE},null,null,null)){if(cursor!=null&&cursor.moveToFirst()){name=cursor.getString(0);size=cursor.getLong(1);}}
                 if(name==null||name.length()>255||size<=0)throw new IllegalArgumentException();
-                try{getContext().getContentResolver().takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION);}catch(SecurityException ignored){/* Temporary grants still outlive the picker/activity. */}
-                String id=UUID.randomUUID().toString();selected.put(id,uri);String mime=getContext().getContentResolver().getType(uri);
+                String id=UUID.randomUUID().toString();pendingGrants.put(id,DocumentGrants.acquire(getContext().getContentResolver(),uri,false));pending.put(id,uri);String mime=getContext().getContentResolver().getType(uri);
                 files.put(new JSObject().put("nativeId",id).put("name",name).put("size",size).put("type",mime==null?"application/octet-stream":mime).put("lastModified",0));folderProgress(0,files.length(),false);
             }
-            folderProgress(0,files.length(),true);call.resolve(new JSObject().put("files",files));
-        }catch(Exception e){call.reject("ファイルを取得できません。端末内に保存した1000ファイル以内を選んでください。");}});
+            keepSelections(pending,pendingGrants);folderProgress(0,files.length(),true);call.resolve(new JSObject().put("files",files));
+        }catch(Exception e){call.reject("ファイルを取得できません。端末内に保存した1000ファイル以内を選んでください。");}finally{pendingGrants.values().forEach(DocumentGrants.Lease::close);}});
     }
     private PlaybackApi api(PluginCall c)throws Exception{return new PlaybackApi(c.getString("origin"),c.getString("token"),c.getString("userId"),c.getString("shelfUnlock",""));}
     @PluginMethod public void enqueue(PluginCall call){
-        PlaybackApi api=null;String offered=null;
+        PlaybackApi api=null;String offered=null;TransferEngine.Job job=null;List<DocumentGrants.Lease> sources=new ArrayList<>();
         try{
             api=api(call);String direction=call.getString("direction","");if(!direction.equals("upload")&&!direction.equals("download"))throw new IllegalArgumentException();
             JSONObject data=new JSONObject(call.getObject("job").toString());
             if(direction.equals("upload")){
                 JSONArray files=data.getJSONArray("files");if(files.length()<1||files.length()>1000)throw new IllegalArgumentException();
-                for(int n=0;n<files.length();n++){
-                    JSONObject f=files.getJSONObject(n);Uri uri=selected.get(f.getString("nativeId"));if(uri==null||f.getLong("size")<=0||f.getString("name").length()>255)throw new IllegalArgumentException();f.put("uri",uri.toString());
-                }
+                synchronized(selectionLock){for(int n=0;n<files.length();n++){
+                    JSONObject f=files.getJSONObject(n);String nativeId=f.getString("nativeId");Uri uri=selected.get(nativeId);if(uri==null||f.getLong("size")<=0||f.getString("name").length()>255)throw new IllegalArgumentException();sources.add(selectedGrants.get(nativeId).retain());f.put("uri",uri.toString());
+                }}
             }else if(!PlaybackApi.uuid(data.getString("assetId")))throw new IllegalArgumentException();
-            TransferEngine.Job job=new TransferEngine.Job(direction,api,data);offered=TransferService.offer(job);String id=offered;
+            job=new TransferEngine.Job(direction,api,data);job.sources.addAll(sources);sources.clear();offered=TransferService.offer(job);String id=offered;
             ContextCompat.startForegroundService(getContext(),new Intent(getContext(),TransferService.class).putExtra("id",id));call.resolve(new JSObject().put("id",id));
-        }catch(Exception e){if(offered!=null)TransferService.discard(offered);if(api!=null)api.close();call.reject("転送を開始できません。アプリを開いて再試行してください。");}
+        }catch(Exception e){if(offered!=null)TransferService.discard(offered);else if(job!=null)job.releaseSources();if(api!=null)api.close();call.reject("転送を開始できません。アプリを開いて再試行してください。");}finally{sources.forEach(DocumentGrants.Lease::close);}
     }
     @PluginMethod public void status(PluginCall call){try{PlaybackApi api=api(call);try{call.resolve(new JSObject().put("jobs",new JSArray(TransferService.status(api.partition).toString())));}finally{api.close();}}catch(Exception e){call.reject("転送状況を確認できません。");}}
     @PluginMethod public void cancel(PluginCall call){try{PlaybackApi api=api(call);try{String id=call.getString("id");if(id!=null&&!PlaybackApi.uuid(id))throw new IllegalArgumentException();TransferService.cancel(id,api.partition,call.getBoolean("cleanup",true));call.resolve();}finally{api.close();}}catch(Exception e){call.reject("転送を停止できません。");}}
@@ -100,7 +104,10 @@ public final class MireaTransferPlugin extends Plugin {
         String partition=call.getString("partition","");if(!partition.matches("[0-9a-f]{64}")){call.reject("Invalid partition");return;}
         TransferService.cancel(null,partition,false);io.submit(()->{new TransferLease(getContext()).clear(partition);call.resolve();});
     }
-    @PluginMethod public void completed(PluginCall call){io.submit(()->{PlaybackApi api=null;try{api=api(call);call.resolve(new JSObject().put("manifests",new JSArray(new TransferCache(getContext()).completed(api.partition).toString())));}catch(Exception e){call.reject("保存内容を確認できません。");}finally{if(api!=null)api.close();}});}
+    @PluginMethod public void clearDownloads(PluginCall call){io.submit(()->{try{
+        String partition=call.getString("partition","");TransferService.clearDownloads(partition,()->{new TransferLease(getContext()).clear(partition);new TransferCache(getContext()).clear(partition);});call.resolve();
+    }catch(Exception e){call.reject("ダウンロードを削除できません。転送の停止を待って再試行してください。");}});}
+    @PluginMethod public void completed(PluginCall call){io.submit(()->{PlaybackApi api=null;try{api=api(call);JSONArray manifests=new TransferCache(getContext()).completed(api.partition),nativeReady=new JSONArray();com.suiren.mirea.playback.PlaybackCache cache=new com.suiren.mirea.playback.PlaybackCache(getContext());for(int n=0;n<manifests.length();n++){JSONObject manifest=manifests.getJSONObject(n);if(Arrays.asList("audio","video").contains(manifest.optString("kind"))&&cache.ready(api.partition,manifest))nativeReady.put(manifest.getString("id"));}call.resolve(new JSObject().put("manifests",new JSArray(manifests.toString())).put("nativeReadyIds",new JSArray(nativeReady.toString())));}catch(Exception e){call.reject("保存内容を確認できません。");}finally{if(api!=null)api.close();}});}
     @PluginMethod public void readChunk(PluginCall call){io.submit(()->{PlaybackApi api=null;try{
         api=api(call);byte[] bytes=new TransferCache(getContext()).get(api.partition,call.getString("id"),call.getInt("file",-1),call.getInt("part",-1));if(bytes==null)throw new Exception();
         call.resolve(new JSObject().put("bytes",Base64.getEncoder().encodeToString(bytes)).put("sha256",TransferCache.hash(bytes)));
@@ -110,5 +117,5 @@ public final class MireaTransferPlugin extends Plugin {
     @PluginMethod public void remove(PluginCall call){io.submit(()->{PlaybackApi api=null;try{api=api(call);new TransferCache(getContext()).remove(api.partition,call.getString("id"));new TransferLease(getContext()).revoke(api.partition,call.getString("id"));call.resolve();}catch(Exception e){call.reject("転送用キャッシュを削除できません。");}finally{if(api!=null)api.close();}});}
     @Override protected void handleOnPause(){visible=false;}
     @Override protected void handleOnResume(){visible=true;notifyListeners("transferChanged",new JSObject());}
-    @Override protected void handleOnDestroy(){try{getContext().unregisterReceiver(receiver);}catch(Exception ignored){}io.shutdown();}
+    @Override protected void handleOnDestroy(){synchronized(selectionLock){destroyed=true;clearSelections();}try{getContext().unregisterReceiver(receiver);}catch(Exception ignored){}io.shutdown();}
 }

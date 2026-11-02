@@ -37,9 +37,10 @@ public class PlaybackTest {
     }
     @Test public void firstOfflinePlaybackKeepsCatalogRevisionAndCompletedLocalPositionRestarts()throws Exception{
         final JSONObject[] saved={null};final JSONObject[] sent={null};PlaybackProgress.Store store=new PlaybackProgress.Store(){public JSONObject load(){return saved[0];}public void save(JSONObject value){saved[0]=value;}};
-        PlaybackProgress progress=new PlaybackProgress((method,body)->{assertEquals("PUT",method);sent[0]=body;throw new PlaybackApi.Failure(409);},store,true);
+        PlaybackProgress progress=new PlaybackProgress((method,body)->{if(method.equals("GET"))return new JSONObject().put("revision",99).put("progress",new JSONObject().put("positionMs",7000).put("durationMs",10000));sent[0]=body;throw new PlaybackApi.Failure(409);},store,true);
         progress.seed(new JSONObject().put("revision",7).put("positionMs",2000).put("durationMs",10000));progress.update(10000,10000);assertTrue(progress.initial().getBoolean("completed"));
         progress.seed(new JSONObject().put("revision",99));try{progress.flush();fail();}catch(PlaybackApi.Failure expected){assertEquals(7,sent[0].getLong("revision"));assertTrue(progress.conflicted);}
+        assertEquals(10000,progress.initial().getLong("positionMs"));assertEquals(7000,progress.remotePosition.getLong("positionMs"));assertNotNull(saved[0].getJSONObject("pending"));
     }
     @Test public void contextsRequireHttpsAndNeverPutCredentialsInPaths()throws Exception{
         PlaybackApi api=new PlaybackApi("https://mirea.example:3443/","a".repeat(43),"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");assertEquals(64,api.partition.length());assertEquals("https://mirea.example:3443",api.origin);

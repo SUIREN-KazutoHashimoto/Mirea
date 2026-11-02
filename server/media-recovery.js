@@ -5,9 +5,10 @@ import {PREVIEW_SPEC_VERSION} from './video-thumbnail.js';
 export async function regularMedia(path,size){const info=await lstat(path).catch(error=>{if(error.code==='ENOENT')return null;throw error;});return Boolean(info?.isFile()&&!info.isSymbolicLink()&&info.size>0&&(size===undefined||info.size===size));}
 export function mediaProcessingState(db,id,canonicalReady){
  const source=canonicalReady===undefined?db.prepare('SELECT canonical_ready FROM media_ingest WHERE asset_id=?').get(id):{canonical_ready:canonicalReady};if(!source)return null;if(source.canonical_ready)return 'ready';
- const rows=db.prepare('SELECT kind,state FROM media_tasks WHERE asset_id=?').all(id),admin=db.prepare("SELECT state FROM admin_jobs WHERE asset_id=? AND kind IN ('transcode','repair') AND state IN ('queued','running')").all(id),conversion=rows.filter(row=>row.kind==='transcode');
- const relevant=source.canonical_ready?[]:[...conversion,...admin];return relevant.some(r=>r.state==='running')?'running':relevant.some(r=>r.state==='queued')?'queued':!source.canonical_ready?relevant.some(r=>r.state==='failed')?'failed':'incomplete':'ready';
+ const rows=db.prepare('SELECT kind,state FROM media_tasks WHERE asset_id=?').all(id),admin=db.prepare("SELECT state FROM admin_jobs WHERE asset_id=? AND kind IN ('transcode','repair') AND state IN ('queued','running')").all(id);
+ return processingStateFromRows(source.canonical_ready,rows,admin);
 }
+export function processingStateFromRows(canonicalReady,rows=[],admin=[]){if(canonicalReady)return 'ready';const relevant=[...rows.filter(row=>row.kind==='transcode'),...admin];return relevant.some(r=>r.state==='running')?'running':relevant.some(r=>r.state==='queued')?'queued':relevant.some(r=>r.state==='failed')?'failed':'incomplete';}
 // Inspect outputs belonging to current assets, not historical job rows. Large
 // media payloads are not read during a candidate scan; repair validates outputs.
 export async function assessAssetRecovery(context,asset,{ignoreJobId}={}){

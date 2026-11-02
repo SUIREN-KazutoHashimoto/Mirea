@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID,randomBytes,createCipheriv } from 'node:crypto';
-import { validateManifest,downloadRange,encryptedRangeResponse,importDownloadKey } from '../web/src/download-core.js';
+import { validateManifest,downloadRange,encryptedRangeResponse,importDownloadKey,MAX_DOWNLOAD_BYTES } from '../web/src/download-core.js';
 
 test('encrypted range reader is lazy, stops on lock/session expiry, and never substitutes online/plaintext data',async()=>{
   const bytes=Buffer.alloc(1048576+10,23),rawKey=randomBytes(32),manifest={id:randomUUID(),assetId:randomUUID(),version:1,algorithm:'AES-256-GCM',chunkSize:1048576,kind:'video',pageCount:1,files:[{index:0,number:1,size:bytes.length,chunks:2,mime:'video/mp4'}]};
@@ -20,5 +20,6 @@ test('download manifest/ranges reject invalid dimensions, excessive sizes and ma
   for(const header of ['bytes=1-2,4-5','bytes=','bytes=99-','bytes=-0','bytes=8-2','bytes=99999999999999999999-'])assert.throws(()=>downloadRange(header,10));
   assert.throws(()=>validateManifest({version:1,algorithm:'plaintext'}));
   const m={id:randomUUID(),assetId:randomUUID(),version:1,algorithm:'AES-256-GCM',chunkSize:1048576,kind:'pdf',pageCount:1,files:[{index:0,number:1,size:10,chunks:1,mime:'application/pdf'}]};assert.equal(validateManifest(m),m);
-  for(const changed of [{chunkSize:8},{files:[{...m.files[0],mime:'text/html'}]},{files:[{...m.files[0],size:8589934593}]},{files:[{...m.files[0],chunks:2}]}])assert.throws(()=>validateManifest({...m,...changed}));
+  for(const changed of [{chunkSize:8},{files:[{...m.files[0],mime:'text/html'}]},{files:[{...m.files[0],size:MAX_DOWNLOAD_BYTES+1}]},{files:[{...m.files[0],chunks:2}]}])assert.throws(()=>validateManifest({...m,...changed}));
+  const size=10*1024**3;assert.equal(validateManifest({...m,files:[{...m.files[0],size,chunks:size/1048576}]}).files[0].size,size);
 });

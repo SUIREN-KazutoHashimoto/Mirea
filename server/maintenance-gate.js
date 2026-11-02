@@ -27,7 +27,7 @@ export function createMaintenanceGate(app) {
     const path=req.url.split('?')[0];
     if(!path.startsWith('/api/') || path==='/api/health' || excluded(req))return;
     if(locked)return reply.code(503).header('Retry-After','10').send({error:'整合性を保つためバックアップ・更新・リセットの保守中です。しばらくして再試行してください。'});
-    if(!['GET','HEAD','OPTIONS'].includes(req.method) || path.endsWith('/thumbnail')){
+    if(!['GET','HEAD','OPTIONS'].includes(req.method) || path.endsWith('/thumbnail') || req.routeOptions.config.maintenanceWrite===true){
       req.maintenanceTracked=true;active++;
       const finish=()=>{
         // Disconnecting the client does not cancel asynchronous filesystem
@@ -41,6 +41,14 @@ export function createMaintenanceGate(app) {
   });
   app.addHook('onResponse',async req=>{if(req.maintenanceCallbackHandler)req.maintenanceHandlerFinished=true;req.maintenanceRelease?.();});
   return {get locked(){return locked;},setBusy(check){busy=check;},
+    // Background filesystem publication/deletion must reserve synchronously,
+    // before its first await. Maintenance then waits for the whole operation,
+    // rather than racing a boolean check performed before asynchronous work.
+    tryReserve(){
+      if(locked)return null;
+      active++;let released=false;
+      return ()=>{if(!released){released=true;active--;}};
+    },
     async acquire(request){
       if(locked)throw httpError(409,'別のバックアップ／更新を実行しています。');
       locked=true;

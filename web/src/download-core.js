@@ -1,4 +1,6 @@
 export const DOWNLOAD_PATH='/__mirea_download__/';
+// Match the server's bounded maximum; large files remain chunked throughout.
+export const MAX_DOWNLOAD_BYTES=1024**4;
 export const chunkKey=(id,file,part)=>`${id}|${file}|${part}`;
 export function validateManifest(manifest){
   if(manifest?.version!==1 || manifest.algorithm!=='AES-256-GCM' || manifest.chunkSize!==1048576 || !/^[0-9a-f-]{36}$/.test(manifest.id) || !/^[0-9a-f-]{36}$/.test(manifest.assetId) || !['video','audio','pdf','image-book','epub'].includes(manifest.kind) || !Array.isArray(manifest.files) || !manifest.files.length || manifest.files.length>1000)throw new Error('ダウンロード情報が不正です。');
@@ -6,10 +8,10 @@ export function validateManifest(manifest){
   let total=0;
   for(const [index,file] of manifest.files.entries()){
     if(file.quality!==undefined&&(manifest.kind!=='video'||typeof file.quality!=='string'||!/^\d{2,4}p$/.test(file.quality)))throw new Error('保存画質が不正です。');
-    if(file.index!==index || !Number.isSafeInteger(file.size) || file.size<=0 || file.size>8589934592 || file.chunks!==Math.ceil(file.size/manifest.chunkSize) || !['audio/mp4','video/mp4','video/webm','application/pdf','image/png','image/jpeg','image/webp','application/vnd.mirea.epub+json'].includes(file.mime) || (manifest.kind==='epub')!==(file.mime==='application/vnd.mirea.epub+json') || (manifest.kind==='audio')!==(file.mime==='audio/mp4'))throw new Error('ダウンロード情報が不正です。');
+    if(file.index!==index || !Number.isSafeInteger(file.size) || file.size<=0 || file.size>MAX_DOWNLOAD_BYTES || file.chunks!==Math.ceil(file.size/manifest.chunkSize) || !['audio/mp4','video/mp4','video/webm','application/pdf','image/png','image/jpeg','image/webp','application/vnd.mirea.epub+json'].includes(file.mime) || (manifest.kind==='epub')!==(file.mime==='application/vnd.mirea.epub+json') || (manifest.kind==='audio')!==(file.mime==='audio/mp4'))throw new Error('ダウンロード情報が不正です。');
     total+=file.size;
   }
-  if(total>8589934592)throw new Error('ダウンロード容量の上限を超えています。');
+  if(!Number.isSafeInteger(total)||total>MAX_DOWNLOAD_BYTES)throw new Error('ダウンロード容量の上限を超えています。');
   return manifest;
 }
 export async function importDownloadKey(base64,cryptoApi=globalThis.crypto){

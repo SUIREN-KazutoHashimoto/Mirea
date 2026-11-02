@@ -3,14 +3,43 @@ import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
-import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { access, cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { join, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { PROJECT_ROOT, runtimeConfig, loadEnvironment,loadTlsOptions } from '../server/runtime.js';
 import { makePdf } from './fixtures.js';
 
-const entry = join(PROJECT_ROOT, 'server', 'index.js');
 const runFile = promisify(execFile);
+
+// The real entry reads .env from its installation root, not its cwd. Export a
+// small isolated installation so local deployment configuration is never read.
+// Keeping it under .local resolves only the existing development dependencies.
+async function nativeInstallation(t,{builtWeb=false,beforeCleanup=async()=>{}}={}){
+  const parent=join(PROJECT_ROOT,'.local');await mkdir(parent,{recursive:true});
+  const directory=await mkdtemp(join(parent,'native-runtime-'));
+  t.after(async()=>{
+    await beforeCleanup();
+    if(!resolve(directory).startsWith(resolve(parent)+sep+'native-runtime-'))throw Error('Unsafe native fixture cleanup');
+    await rm(directory,{recursive:true,force:true});
+  });
+  const installation=join(directory,'installation'),launch=join(directory,'launch');
+  await mkdir(installation);await mkdir(launch);
+  await cp(join(PROJECT_ROOT,'server'),join(installation,'server'),{recursive:true});
+  await cp(join(PROJECT_ROOT,'package.json'),join(installation,'package.json'));
+  if(builtWeb)await cp(join(PROJECT_ROOT,'dist'),join(installation,'dist'),{recursive:true});
+  return {directory,launch,entry:join(installation,'server','index.js')};
+}
+function nativeEnvironment(dataDir,source=process.env){
+  const allowed=new Set(['PATH','SYSTEMROOT','WINDIR','TEMP','TMP','TMPDIR','HOME','USERPROFILE','LOCALAPPDATA','APPDATA','PROGRAMDATA','COMSPEC','PATHEXT','NUMBER_OF_PROCESSORS','PROCESSOR_ARCHITECTURE','LANG','LC_ALL','TZ']);
+  const environment=Object.fromEntries(Object.entries(source).filter(([key])=>allowed.has(key.toUpperCase())));
+  return {...environment,HOST:'127.0.0.1',PORT:'0',DATA_DIR:dataDir,MEDIA_DIR:dataDir,ALLOW_REGISTRATION:'true',APP_UPDATES_SOURCE:'disabled'};
+}
+
+test('native fixtures isolate deployment settings and Node runner controls from the child service',()=>{
+  const env=nativeEnvironment('synthetic-data',{PATH:'synthetic-bin',DATA_DIR:'deployment-data',MEDIA_DIR:'deployment-media',HTTPS_KEY_FILE:'deployment-key',HTTPS_CERT_FILE:'deployment-cert',APP_UPDATES_DIR:'deployment-updates',SERVER_ADMIN_USER_IDS:'deployment-admin',NODE_OPTIONS:'--inspect',NODE_TEST_CONTEXT:'child-v8'});
+  assert.equal(env.DATA_DIR,'synthetic-data');assert.equal(env.MEDIA_DIR,'synthetic-data');assert.equal(env.PATH,'synthetic-bin');
+  for(const key of ['HTTPS_KEY_FILE','HTTPS_CERT_FILE','APP_UPDATES_DIR','SERVER_ADMIN_USER_IDS','NODE_OPTIONS','NODE_TEST_CONTEXT'])assert.equal(Object.hasOwn(env,key),false,key);
+});
 
 test('runtime defaults and relative storage are independent of the launch directory', () => {
   assert.deepEqual(runtimeConfig({}), { host: '127.0.0.1', port: 3000, dataDir: join(PROJECT_ROOT, 'data') });
@@ -69,34 +98,36 @@ async function stop(child) {
   });
 }
 
-async function startNative(t, directory, dataDir) {
+async function startNative(entry, directory, dataDir) {
   const child = spawn(process.execPath, [entry], {
     cwd: directory, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, HOST: '127.0.0.1', PORT: '0', DATA_DIR: dataDir, ALLOW_REGISTRATION: 'true' }
+    env: nativeEnvironment(dataDir)
   });
-  t.after(() => stop(child));
-  const url = await new Promise((resolve, reject) => {
+  try{
+   const url = await new Promise((resolve, reject) => {
     let output = '';
-    const timer = setTimeout(() => reject(new Error(`Native server startup timed out: ${output.slice(-2000)}`)), 20000);
+    // Fresh database migrations and concurrent media tests can take over 20s.
+    // Keep a finite startup deadline, and kill the child before fixture cleanup.
+    const timer = setTimeout(() => reject(new Error(`Native server startup timed out: ${output.slice(-2000)}`)), 60000);
     child.once('error', error => { clearTimeout(timer); reject(error); });
     child.once('exit', code => { clearTimeout(timer); reject(new Error(`Native server exited (${code}): ${output.slice(-2000)}`)); });
-    child.stderr.on('data', data => { output += data; });
+    child.stderr.on('data', data => { output = (output+data).slice(-16000); });
     child.stdout.on('data', data => {
-      output += data;
+      output = (output+data).slice(-16000);
       const match = output.match(/Server listening at (http:\/\/127\.0\.0\.1:\d+)/);
       if (match) { clearTimeout(timer); resolve(match[1]); }
     });
-  });
-  return { child, url };
+   });
+   return { child, url };
+  }catch(error){await stop(child);throw error;}
 }
 
 test('direct Node entry serves built web, uploads/streams a PDF and retains accounts/files after restart', async t => {
   await access(join(PROJECT_ROOT, 'dist', 'index.html')).catch(() => assert.fail('Run pnpm build before pnpm test:startup'));
-  const directory = await mkdtemp(join(tmpdir(), 'mirea-native-'));
-  const dataDir = join(directory, 'library data');
   const children = [];
-  t.after(async () => { for (const child of children) await stop(child); await rm(directory, { recursive: true, force: true }); });
-  const first = await startNative(t, directory, dataDir);
+  const {directory,launch,entry}=await nativeInstallation(t,{builtWeb:true,beforeCleanup:async()=>{for(const child of children)await stop(child);}});
+  const dataDir = join(directory, 'library data');
+  const first = await startNative(entry, launch, dataDir);
   children.push(first.child);
   const request = (server, path, options = {}) => fetch(`${server}${path}`, { ...options, signal: AbortSignal.timeout(15000) });
   assert.equal((await request(first.url, '/api/health')).status, 200);
@@ -136,7 +167,7 @@ test('direct Node entry serves built web, uploads/streams a PDF and retains acco
   assert.equal(thumb.headers.get('content-type'), 'image/webp');
   await thumb.arrayBuffer();
   await stop(first.child);
-  const second = await startNative(t, directory, dataDir);
+  const second = await startNative(entry, launch, dataDir);
   children.push(second.child);
   assert.equal((await request(second.url, '/api/v1/auth/me', { headers })).status, 200);
   const range = await request(second.url, `/api/v1/items/${upload.id}/content`, { headers: { ...headers, range: 'bytes=5-20' } });
@@ -147,19 +178,20 @@ test('direct Node entry serves built web, uploads/streams a PDF and retains acco
 });
 
 test('invalid PORT exits with a clear error and does not initialize data', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'mirea-invalid-start-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const {directory,launch,entry}=await nativeInstallation(t);
   const dataDir = join(directory, 'untouched');
   await assert.rejects(runFile(process.execPath, [entry], {
-    cwd: directory, windowsHide: true, timeout: 10000,
-    env: { ...process.env, PORT: 'not-a-port', DATA_DIR: dataDir }
+    cwd: launch, windowsHide: true, timeout: 20000,
+    env: { ...nativeEnvironment(dataDir), PORT: 'not-a-port' }
   }), error => /PORT must be an integer/.test(error.stderr));
   await assert.rejects(access(dataDir), { code: 'ENOENT' });
 });
 
 test('built service worker identity includes the whole shell revision so UI-only patches refresh the offline shell',async()=>{
   const {readFile}=await import('node:fs/promises');
+  const {validShellManifest}=await import('../web/src/offline-shell.js');
   const manifest=JSON.parse(await readFile(new URL('../dist/offline-assets.json',import.meta.url),'utf8'));
+  assert(validShellManifest(manifest),'every generated build asset must be accepted before a service worker can install');
   const worker=await readFile(new URL('../dist/download-sw.js',import.meta.url),'utf8');
   assert.ok(worker.includes('// Mirea offline shell '+manifest.version));
 });

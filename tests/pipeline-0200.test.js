@@ -90,3 +90,46 @@ test('private shelves require separate password or signed biometric grant, bound
  const other=(await c.req('POST','/auth/login',{email:'pipeline@example.test',password:'pipeline-fixture-password'})).json();assert.equal((await c.req('GET','/shelves/'+c.shelf+'/items',undefined,headers,other)).statusCode,423,'another session cannot use grant');
  c.db.prepare('UPDATE users SET password_hash=? WHERE id=?').run('changed',c.user.user.id);assert.equal((await c.req('GET','/shelves/'+c.shelf+'/items',undefined,headers)).statusCode,423,'password change invalidates grants');
 });
+
+test('private shelf reauthentication cannot be skipped with query text or by changing its flag',async t=>{
+ const c=await fixture(t),id=randomUUID(),other=randomUUID(),series=(await c.req('POST','/shelves/'+c.shelf+'/series',{title:'Locked series'})).json().series;
+ for(const asset of [id,other]){c.db.prepare('INSERT INTO items(id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at,page_count) VALUES(?,?,?,?,?,?,?,?,1)').run(asset,c.shelf,asset,'test.mp4','video/mp4',4,c.user.user.id,Date.now());await writeFile(join(c.dir,'uploads',asset),'test');c.db.prepare('INSERT INTO video_assets VALUES(?,?,0)').run(asset,JSON.stringify({renditions:[]}));}
+ c.db.prepare('UPDATE shelves SET private=1 WHERE id=?').run(c.shelf);
+ for(const suffix of ['/hls/master.m3u8','/renditions/360p/content','/pages','/epub','/content'])for(const ticket of ['arbitrary','A'.repeat(43)])assert.equal((await c.req('GET','/items/'+id+suffix+'?ticket='+ticket)).statusCode,423,suffix);
+ assert.equal((await c.req('PATCH','/shelves/'+c.shelf,{name:'Fixture',private:false})).statusCode,423);
+ assert.equal(c.db.prepare('SELECT private FROM shelves WHERE id=?').get(c.shelf).private,1);
+ assert.equal((await c.req('GET','/series/'+series.id)).statusCode,423);
+ const grant=(await c.req('POST','/shelves/'+c.shelf+'/unlock',{password:'pipeline-fixture-password'})).json(),headers={'x-mirea-shelf-unlock':grant.token};
+ const issued=await c.req('POST','/items/'+id+'/playback-ticket',{},headers);assert.equal(issued.statusCode,200,issued.body);const ticket=new URL(issued.json().url,'https://fixture.invalid').searchParams.get('ticket');
+ assert.equal((await c.req('GET','/items/'+id+'/hls/master.m3u8?ticket='+ticket,undefined,{},null)).statusCode,200,'valid issued media capability still works without a bearer or shelf header');
+ const encodedId='%'+id.charCodeAt(0).toString(16)+id.slice(1);assert.equal((await c.req('GET','/items/'+encodedId+'/hls/master.m3u8?ticket='+ticket,undefined,{},null)).statusCode,200,'issued capabilities use the same decoded asset identity as the media route');
+ assert.equal((await c.req('GET','/items/'+other+'/hls/master.m3u8?ticket='+ticket)).statusCode,423,'ticket is bound to its asset');
+ assert.equal((await c.req('GET','/items/'+id+'/pages?ticket='+ticket)).statusCode,423,'non-ticket routes never use the media exception');
+ let playlist=(await c.req('POST','/playlists',{title:'Private references'})).json().playlist;
+ const save=(ids,auth={})=>c.req('PUT','/playlists/'+playlist.id,{revision:playlist.revision,title:playlist.title,assetIds:ids},auth);
+ assert.equal((await save([id])).statusCode,423,'a private asset cannot be added with only the login session');
+ const added=await save([id],headers);assert.equal(added.statusCode,200,added.body);playlist=added.json().playlist;
+ const kept=await save([id]);assert.equal(kept.statusCode,200,kept.body);playlist=kept.json().playlist;assert.deepEqual(playlist.assetIds,[id],'editing does not discard a locked existing reference');
+ assert.equal((await save([id,other])).statusCode,423);
+ assert.equal((await c.req('GET','/playlists/'+playlist.id+'/playback?assetId='+id)).statusCode,423);
+ assert.equal((await c.req('GET','/playlists/'+playlist.id+'/playback?assetId='+id,undefined,headers)).statusCode,200);
+ assert.equal((await c.req('DELETE','/thumbnails/custom',{assetIds:[id]})).statusCode,423);
+ assert.equal((await c.req('PATCH','/shelves/'+c.shelf,{name:'Fixture',private:false},headers)).statusCode,200);
+});
+
+test('private shelf guards use decoded route identities and protect item series navigation',async t=>{
+ const c=await fixture(t),id=randomUUID(),series=(await c.req('POST','/shelves/'+c.shelf+'/series',{title:'Private navigation'})).json().series;
+ c.db.prepare("INSERT INTO items(id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at,page_count) VALUES(?,?,?,'synthetic.pdf','application/pdf',1,?, ?,1)").run(id,c.shelf,'Synthetic private asset',c.user.user.id,Date.now());
+ c.db.prepare("INSERT INTO series_items VALUES(?,?,1,'')").run(series.id,id);c.db.prepare('UPDATE shelves SET private=1 WHERE id=?').run(c.shelf);
+ const encoded=value=>'%'+value.charCodeAt(0).toString(16)+value.slice(1);
+ const grant=(await c.req('POST','/shelves/'+c.shelf+'/unlock',{password:'pipeline-fixture-password'})).json(),headers={'x-mirea-shelf-unlock':grant.token};
+ for(const encode of [value=>value,encoded]){
+  for(const path of ['/shelves/'+encode(c.shelf)+'/items','/shelves/'+encode(c.shelf)+'/series','/series/'+encode(series.id),'/series/'+encode(series.id)+'/delete-preview','/items/'+encode(id)+'/series']){
+   const locked=await c.req('GET',path);assert.equal(locked.statusCode,423,path+': '+locked.body);assert.equal(locked.json().shelfUnlockRequired,c.shelf);
+   const unlocked=await c.req('GET',path,undefined,headers);assert.equal(unlocked.statusCode,200,path+': '+unlocked.body);
+  }
+  for(const [method,path,body] of [['GET','/items/'+encode(id)+'/content'],['DELETE','/items/'+encode(id)],['PATCH','/shelves/'+encode(c.shelf),{name:'Private',private:false}]])assert.equal((await c.req(method,path,body)).statusCode,423,path);
+ }
+ assert(c.db.prepare('SELECT 1 FROM items WHERE id=?').get(id));assert.equal(c.db.prepare('SELECT private FROM shelves WHERE id=?').get(c.shelf).private,1);
+ assert.equal((await c.req('GET','/not-a-resource')).statusCode,404);
+});

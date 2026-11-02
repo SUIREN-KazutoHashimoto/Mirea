@@ -47,12 +47,37 @@ public class PlaybackLifecycleTest {
             assertFalse((Boolean)ReflectionHelpers.getField(s,"retryAutoplay"));assertFalse(s.playing());assertNull(ReflectionHelpers.getField(s,"player"));
         }finally{controller.destroy();s.stopped.get(5,TimeUnit.SECONDS);}
     }
+    @Test public void queuedJournalWritesStayOffUiThreadAndAreDrainedBeforeServiceCloses()throws Exception{
+        ServiceController<PlaybackService> c=Robolectric.buildService(PlaybackService.class).create();PlaybackService s=c.get();java.util.concurrent.CountDownLatch release=new java.util.concurrent.CountDownLatch(1);java.util.concurrent.ExecutorService writer=ReflectionHelpers.getField(s,"journalIo");writer.submit(()->{try{release.await();}catch(InterruptedException e){Thread.currentThread().interrupt();}});
+        String partition="a".repeat(64);JSONObject view=new JSONObject().put("id","test-journal");ReflectionHelpers.callInstanceMethod(s,"journalEvent",ReflectionHelpers.ClassParameter.from(String.class,partition),ReflectionHelpers.ClassParameter.from(JSONObject.class,view),ReflectionHelpers.ClassParameter.from(JSONObject.class,new JSONObject().put("id","event-final")));c.destroy();assertFalse(s.stopped.isDone());release.countDown();s.stopped.get(5,TimeUnit.SECONDS);
+        try(android.database.sqlite.SQLiteDatabase db=s.openOrCreateDatabase("playback-journal.sqlite",0,null);android.database.Cursor rows=db.rawQuery("SELECT body FROM events WHERE partition=? AND view_id=?",new String[]{partition,"test-journal"})){assertTrue(rows.moveToFirst());assertTrue(rows.getString(0).contains("event-final"));}
+    }
     @Test public void playingConnectionLossRemembersPlayIntentAndPauseDuringPreparationCancelsIt()throws Exception{
         ServiceController<PlaybackService> controller=Robolectric.buildService(PlaybackService.class).create();PlaybackService s=controller.get();
         try{seed(s,"recover-playing.m4a");s.play();ReflectionHelpers.callInstanceMethod(s,"fail",ReflectionHelpers.ClassParameter.from(String.class,"Synthetic connection loss"));assertTrue((Boolean)ReflectionHelpers.getField(s,"retryAutoplay"));assertTrue(s.position()>=42000);s.pause();assertFalse((Boolean)ReflectionHelpers.getField(s,"desiredPlaying"));assertFalse((Boolean)ReflectionHelpers.getField(s,"retryAutoplay"));
         }finally{controller.destroy();s.stopped.get(5,TimeUnit.SECONDS);}
     }
     @Test public void reachabilityBackoffIsBoundedAndNetworkReturnResetsIt(){PlaybackRetry retry=new PlaybackRetry();assertTrue(retry.ready(0));retry.unavailable(0);assertFalse(retry.ready(4999));assertTrue(retry.ready(5000));retry.unavailable(5000);assertFalse(retry.ready(14999));for(int n=0;n<20;n++)retry.unavailable(20000);assertFalse(retry.ready(79999));assertTrue(retry.ready(80000));retry.connected();assertTrue(retry.ready(0));}
+    @Test public void transientFocusInterruptionLongerThanFiveMinutesKeepsTheServiceForResume()throws Exception{
+        ServiceController<PlaybackService> c=Robolectric.buildService(PlaybackService.class).create();PlaybackService s=c.get();
+        try{seed(s,"phone-call.m4a");s.play();s.pause();ReflectionHelpers.setField(s,"resumeFocus",true);ReflectionHelpers.setField(s,"pausedAt",1L);org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMinutes(6));Runnable tick=ReflectionHelpers.getField(s,"tick");tick.run();assertFalse(Shadows.shadowOf(s).isStoppedBySelf());ReflectionHelpers.setField(s,"resumeFocus",false);tick.run();assertTrue(Shadows.shadowOf(s).isStoppedBySelf());}
+        finally{c.destroy();s.stopped.get(5,TimeUnit.SECONDS);}
+    }
+    @Test public void transientTransportRecoveryKeepsIntentButUserPauseAndAuthorizationFailureCancelRetry()throws Exception{
+        ServiceController<PlaybackService> c=Robolectric.buildService(PlaybackService.class).create();PlaybackService s=c.get();
+        try{seed(s,"temporary-lte.m4a");ReflectionHelpers.setField(s,"request",new JSONObject());s.play();ReflectionHelpers.callInstanceMethod(s,"transportFailed",ReflectionHelpers.ClassParameter.from(Throwable.class,new java.net.SocketTimeoutException()),ReflectionHelpers.ClassParameter.from(String.class,"failure"));assertTrue((Boolean)ReflectionHelpers.getField(s,"recoveryPending"));assertEquals(42000,s.position());s.pause();assertFalse((Boolean)ReflectionHelpers.getField(s,"recoveryPending"));assertFalse((Boolean)ReflectionHelpers.getField(s,"retryAutoplay"));
+            assertTrue(PlaybackService.retryable(new PlaybackApi.Failure(503)));assertTrue(PlaybackService.retryable(new PlaybackApi.Failure(429)));assertFalse(PlaybackService.retryable(new PlaybackApi.Failure(403)));assertFalse(PlaybackService.retryable(new javax.net.ssl.SSLException("invalid certificate")));assertFalse(PlaybackService.retryable(new java.io.IOException("corrupt cache")));
+        }finally{c.destroy();s.stopped.get(5,TimeUnit.SECONDS);}
+    }
+    @Test public void connectionWaitingCardOffersPauseAndThenAnExplicitResumeAction()throws Exception{
+        java.util.List<String> actions=new java.util.ArrayList<>();PlaybackScreen screen=new PlaybackScreen(RuntimeEnvironment.getApplication(),new PlaybackScreen.Actions(){public void perform(String action){actions.add(action);}public void seek(long value){}public void scrub(boolean value){}public void boost(boolean value){}public void zoom(float scale,float dx,float dy){}});
+        screen.bind(new JSONObject().put("video",true).put("recovering",true).put("error","接続を待っています。"),null);android.widget.TextView action=ReflectionHelpers.getField(screen,"errorAction");assertEquals("自動再開を一時停止",action.getText().toString());action.performClick();assertEquals("pause-scrub",actions.get(0));screen.bind(new JSONObject().put("video",true).put("recovering",false).put("error","一時停止中です。"),null);assertEquals("再生を再開",action.getText().toString());action.performClick();assertEquals("play",actions.get(1));
+    }
+    @Test public void playerControlsPersistPerAccountAndPlaylistWithoutSeriesExposesPlaybackModes()throws Exception{
+        ServiceController<PlaybackService> c=Robolectric.buildService(PlaybackService.class).create();PlaybackService s=c.get();
+        try{PlaybackApi api=new PlaybackApi("https://mirea.example","a".repeat(43),"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");ReflectionHelpers.setField(s,"api",api);s.speed(1.5f);s.mute();ReflectionHelpers.callInstanceMethod(s,"loadPreferences",ReflectionHelpers.ClassParameter.from(String.class,"other"));assertEquals(1,s.status().getDouble("rate"),0);assertFalse(s.status().getBoolean("muted"));ReflectionHelpers.callInstanceMethod(s,"loadPreferences",ReflectionHelpers.ClassParameter.from(String.class,api.partition));assertEquals(1.5,s.status().getDouble("rate"),0);assertTrue(s.status().getBoolean("muted"));ReflectionHelpers.setField(s,"request",new JSONObject().put("playlistId","cccccccc-cccc-cccc-cccc-cccccccccccc"));assertTrue(s.status().getBoolean("hasSeries"));
+        }finally{c.destroy();s.stopped.get(5,TimeUnit.SECONDS);}
+    }
     @Test public void pausedQualityChangeAndReconnectKeepPositionSpeedAndDoNotReuseOriginalAutoplayFlag()throws Exception{
         ServiceController<PlaybackService> c=Robolectric.buildService(PlaybackService.class).create();PlaybackService s=c.get();
         try{

@@ -33,4 +33,7 @@ public class PlaybackPreloadTest {
         final boolean[] closedBeforeRelease={false};MediaPlayer player=new MediaPlayer(){@Override public void release(){closedBeforeRelease[0]=api.closed;super.release();}};player.setDataSource("next-only.m4a");player.prepare();ReflectionHelpers.setField(warm,"player",player);ReflectionHelpers.setField(warm,"ready",true);assertFalse(player.isPlaying());warm.close();assertTrue(closedBeforeRelease[0]);assertTrue(api.closed);
         PlaybackApi owned=context("a");PlaybackPreload adopted=fixture(owned);MediaPlayer next=new MediaPlayer();next.setDataSource("next-only.m4a");next.prepare();ReflectionHelpers.setField(adopted,"player",next);adopted.transfer();assertSame(next,adopted.takePlayer());adopted.close();assertFalse(owned.closed);assertFalse(next.isPlaying());owned.close();next.release();
     }
+    @Test public void failedDecoderIsVisibleToTheServiceSoItCanRetryInsteadOfKeepingADeadPreload()throws Exception{
+        PlaybackApi api=context("a");PlaybackPreload warm=fixture(api);assertFalse(warm.isFailed());ReflectionHelpers.callInstanceMethod(warm,"discardFailed");assertTrue(warm.isFailed());assertFalse(warm.isReady());Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();assertTrue(api.closed);
+    }
 }

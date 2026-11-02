@@ -10,6 +10,9 @@ export async function packageServer({projectRoot=root,outputDirectory=join(root,
   const pkg=JSON.parse(await readFile(join(projectRoot,'package.json'),'utf8'));
   const label=pkg.version.replace('-beta','beta');
   if(!/^[0-9a-z.-]+$/i.test(label))throw new Error('Invalid version');
+  for(const name of ['third-party-notices.json','third-party-notices.txt','third-party-notices.html']){
+    await access(join(projectRoot,'dist',name)).catch(()=>{throw new Error('Build third-party notices with pnpm build before packaging: '+name);});
+  }
   const output=resolve(outputDirectory);await mkdir(output,{recursive:true});
   const archive=join(output,`mirea-${label}-server.tar.gz`);
   // No accidental overwrite of an already published/reviewed package.
@@ -18,7 +21,7 @@ export async function packageServer({projectRoot=root,outputDirectory=join(root,
   try{
     await mkdir(destination);
     // Fixed allowlist: never include data, credentials, local deployment files or node_modules.
-    for(const path of ['server','dist','docs','scripts','package.json','pnpm-lock.yaml','pnpm-workspace.yaml','.npmrc','.env.example','LICENSE','README.md','RELEASE.md']){
+    for(const path of ['server','dist','docs','scripts','patches','third-party','package.json','pnpm-lock.yaml','pnpm-workspace.yaml','.npmrc','.env.example','LICENSE','README.md','RELEASE.md']){
       await cp(join(projectRoot,path),join(destination,path),{recursive:true,errorOnExist:true,force:false});
     }
     await writeFile(join(destination,'release-manifest.json'),JSON.stringify({name:'Mirea',release:label,version:pkg.version,commit},null,2)+'\n');

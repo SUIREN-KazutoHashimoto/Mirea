@@ -17,7 +17,7 @@ export function videoMetadata(db,id,generation) {
 export const videoFolder=(root,id,metadata)=>metadata?.generation?join(root,id,metadata.generation):join(root,id);
 export function registerVideoStreams(app,{db,videoDir,authenticate,findItem}) {
   const authorize=req=>{
-    if(req.headers.authorization){authenticate(req);return findItem(req.params.id,req.user.id);}
+    if(req.headers.authorization&&!req.query.ticket){authenticate(req);return findItem(req.params.id,req.user.id);}
     const token=typeof req.query.ticket==='string'&&/^[A-Za-z0-9_-]{43}$/.test(req.query.ticket)?req.query.ticket:'';
     const ticket=token&&db.prepare(`SELECT s.user_id,g.generation FROM playback_tickets t JOIN sessions s ON s.id=t.session_id LEFT JOIN playback_generations g ON g.token_hash=t.token_hash
       WHERE t.token_hash=? AND t.item_id=? AND t.expires_at>? AND s.expires_at>?`).get(hashToken(token),req.params.id,Date.now(),Date.now());

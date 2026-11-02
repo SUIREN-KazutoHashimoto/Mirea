@@ -9,6 +9,7 @@ import {playerKey} from './player-actions.js';
 import {mountVideoNavigation} from './video-navigation.js';
 import {setPlayerIcon,playerSelectMenu} from './player-icons.js';
 import {playerPreferences} from './player-preferences.js';
+import {adoptPlayerMedia} from './pip-media-handoff.js';
 
 export const formatVideoTime = value => {
   const seconds = Math.max(0, Math.floor(Number.isFinite(value) ? value : 0));
@@ -16,7 +17,7 @@ export const formatVideoTime = value => {
   return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
 };
 export function seekVideo(video, value) { if (Number.isFinite(value) && Number.isFinite(video.duration) && video.duration > 0) video.currentTime = Math.min(video.duration, Math.max(0, value)); }
-export function mountVideoPlayer(container, { onError = () => {}, reconnect, kind = 'video', title = '', coverUrl, onNavigate=()=>{},editNavigation, playback, assetId='',preferencesScope='',media,focus=true, doc = document } = {}) {
+export function mountVideoPlayer(container, { onError = () => {}, reconnect, kind = 'video', title = '', coverUrl, onNavigate=()=>{},editNavigation, playback, assetId='',preferencesScope='',media,focus=true,active=true,preservePictureInPicture=false,retainedHost, doc = document } = {}) {
   const audioMode = kind === 'audio';
   container.innerHTML = `<div class="mirea-player" tabindex="0" aria-label="動画プレーヤー"><video playsinline preload="metadata" aria-label="本編動画"></video><div class="player-loading" role="status" hidden>読み込み中…</div><button class="player-center" type="button" aria-label="動画を再生">▶</button><div class="player-controls"><label class="player-scrubber"><span class="sr-only">再生位置</span><input class="player-seek" type="range" min="0" max="1" step="0.01" value="0" disabled></label><div class="player-control-row"><button class="player-play" type="button" aria-label="再生">▶</button><button class="player-backward" type="button" aria-label="10秒戻る">−10</button><button class="player-forward" type="button" aria-label="10秒進む">＋10</button><span class="player-time">0:00 / 0:00</span><div class="player-volume-controls"><button class="player-mute" type="button" aria-label="消音">♫</button><label><span class="sr-only">音量</span><input class="player-volume" type="range" min="0" max="1" step="0.05" value="1"></label></div><label class="player-speed"><span class="sr-only">再生速度</span><select aria-label="再生速度"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="1.75">1.75×</option><option value="2">2×</option></select></label><label class="player-quality" hidden><span class="sr-only">画質</span><select aria-label="画質"></select></label><button class="player-reconnect" type="button" aria-label="動画へ再接続">↻</button><button class="player-background" type="button" aria-label="ライブラリでバックグラウンド再生">バックグラウンド再生</button><button class="player-pip" type="button" aria-label="ピクチャーインピクチャー" hidden>▣</button><button class="player-fullscreen" type="button" aria-label="全画面を切り替える">⛶</button></div><p class="player-help">Space/K 再生 · J/L ±10秒 · ←/→ ±5秒 · 0–9 位置 · &lt;/&gt; 速度 · 停止中 ,/. コマ送り · F 全画面 · C 字幕</p></div></div>`;
   const root = container.querySelector('.mirea-player');
@@ -44,8 +45,8 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
   root.querySelector('.player-controls').append(modeControls);const modeSelect=modeControls.querySelector('select'),shuffleButton=modeControls.querySelector('button');
   const updateModes=()=>{const state=playback?.modeState??{};modeSelect.value=state.repeat??'off';modeSelect.querySelector('[value="series"]').disabled=!state.hasSeries;shuffleButton.disabled=!state.hasSeries;shuffleButton.setAttribute('aria-pressed',String(state.shuffle===true));setPlayerIcon(shuffleButton,'shuffle',state.shuffle?'シャッフル：オン':'シャッフル：オフ');const menu=modeSelect.closest('details');if(menu){menu.dataset.active=String(state.repeat&&state.repeat!=='off');menu.querySelector('summary').title=modeSelect.selectedOptions[0]?.textContent??'リピート';}};
   modeSelect.onchange=()=>playback?.setModes({repeat:modeSelect.value});shuffleButton.onclick=()=>playback?.setModes({shuffle:!playback?.modeState.shuffle});const stopModes=playback?.subscribe(updateModes);updateModes();
-  if(media)root.querySelector('video,audio').replaceWith(media);
-  const video = root.querySelector('video,audio'), seek = root.querySelector('.player-seek'), volume = root.querySelector('.player-volume'), center = root.querySelector('.player-center');
+  const mediaHandoff=media?adoptPlayerMedia(root.querySelector('video,audio'),media,{document:doc,retainedHost,preservePictureInPicture}):null;
+  const video = media??root.querySelector('video,audio'), seek = root.querySelector('.player-seek'), volume = root.querySelector('.player-volume'), center = root.querySelector('.player-center');
   const stopEqualizer=mountEqualizer(root,video,{doc});
   for(const [selector,icon,label]of [['.player-backward','back','10秒戻る'],['.player-forward','forward','10秒進む'],['.player-reconnect','reconnect','再接続'],['.player-background','background','ライブラリでバックグラウンド再生'],['.player-pip','pip','ピクチャーインピクチャー'],['.player-fullscreen','fullscreen','全画面を切り替える']])setPlayerIcon(root.querySelector(selector),icon,label);
   for(const [selector,icon,label]of [['.player-speed','speed','再生速度'],['.player-quality','quality','画質'],['.player-repeat','repeat','リピート']]){const control=root.querySelector(selector),wrapper=control.tagName==='SELECT'?control.parentElement:control,menu=playerSelectMenu(label,icon,doc);wrapper.before(menu);menu.append(wrapper);if(selector==='.player-quality'){menu.classList.add('player-quality-menu');menu.hidden=wrapper.hidden;}menu.addEventListener('toggle',()=>{if(menu.open)for(const other of root.querySelectorAll('details'))if(other!==menu)other.open=false;});control.addEventListener('change',()=>menu.open=false);}
@@ -117,7 +118,7 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
     showControls();
   });
   root.querySelector('.player-background').onclick=()=>leavePlayer();
-  const mediaSession=mountMediaSession(video,{title,kind,artwork:coverUrl,previous:()=>onNavigate(-1),next:()=>onNavigate(1),stop:()=>root.closest('.viewer-screen')?.close(),onError,document:doc});
+  const mediaSession=mountMediaSession(video,{title,kind,active,artwork:coverUrl,previous:()=>onNavigate(-1),next:()=>onNavigate(1),stop:()=>root.closest('.viewer-screen')?.close(),onError,document:doc});
   const pipButton=root.querySelector('.player-pip');pipButton.hidden=!mediaSession.supportsPip;pipButton.onclick=()=>mediaSession.pip().catch(()=>onError(new Error('PiPに切り替えられません。動画を読み込んでから再試行してください。')));
   const screen=root.closest('.viewer-screen');
   if(screen)listen(screen,'viewer:layout',showControls);
@@ -127,9 +128,10 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
     seekInteraction.cancel();
     await mediaSession.background(()=>{if(!disposed)screen?.minimize?.();});
   }
-  if(screen)screen.onReturn=leavePlayer;
+  const activate=()=>{if(disposed)return;mediaSession.activate();if(screen)screen.onReturn=leavePlayer;};
+  if(active)activate();
   update();if(focus)root.focus();
-  return { video, surface:audioMode?root.querySelector('.audio-art'):video, setArtwork:url=>mediaSession.setArtwork(url), setNavigation:(value,url)=>navigation?.set(value,url), setHeatmap(value) {
+  return { video,activate, surface:audioMode?root.querySelector('.audio-art'):video, setArtwork:url=>mediaSession.setArtwork(url), setNavigation:(value,url)=>navigation?.set(value,url), setHeatmap(value) {
     if(disposed||audioMode)return;const geometry=heatmapGeometry(value);hasHeatmap=Boolean(geometry);heatmap.replaceChildren();heatmap.hidden=!hasHeatmap||!seekInteraction.active;if(!geometry)return;
     const label=doc.createElement('span');label.className='player-heatmap-label';label.textContent=`${value.scope==='self'?'自分の再生傾向':'よく再生されている箇所（匿名集計）'} · ${formatVideoTime(geometry.peakMs/1000)}`;
     const svg=doc.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 1000 40');svg.setAttribute('preserveAspectRatio','none');svg.setAttribute('aria-hidden','true');
@@ -142,5 +144,5 @@ export function mountVideoPlayer(container, { onError = () => {}, reconnect, kin
     if(select.dataset.levels!==key){select.replaceChildren(...values.map(value=>{const option=doc.createElement('option');option.value=value.value;option.textContent=value.text;return option;}));select.dataset.levels=key;}
     else for(const value of values){const option=[...select.options].find(o=>o.value===value.value);if(option)option.textContent=value.text;}
     select.value=selected;select.onchange=()=>{hold?.cancel();choose(select.value);};
-  }, dispose() { disposed=true;controlsObserver?.disconnect();stopEqualizer();artObserver?.disconnect();stopAudioMotion?.();stopModes?.();stopNavigationControls?.();for(const remove of listeners)remove();hold?.dispose();navigation?.dispose();seekInteraction.dispose();if(screen?.onReturn===leavePlayer)screen.onReturn=null;mediaSession.dispose();clearTimeout(timer);clearTimeout(clickTimer);video.pause();video.removeAttribute('src');video.load();root.remove();} };
+  }, dispose({preserveMedia=false}={}) { disposed=true;controlsObserver?.disconnect();stopEqualizer();artObserver?.disconnect();stopAudioMotion?.();stopModes?.();stopNavigationControls?.();for(const remove of listeners)remove();hold?.dispose();navigation?.dispose();seekInteraction.dispose();if(screen?.onReturn===leavePlayer)screen.onReturn=null;mediaSession.dispose({preserveMedia});clearTimeout(timer);clearTimeout(clickTimer);if(!preserveMedia){video.pause();video.removeAttribute('src');video.load();}mediaHandoff?.dispose({preserveMedia});if(preserveMedia&&root.contains(video)){for(const child of [...root.children])if(child!==video)child.remove();root.className='pip-retained-media';root.removeAttribute('tabindex');root.removeAttribute('aria-label');}else root.remove();} };
 }

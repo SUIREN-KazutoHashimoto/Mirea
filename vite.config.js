@@ -3,13 +3,14 @@ import { cpSync, mkdirSync, readdirSync, writeFileSync, readFileSync } from 'nod
 import {createHash} from 'node:crypto';
 import { resolve } from 'node:path';
 import {buildPwaIcons} from './scripts/pwa-icons.mjs';
+import {writeNotices,thirdPartyNoticesDevPlugin} from './scripts/third-party-notices.mjs';
 
 export default defineConfig({
   root: 'web',
   envDir: '..',
   build: { outDir: '../dist', emptyOutDir: true, target: 'es2022',rollupOptions:{input:{index:resolve('web/index.html'),'download-sw':resolve('web/src/download-sw.js')},output:{entryFileNames:chunk=>chunk.name==='download-sw'?'download-sw.js':'assets/[name]-[hash].js'}} },
   server: { headers:{'Service-Worker-Allowed':'/'},proxy: { '/api': 'http://127.0.0.1:3000' } },
-  plugins: [{
+  plugins: [thirdPartyNoticesDevPlugin(),{
     name: 'pdf-fonts-and-codecs',
     async closeBundle() {
       await buildPwaIcons();
@@ -17,6 +18,7 @@ export default defineConfig({
       for (const dir of ['cmaps', 'standard_fonts', 'wasm']) {
         cpSync(resolve('node_modules/pdfjs-dist', dir), resolve('dist/pdf-assets', dir), { recursive: true });
       }
+      await writeNotices();
       const files=[];
       function walk(folder){for(const entry of readdirSync(folder,{withFileTypes:true})){const path=folder+'/'+entry.name;if(entry.isDirectory())walk(path);else if(!path.endsWith('/offline-assets.json'))files.push('/'+path.slice('dist/'.length));}}
       walk('dist');

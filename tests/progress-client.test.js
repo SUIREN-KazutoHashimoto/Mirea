@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createProgressSync,bookPosition,restoreBookPosition,resumeVideoMs } from '../web/src/progress-core.js';
-import { bindVideoProgress } from '../web/src/progress.js';
+import { bindVideoProgress,openProgress } from '../web/src/progress.js';
+import {setSession} from '../web/src/api.js';
 
 test('progress retries use identical update ID/revision and preserve a newer local snapshot until acknowledged',async()=>{
   let persisted,calls=0,revision=0;const sent=[],saved=[],status=[];
@@ -23,7 +24,7 @@ test('pending resume state can reopen after reload, conflicts stop saves and det
   const warnings=[];let count=0;
   const conflict=createProgressSync({revision:1,send:async()=>{count++;throw Object.assign(new Error('New device'),{status:409});},status:s=>warnings.push(s)});
   conflict.update({positionMs:5000,durationMs:10000});await conflict.flush();conflict.update({positionMs:0,durationMs:10000});await conflict.flush();
-  assert.equal(count,1);assert.equal(conflict.stopped,true);assert.ok(warnings.includes('conflict'));
+  assert.equal(count,1);assert.equal(conflict.stopped,false);assert.equal(conflict.conflicted,true);assert.ok(warnings.includes('conflict'));
   const unchanged=createProgressSync({revision:1,lastValue:{page:5,scrollX:0,scrollY:0.4,zoom:'fit'},send:async()=>assert.fail('unchanged initial render must not overwrite another viewer')});
   unchanged.update({page:5,scrollX:0,scrollY:0.4,zoom:'fit'});unchanged.update(null);await unchanged.flush();
 });
@@ -72,4 +73,93 @@ test('acknowledged offline resume snapshots survive cold reopening with a dated 
   now+=86400000;const reopened=createProgressCache(storage,partition,id,{now:()=>now});assert.equal(reopened.read().last.positionMs,64000);assert.equal(reopened.read().revision,7);assert.equal(reopened.read().at,now-86400000);
   assert.equal(createProgressCache(storage,'https://other.test|actor',id).read(),null);
   reopened.write({pending:{updateId:'stable-id',revision:7,positionMs:65000,durationMs:100000},desired:{positionMs:70000,durationMs:100000},last:position,revision:7});assert.equal(reopened.read().pending.updateId,'stable-id');assert.equal(reopened.read().at,now);
+});
+
+test('conflicts preserve newer local reading and require an explicit choice before replacing remote progress',async()=>{
+  let persisted,requests=0,remote={revision:4,page:20},nextId=0;
+  const options={revision:3,read:async()=>({revision:remote.revision,progress:remote}),uuid:()=>`choice-${++nextId}`,persist:value=>persisted=value,
+    send:async body=>{requests++;if(body.revision!==remote.revision)throw Object.assign(Error('Conflict'),{status:409});remote={...body,revision:remote.revision+1};return {progress:remote};}};
+  const sync=createProgressSync(options);sync.update({page:80});await sync.flush();
+  assert.equal(sync.conflicted,true);assert.equal(persisted.desired.page,80);
+  sync.update({page:81});await sync.flush();assert.equal(requests,1);assert.equal(persisted.desired.page,81);
+  const reopened=createProgressSync({...options,...persisted});assert.equal(reopened.conflicted,true);
+  await reopened.resolveConflict('local');assert.equal(remote.page,81);assert.equal(remote.revision,5);assert.equal(reopened.conflicted,false);assert.equal(persisted,null);
+  const other=createProgressSync({...options,revision:4});other.update({page:90});await other.flush();
+  const before=requests;assert.equal((await other.resolveConflict('remote')).page,81);assert.equal(requests,before);assert.equal(other.conflicted,false);
+  other.update({page:82});await other.flush();assert.equal(remote.page,82);
+});
+
+test('a preloaded media element restores and captures progress without another loadedmetadata event',()=>{
+  const video=Object.assign(new EventTarget(),{readyState:4,duration:120,currentTime:0,paused:true,ended:false});let snapshot;const positions=[];
+  const manager={initial:{positionMs:60000,durationMs:120000},bind(fn){snapshot=fn;},capture(){const value=snapshot();if(value)positions.push(value);},checkpoint(){this.capture();}};
+  const dispose=bindVideoProgress(video,manager);assert.equal(video.currentTime,60);
+  video.dispatchEvent(new Event('seeked'));assert.equal(snapshot(),null);
+  video.paused=false;video.dispatchEvent(new Event('play'));video.currentTime=62;video.dispatchEvent(new Event('timeupdate'));
+  assert.equal(positions.at(-1).positionMs,62000);dispose();
+});
+
+test('a retained PiP element ignores the previous source until new metadata arrives',()=>{
+  const video=Object.assign(new EventTarget(),{readyState:4,duration:120,currentTime:80,paused:false,ended:false});let snapshot;const positions=[];
+  const manager={initial:{positionMs:30000,durationMs:60000},bind(fn){snapshot=fn;},capture(){const value=snapshot();if(value)positions.push(value);},checkpoint(){this.capture();}};
+  const dispose=bindVideoProgress(video,manager,{waitForMetadata:true});assert.equal(video.currentTime,80);assert.equal(snapshot(),null);
+  for(const event of ['timeupdate','pause','seeked'])video.dispatchEvent(new Event(event));assert.equal(positions.length,0);
+  video.duration=60;video.currentTime=0;video.dispatchEvent(new Event('loadedmetadata'));assert.equal(video.currentTime,30);assert.equal(snapshot(),null);
+  video.dispatchEvent(new Event('seeked'));assert.equal(positions.at(-1).positionMs,30000);assert.equal(positions.at(-1).durationMs,60000);dispose();
+});
+
+test('a retained PiP next track starts at zero without recording the prior track position',()=>{
+  const video=Object.assign(new EventTarget(),{readyState:4,duration:120,currentTime:115,paused:false,ended:false});let snapshot;const positions=[];
+  const manager={initial:null,bind(fn){snapshot=fn;},capture(){const value=snapshot();if(value)positions.push(value);},checkpoint(){this.capture();}};
+  const dispose=bindVideoProgress(video,manager,{waitForMetadata:true});video.dispatchEvent(new Event('pause'));assert.equal(positions.length,0);
+  video.duration=90;video.currentTime=0;video.dispatchEvent(new Event('loadedmetadata'));video.dispatchEvent(new Event('play'));video.dispatchEvent(new Event('timeupdate'));
+  assert.equal(positions.at(-1).positionMs,0);assert.equal(positions.at(-1).durationMs,90000);dispose();
+});
+
+test('choosing local progress reports a second conflict or network outage instead of claiming saved',async()=>{
+ for(const failure of [Object.assign(Error('conflict'),{status:409}),Object.assign(Error('offline'),{status:503})]){
+  let record;const sync=createProgressSync({revision:3,pending:{revision:3,updateId:'old',page:80},desired:{page:81},conflict:{revision:3},read:async()=>({revision:4,progress:{page:20,revision:4}}),send:async()=>{throw failure;},persist:value=>record=value});
+  await assert.rejects(sync.resolveConflict('local'),error=>error.code===(failure.status===409?'PROGRESS_CONFLICT':'PROGRESS_PENDING'));assert.equal(record.desired.page,81);assert.equal(sync.conflicted,failure.status===409);
+ }
+});
+
+async function progressOpenFixture(t,transport){
+ const keys=['localStorage','sessionStorage','location','window','document','fetch'],previous=new Map(keys.map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)])),values=new Map();
+ const storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)};
+ for(const [key,value] of Object.entries({localStorage:storage,sessionStorage:storage,location:{origin:'https://mirea.test'},window:new EventTarget(),document:Object.assign(new EventTarget(),{hidden:false}),fetch:async(url,options={})=>url.includes('/auth/remember')?new Response(null,{status:204}):transport(options.method)}))Object.defineProperty(globalThis,key,{configurable:true,writable:true,value});
+ t.after(()=>{for(const key of keys){if(previous.get(key))Object.defineProperty(globalThis,key,previous.get(key));else delete globalThis[key];}});
+ await setSession({token:'a'.repeat(43),expiresAt:Date.now()+3600000,user:{id:'progress-fixture',name:'Fixture',email:'fixture@example.test'}},{remember:false,broadcast:false});
+ const key='mirea.progress.v1|https://mirea.test|progress-fixture|fixture';storage.setItem(key,JSON.stringify({revision:1,last:{positionMs:1000,durationMs:100000,revision:1},pending:{revision:1,updateId:'exact',positionMs:60000,durationMs:100000},desired:{positionMs:60000,durationMs:100000}}));
+ return {key,storage,item:{id:'fixture',kind:'audio'},json:value=>new Response(JSON.stringify(value),{headers:{'content-type':'application/json'}})};
+}
+test('opening progress retains the acknowledged retry when the following GET fails',async t=>{
+ let fixture;fixture=await progressOpenFixture(t,async method=>{if(method==='GET')throw new TypeError('network');return fixture.json({progress:{positionMs:60000,durationMs:100000,revision:2}});});
+ const manager=await openProgress(fixture.item);t.after(()=>manager.dispose());assert.equal(manager.initial.positionMs,60000);assert.equal(JSON.parse(fixture.storage.getItem(fixture.key)).revision,2);
+});
+test('a failed PUT followed by a newer remote GET keeps local position and requests an explicit choice',async t=>{
+ let fixture;fixture=await progressOpenFixture(t,async method=>{if(method==='PUT')throw new TypeError('network');return fixture.json({revision:2,progress:{positionMs:5000,durationMs:100000,revision:2}});});
+ const states=[],manager=await openProgress(fixture.item,{status:value=>states.push(value)});t.after(()=>manager.dispose());assert.equal(manager.initial.positionMs,60000);assert.equal(manager.conflicted,true);assert.ok(states.includes('conflict'));assert.equal(JSON.parse(fixture.storage.getItem(fixture.key)).pending.updateId,'exact');
+});
+
+test('a continuous track starts at zero while a saved-position conflict stays unresolved',async t=>{
+ let fixture,puts=0;
+ fixture=await progressOpenFixture(t,async method=>{if(method==='PUT'){puts++;throw new TypeError('network');}return fixture.json({revision:2,progress:{positionMs:5000,durationMs:100000,revision:2}});});
+ const manager=await openProgress(fixture.item,{startAtBeginning:true});t.after(()=>manager.dispose());
+ assert.equal(manager.initial,null);assert.equal(manager.conflicted,true);
+ const video=Object.assign(new EventTarget(),{readyState:4,duration:100,currentTime:0,paused:true,ended:false});
+ const unbind=bindVideoProgress(video,manager);t.after(unbind);
+ assert.equal(video.currentTime,0,'the next track must not seek to the saved local or remote position');
+ const attempts=puts;video.paused=false;video.dispatchEvent(new Event('play'));await manager.checkpoint();
+ assert.equal(puts,attempts,'starting playback must not silently resolve another device\'s conflict');
+ const retained=JSON.parse(fixture.storage.getItem(fixture.key));
+ assert.equal(retained.pending.updateId,'exact');assert.equal(retained.pending.positionMs,60000);
+ assert.equal(retained.desired.positionMs,0);assert.ok(retained.conflict);
+});
+
+test('offline continuous playback starts at zero but a direct open retains its bookmark',async t=>{
+ const fixture=await progressOpenFixture(t,async()=>{throw new TypeError('network');});
+ const next=await openProgress({...fixture.item,kind:'video'},{startAtBeginning:true});
+ assert.equal(next.initial,null);next.dispose();
+ const direct=await openProgress({...fixture.item,kind:'video'});t.after(()=>direct.dispose());
+ assert.equal(direct.initial.positionMs,60000);
+ assert.equal(JSON.parse(fixture.storage.getItem(fixture.key)).pending.updateId,'exact');
 });

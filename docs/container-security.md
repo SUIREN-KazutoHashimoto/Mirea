@@ -1,58 +1,72 @@
-# Linuxコンテナの起動保護（0.15.1beta以降）
+# Linuxコンテナの起動保護
 
-TrueNAS 25.04.2.6のguided Custom App（ix-app 1.4.7）は、`read_only`・`cap_drop`・`no-new-privileges`を指定できません。Mireaはこれらの**Docker設定を変更するのではなく**、非rootランチャーでアプリケーション自身を制限します。通常のComposeでは従来のDocker側保護も併用します。
+対象: Mirea `1.0.0`。
+
+Mireaの配布イメージは、Node.jsの前に非rootランチャーを実行します。DockerのGUIで指定できる保護項目が異なる場合にも、アプリケーションと子プロセスの制約を適用します。通常のComposeではDocker側の読取専用root、capability削除、no-new-privilegesも併用します。
+
+初めて導入する人は[Docker](install/docker.md)、[Docker Desktop](install/docker-desktop.md)、[TrueNAS](install/truenas.md)の手順を使ってください。このページは起動条件と既存の互換設定を調べるための仕様です。
 
 ## 必須条件と処理順
 
-1. 通常のDocker seccompフィルターが有効。特権・seccomp無効化は不可。
-2. UID/GIDとも非0。有効・許可・継承・ambient capabilityは空。
-3. 余分な継承FDを閉じ、`PR_SET_NO_NEW_PRIVS`を設定。setuid／file capabilityによるexec時の権限昇格を禁止。
-4. Landlock **ABI 3以上**を要求。通常Linux 6.2以降で、ホストの有効LSMにLandlockが必要です。未対応・無効・syscall拒否なら終了コード78で停止。自動的に制限を落とす設定はありません。
-5. 単一スレッドのネイティブランチャーがLandlockを適用してからNodeへexec。以後のスレッド・PDFワーカー・FFmpeg等の子にも継承します。
-6. TrueNAS専用検査を有効にした場合は証明書・所有者・初回状態を検査。その後で初めてDBを開きます。
+1. 通常のDocker seccompフィルターが有効であること。特権・seccomp無効化は使いません。
+2. UID/GIDがともに非0で、有効・許可・継承・ambient capabilityが空であること。
+3. 余分な継承FDを閉じ、`PR_SET_NO_NEW_PRIVS`を設定します。
+4. Landlock **ABI 3以上**を要求します。カーネルの版番号だけでなく有効LSMとsyscallの利用可否が必要です。未対応・無効・拒否の場合は終了コード78で止まり、制約を外して続行しません。
+5. 単一スレッドのランチャーがLandlockを適用し、Node.jsへexecします。以後のスレッド、画像ワーカー、FFmpegなどにも継承します。
+6. 専用HTTPS事前検査を有効にしている場合は、その検査を行ってからDBを開きます。
 
-イメージのEntrypointは`/usr/local/bin/mirea-launch`、Commandは`/usr/local/bin/node /app/server/container-entry.mjs`です。**GUIで上書きしないでください。** ランチャーを迂回するコマンドや`docker exec`はアプリの子ではなく、この制限を受けません。運用者のDocker管理権限をアプリから隔離するものではありません。
+イメージのEntrypointは`/usr/local/bin/mirea-launch`、Commandは`/usr/local/bin/node /app/server/container-entry.mjs`です。GUIで上書きしません。`docker exec`など、Docker管理者が外部から直接起動した別プロセスまでこのランチャーで保護するものではありません。
 
-## 許可範囲
+LandlockのABIとカーネル要件は[Linux公式資料](https://docs.kernel.org/userspace-api/landlock.html)、権限昇格防止は[no_new_privs](https://docs.kernel.org/userspace-api/no_new_privs.html)を参照してください。
 
-- 通常ファイルの作成・書込・切詰め・削除とディレクトリ作成・削除・領域間rename/linkを許可するのは、`/data`・`MEDIA_DIR=/media`指定時の`/media`・`/tmp`以下のみ。`/dev/null`への書込だけを例外として許可します。
-- ネイティブ実行はroot所有の`/usr`と`/app`内のみ。`/tmp`・データ内の生成バイナリは直接実行できません。スクリプトをインタープリターに渡すことまで禁止するものではありません。
-- symlink、FIFO、UNIXソケット、デバイスノードの新規作成は許可しません。既存symlink経由でも許可外の書込先へ脱出できません。
-- 0.18.2beta以降、ランチャーが`SQLITE_TMPDIR=/tmp`をNode起動前に固定します。SQLiteのUnix側の候補は通常`/var/tmp`が`/tmp`より先ですが、モードの検査を通ってもLandlockによる実際の作成は拒否されることがあります。大量の削除・ソートで必要になる一時ファイルを、既存の許可済み`/tmp`へ置きます。GUIで変数や権限を追加する必要はありません。DB本体・WAL・鍵の保存先は変えず、書込権限も広げません。
-- 読取・ネットワークはこのルールでは制限しません。マウントはMirea専用の必要最小限だけにしてください。Dockerソケット・ホスト全体・他アプリのデータを渡しません。
-- Landlock ABI 3はchmod／chown／拡張属性等の全メタデータ操作を制限する仕組みではありません。実行コードをroot所有にし、実行ユーザーにcapabilityを持たせず、追加の書込可能マウントを与えない前提です。Dockerの読取専用root FSと完全に同一ではありません。
-- GUIではDockerのcapability境界集合が既定のままでも、実効・許可等が空でno_new_privsが有効なら起動します。Dockerの`cap_drop: ALL`を適用したとは表示しません。
+## 許可される操作
 
-ホスト／Dockerの管理者、カーネルの脆弱性、悪意あるイメージ自体から利用者を隔離する機能ではありません。root起動・追加capability・seccomp無効化で起動エラーを回避しないでください。
+| 対象 | 制約 |
+| --- | --- |
+| 書き込み | `/data`、`MEDIA_DIR=/media`の場合の`/media`、`/tmp`配下。例外は`/dev/null`への書き込み |
+| 実行 | root所有の`/usr`と`/app`内。データ領域や`/tmp`の生成バイナリを直接実行しない |
+| 新規の特殊ファイル | symlink、FIFO、UNIXソケット、デバイスノードの作成を許可しない |
+| SQLite一時ファイル | ランチャーが`SQLITE_TMPDIR=/tmp`を設定 |
+| コンテナ内の保存先 | `DATA_DIR=/data`。分離時は`MEDIA_DIR=/media` |
+
+SQLiteが大量の削除や並べ替えに一時ファイルを使うため、`/tmp`にも空きが必要です。保護外の別フォルダーへ書き込み先を広げるのではなく、一時領域の容量を確認します。
+
+Landlockはこの構成で読み取りやネットワークを制限しません。chmod/chownなどすべてのメタデータ操作を制限するものでもありません。Dockerの読取専用root FSと完全に同じ仕組みではないため、追加の書き込みマウントを避け、実行コードはroot所有のままにします。
+
+Mirea専用の必要な保存先だけをマウントし、Dockerソケット、ホスト全体、他アプリの保存先、管理資格情報を渡しません。データ内スクリプトをインタープリターに渡す全ての手法を遮断するサンドボックスでもありません。
 
 ## TrueNAS HTTPS事前検査
 
-`MIREA_TRUENAS_PREFLIGHT=1`は、専用の新規HTTPS導入用です。次を環境変数で指定します。値は公開情報であり、**秘密鍵本体を環境変数へ入れません**。
+`MIREA_TRUENAS_PREFLIGHT=1`は、特定の固定配置・証明書ピンを検査する既存の互換機能です。TrueNAS導入の必須条件ではありません。新規の一般的な構成には[HTTPSプロキシ](install/https.md)を使えます。
+
+この機能を既に使う環境の調査・保守では、次の契約を維持します。秘密鍵の内容を環境変数へ入れません。
 
 | 変数 | 内容 |
 | --- | --- |
 | `DATA_DIR` / `MEDIA_DIR` | `/data` / `/media` |
-| `MIREA_STORAGE_GROUP_ID` | 2つの保存先の実際のGID（実行GIDとは別でもよい） |
-| `MIREA_INSTALL_ID` | このインストール専用の16～80文字の固定ID。再起動・更新でも維持 |
+| `MIREA_STORAGE_GROUP_ID` | 二つの保存先の実GID。実行GIDとは別でもよい |
+| `MIREA_INSTALL_ID` | インストール専用の16〜80文字の固定英数字・ハイフン |
 | `HTTPS_KEY_FILE` | `/data/keys/tls/server-key.pem` |
-| `HTTPS_CERT_FILE` | `/data/keys/tls/server-chain.pem`（leaf＋root） |
+| `HTTPS_CERT_FILE` | `/data/keys/tls/server-chain.pem` |
 | `HEALTHCHECK_CA_FILE` | `/data/keys/tls/suiren-root-ca.pem` |
-| `HEALTHCHECK_TLS_SERVER_NAME` | leafのDNS名 |
-| `MIREA_TLS_IP` | leafのIP SAN |
-| `MIREA_TLS_ROOT_SHA256` | root証明書のDER SHA-256（64桁hex） |
-| `MIREA_TLS_LEAF_SHA256` | leaf証明書のDER SHA-256 |
-| `MIREA_TLS_SPKI_SHA256` | leaf公開鍵のSPKI DER SHA-256 |
+| `HEALTHCHECK_TLS_SERVER_NAME` | サーバー証明書のDNS名 |
+| `MIREA_TLS_IP` | 同じ証明書のIP SAN |
+| `MIREA_TLS_ROOT_SHA256` | ルート証明書のDER SHA-256、64桁hex |
+| `MIREA_TLS_LEAF_SHA256` | サーバー証明書のDER SHA-256 |
+| `MIREA_TLS_SPKI_SHA256` | サーバー公開鍵のSPKI DER SHA-256 |
 
-保存先は実行UIDが所有し、指定した保存先GIDと一致し、other権限なし。`keys`と`keys/tls`は実行UID/GID・0700。秘密鍵は0600、2つの公開PEMは0644で実行UID/GID所有・通常ファイル・リンクなしが必要です。勝手なchown／chmodやACL拡大はしません。
+`suiren-root-ca.pem`は実装との互換性のために残る歴史的な固定**ファイル名**です。実際に使用すべきCAの名称や、特定運営者のCAを指定する意味ではありません。新しい任意ファイル名に置き換えると現行検査に通らないため、仕様を偽って読み替えないでください。
 
-rootの自己署名・leaf署名・CA制約・serverAuth専用EKU・DNS/IP・両証明書の期限・秘密鍵の一致と3つの指紋を検査します。これはオンラインの失効確認を保証するものではありません。HTTPS自体の信頼／ホスト名検証も無効化しません。
+保存先は実行UIDと指定保存先GIDが所有し、other権限なしにします。`keys`と`keys/tls`は実行UID/GID所有・0700です。秘密鍵は0600、二つの公開PEMは0644で、通常ファイル・リンクなし・同じ実行UID/GID所有を要求します。検査は権限を自動変更しません。
 
-初回はdata内が`keys/tls`の3つのPEMだけ、mediaが空であることが条件です。すべての検査後に0600の`.truenas-mirea-bootstrap.json`を排他的に作成します。その後は同じ導入ID・証明書・実行IDの領収情報を確認し、データや鍵を維持して再起動できます。領収情報を消して既存DBを自動採用する機能はありません。旧インラインguardのschemaVersion 1との自動互換もありません。
+チェーンはleafとrootの2証明書です。CA制約、root自己署名、leaf署名、serverAuth専用EKU、DNS/IP、期限、秘密鍵との一致と三つの指紋を検証します。オンライン失効確認を保証するものではありません。
 
-証明書交換・ID変更・既存環境の導入では、停止・全バックアップ・新旧情報のレビューが必要です。エラー時に証明書以外を削除して無理に初期化しないでください。通常の版更新では導入ID・証明書を変えず、領収情報も保持します。
+初回はdataに`keys/tls`の3つのPEMだけがあり、mediaが空であることを要求します。検査後に0600の`.truenas-mirea-bootstrap.json`を排他的に作成します。以後は同じ導入ID、証明書、実行IDの記録を確認して再起動します。既存DBの自動採用や旧schemaVersion 1からの自動変換は行いません。
 
-## 検証
+証明書交換・ID変更・既存環境への適用は、停止・全バックアップ・新旧情報のレビューが必要です。エラー時にDBや識別ファイルを消して初期化しません。通常の版更新では導入ID・証明書・記録を維持します。
 
-CIはGUI相当の書込可能root・Docker既定capability境界集合で、拒否先への書込／切詰め／rename／hardlink・symlink脱出・子／ワーカーの継承・データ領域の正常動作を確認します。root・seccomp無効・Landlock syscallなしは停止することも検査します。通常Composeでの実メディア変換・データ／暗号鍵の再作成保持も別途確認します。TrueNAS実機はインストール時に同じ起動ログと厳密なHTTPSで確認します。
+## 起動しない場合と検証の範囲
 
-根拠: [Linux no_new_privs](https://docs.kernel.org/userspace-api/no_new_privs.html)、[Landlock](https://docs.kernel.org/userspace-api/landlock.html)、[ix-app 1.4.7テンプレート](https://github.com/truenas/apps/blob/master/trains/stable/ix-app/1.4.7/templates/docker-compose.yaml)。
+ログの最初の失敗理由を確認し、Landlock、UID/GID、capability、マウント、TLSを分けて調べます。未対応の基盤では対応するLinux環境または[Node.js直接起動](install/native.md)を選びます。Entrypointの迂回や特権化で強行しません。
+
+リポジトリの検査コードは[サンドボックス検査](../scripts/check-container-sandbox.mjs)、[コンテナ検査](../scripts/check-container.mjs)、[事前検査テスト](../tests/truenas-preflight.test.js)です。これらのCI結果は、利用者のDocker Desktopバックエンド、NAS GUI、ファイルACL、HTTPSプロキシの検証を代わりにはしません。導入先でも起動・ヘルスチェック・停止再開を確認してください。

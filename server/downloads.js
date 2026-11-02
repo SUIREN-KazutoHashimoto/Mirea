@@ -8,6 +8,9 @@ import { isAudio } from './audio-types.js';
 import { videoMetadata,videoFolder } from './video-stream.js';
 
 const CHUNK=1024*1024;
+// Display metadata does not identify ciphertext. Keep IDs/keys stable across
+// renames while still rejecting changes to files, generations and source stamps.
+const sameContent=(a,b)=>{const {title:ignoredA,...left}=a,{title:ignoredB,...right}=b;return JSON.stringify(left)===JSON.stringify(right);};
 const aad=(id,file,part,length)=>Buffer.from(`mirea-download-v1|${id}|${file}|${part}|${length}`);
 export async function registerDownloads(app,{db,dataDir,uploadDir,booksDir,videoDir,authenticate,findItem,options}){
   let master=options.downloadMasterKey;
@@ -72,21 +75,34 @@ export async function registerDownloads(app,{db,dataDir,uploadDir,booksDir,video
   const publicManifest=(row,manifest)=>({...manifest,id:row.id,files:manifest.files.map(({stamp,...file})=>file)});
   async function validateSource(row,item){
     const old=JSON.parse(row.manifest_json),current=await manifestFor(item,old.files[0].quality,old.files[0].quality?(old.files[0].generation??'base'):undefined);
-    if(JSON.stringify(old)!==JSON.stringify(current))throw httpError(409,'原本が変更されました。暗号化ダウンロードを作り直してください。');
-    return old;
+    if(!sameContent(old,current))throw httpError(409,'原本が変更されました。暗号化ダウンロードを作り直してください。');
+    if(old.title!==current.title)db.prepare('UPDATE encrypted_downloads SET manifest_json=? WHERE id=?').run(JSON.stringify(current),row.id);
+    return current;
   }
-  app.post('/api/v1/items/:id/download',{...auth,config:limit},async req=>{
+  const registrations=new Map();
+  async function registerForAsset(req){
+    // File inspection yields to publishing and other requests. Serialize the
+    // whole inspection/registration for one account and asset so an older
+    // generation cannot delete a registration created by a newer request.
+    const identity=req.user.id+'|'+req.params.id,previous=registrations.get(identity);
+    const pending=(async()=>{await previous?.catch(()=>{});authenticate(req);return createRegistration(req);})();
+    registrations.set(identity,pending);
+    try{return await pending;}finally{if(registrations.get(identity)===pending)registrations.delete(identity);}
+  }
+  async function createRegistration(req){
     if(req.body!==undefined&&(!req.body||typeof req.body!=='object'||Array.isArray(req.body)||Object.keys(req.body).some(k=>k!=='quality')||req.body.quality!==undefined&&!/^[0-9]{2,4}p$/.test(req.body.quality)))throw httpError(400,'画質の指定が不正です。');
     const item=findItem(req.params.id,req.user.id),manifest=await manifestFor(item,req.body?.quality);
     authenticate(req);findItem(item.id,req.user.id);
     let row=db.prepare("SELECT * FROM encrypted_downloads WHERE user_id=? AND asset_id=? AND json_extract(manifest_json,'$.files[0].quality') IS ?").get(req.user.id,item.id,manifest.files[0].quality??null);
-    if(row && row.manifest_json!==JSON.stringify(manifest)){db.prepare('DELETE FROM encrypted_downloads WHERE id=?').run(row.id);row=null;}
+    if(row && !sameContent(JSON.parse(row.manifest_json),manifest)){db.prepare('DELETE FROM encrypted_downloads WHERE id=?').run(row.id);row=null;}
+    else if(row&&row.manifest_json!==JSON.stringify(manifest))db.prepare('UPDATE encrypted_downloads SET manifest_json=? WHERE id=?').run(JSON.stringify(manifest),row.id);
     if(!row){
       row={id:randomUUID(),user_id:req.user.id,asset_id:item.id,manifest_json:JSON.stringify(manifest),created_at:Date.now()};
       db.prepare('INSERT INTO encrypted_downloads VALUES(?,?,?,?,?)').run(row.id,row.user_id,row.asset_id,row.manifest_json,row.created_at);
     }
     return {manifest:publicManifest(row,manifest)}; // No content key during download.
-  });
+  }
+  app.post('/api/v1/items/:id/download',{...auth,config:limit},registerForAsset);
   app.post('/api/v1/downloads/:id/open',{...auth,config:limit},async req=>{
     const {row,item}=authorize(req),manifest=await validateSource(row,item);
     authenticate(req);authorize(req);

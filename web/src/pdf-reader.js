@@ -4,6 +4,7 @@ import { absoluteUrl, authHeaders } from './api.js';
 import { bookPosition,restoreBookPosition } from './progress-core.js';
 import { advanceBook } from './series-continuation.js';
 import { createBookChrome, bookScale } from './book-viewer.js';
+import { createReaderLoad } from './reader-load.js';
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -15,19 +16,20 @@ export async function openPdf(container, item, onError, tracker, progress, downl
   const previous = container.querySelector('.previous');
   const next = container.querySelector('.next');
   const zoom = chrome.zoom;
-  let pdf, activeRaster, prefetched, current = Math.max(1,Math.min(item.pageCount,progress?.initial?.page??1)), displayedPage=current, ready=false, disposed = false, generation = 0;
+  let pdf, activeRaster, prefetched, current = Math.max(1,Math.min(item.pageCount,progress?.initial?.page??1)), displayedPage=current, ready=false, disposed = false, generation = 0,completed=Boolean(progress?.initial?.completed);
   const rendering=new Set();
   const updateNext=()=>{
     const continues=ready && current===pdf?.numPages && seriesNavigation?.canContinue;
-    next.disabled=!ready || (current===pdf?.numPages && !continues);
-    next.textContent=continues?'次の作品 →':'→';next.setAttribute('aria-label',continues?'次のアセットへ読み進む':'次のページ');
+    next.disabled=!ready;
+    next.textContent=continues?'次の作品 →':current===pdf?.numPages?'読了':'→';next.setAttribute('aria-label',continues?'次のアセットへ読み進む':current===pdf?.numPages?'読み終えた本にする':'次のページ');
   };
-  const publishPage=()=>{chrome.update({ready,page:current,total:pdf?.numPages??item.pageCount});seriesNavigation?.bookState({ready,page:current,total:pdf?.numPages??item.pageCount});updateNext();};
+  const publishPage=()=>{chrome.update({ready,page:current,total:pdf?.numPages??item.pageCount,completed});seriesNavigation?.bookState({ready,page:current,total:pdf?.numPages??item.pageCount});updateNext();};
   const unsubscribeSeries=seriesNavigation?.subscribe(updateNext);
   let anchor=progress?.initial??{scrollX:0,scrollY:0};
   if(progress?.initial?.zoom)zoom.value=progress.initial.zoom;
-  progress?.bind(()=>ready?bookPosition(stage,displayedPage,zoom.value):null);
-  const load = getDocument({
+  progress?.bind(()=>{const position=ready?bookPosition(stage,displayedPage,zoom.value):null;return position?{...position,completed}:null;});
+  let load;
+  const createDocument = () => getDocument({
     url: downloaded?downloaded.url(0):absoluteUrl(`/api/v1/items/${item.id}/content`),
     httpHeaders: downloaded?{}:authHeaders(),
     cMapUrl: '/pdf-assets/cmaps/', cMapPacked: true,
@@ -75,17 +77,18 @@ export async function openPdf(container, item, onError, tracker, progress, downl
       }
     } catch (error) { if (error.name !== 'RenderingCancelledException' && !disposed) onError(error); }
   }
-  const redraw = () => render().catch(error => { if (!disposed) onError(error); });
+  const redraw = () => render().catch(error => { if (!disposed){const failed=current;current=displayedPage;ready=!canvas.hidden;publishPage();onError(Object.assign(error,{retry:()=>go(failed)}));} });
   const go = page => { progress?.capture(); ready=false;current = Math.max(1, Math.min(pdf?.numPages || 1, page)); anchor={scrollX:0,scrollY:0};redraw(); };
   previous.onclick = () => go(current - 1);
-  const advance=()=>advanceBook({ready,page:current,total:pdf?.numPages??item.pageCount,go,continuation:seriesNavigation});
+  const markComplete=(value=!completed)=>{if(!ready)return;completed=value;progress?.checkpoint();publishPage();};
+  const advance=()=>{if(ready&&current===pdf?.numPages)markComplete(true);return advanceBook({ready,page:current,total:pdf?.numPages??item.pageCount,go,continuation:seriesNavigation});};
   next.onclick = advance;
   input.onchange = () => go(Number.parseInt(input.value, 10) || 1);
   zoom.onchange = () => { tracker?.zoom(zoom.value==='fit'?1:Number(zoom.value)); redraw(); };
   let scrollTimer;
   const scroll = () => { if(ready)progress?.capture();clearTimeout(scrollTimer); scrollTimer=setTimeout(()=>tracker?.viewport(),150); };
   stage.addEventListener('scroll',scroll,{passive:true});
-  chrome.bind({go,next:advance,previous:()=>go(current-1),outline:async()=>{
+  chrome.bind({go,next:advance,previous:()=>go(current-1),complete:()=>markComplete(),outline:async()=>{
     if(!pdf)return;
     const entries=[];
     const collect=(nodes,depth=0)=>{for(const entry of nodes??[]){if(entries.length>=200 || depth>8)break;if(entry.dest)entries.push({title:entry.title,go:async()=>{const dest=typeof entry.dest==='string'?await pdf.getDestination(entry.dest):entry.dest;if(!dest?.length)return;const index=typeof dest[0]==='number'?dest[0]:await pdf.getPageIndex(dest[0]);go(index+1);}});collect(entry.items,depth+1);}};
@@ -94,14 +97,15 @@ export async function openPdf(container, item, onError, tracker, progress, downl
   let resizeTimer;
   const observer = new ResizeObserver(() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(redraw, 100); });
   observer.observe(stage,{box:'border-box'});
-  load.promise.then(document => {
+  const initialLoad=createReaderLoad({onError(error){onError(Object.assign(new Error('PDFを読み込めませんでした。接続を確認して、もう一度読み込んでください。',{cause:error}),{retry:error.retry}));},onStart(){container.querySelector('.viewer-error')?.remove();if(!container.querySelector('.pdf-loading')){const message=document.createElement('p');message.className='pdf-loading';message.setAttribute('role','status');message.textContent='本を開いています…';stage.prepend(message);}},load:async()=>{
+    await load?.destroy();if(disposed)return;load=createDocument();const document=await load.promise;
     if (disposed) return;
     pdf = document;
-    container.querySelector('.pdf-loading').remove();
+    container.querySelector('.pdf-loading')?.remove();
     input.max = pdf.numPages;
     container.querySelector('.page-total').textContent = `/ ${pdf.numPages}`;
     redraw();stage.focus();
-  }).catch(error => { if (!disposed) onError(error); });
-  const cleanup=() => { disposed = true; unsubscribeSeries?.();generation++;activeRaster?.cancel();prefetched?.cancel();for(const render of rendering)render.cancel();prefetched=null;observer.disconnect(); clearTimeout(resizeTimer); clearTimeout(scrollTimer); stage.removeEventListener('scroll',scroll); chrome.dispose();load.destroy(); };
-  cleanup.restart=()=>{zoom.value='fit';go(1);};return cleanup;
+  }});void initialLoad.run();
+  const cleanup=() => { disposed = true; initialLoad.dispose();unsubscribeSeries?.();generation++;activeRaster?.cancel();prefetched?.cancel();for(const render of rendering)render.cancel();prefetched=null;canvas.width=canvas.height=0;observer.disconnect(); clearTimeout(resizeTimer); clearTimeout(scrollTimer); stage.removeEventListener('scroll',scroll); chrome.dispose();load?.destroy(); };
+  cleanup.restart=()=>{completed=false;zoom.value='fit';go(1);};return cleanup;
 }

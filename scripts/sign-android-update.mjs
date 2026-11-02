@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { resolve, join, relative, isAbsolute, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ANDROID_PACKAGE, MAX_APK_BYTES, signUpdateEnvelope, verifyUpdateEnvelope } from '../server/update-manifest.js';
+import { verifyAndroidArchive, withAndroidApkSnapshot } from './verify-android-archive.mjs';
 
 async function hashFile(path) { const h = createHash('sha256'); for await (const b of createReadStream(path)) h.update(b); return h.digest('hex'); }
 const inside = (root, file) => { const rel = relative(root, file); return !rel.startsWith('..') && !isAbsolute(rel); };
@@ -20,11 +21,16 @@ async function bounded(path) {
   try { if ((await file.stat()).size > 65536) throw new Error('Manifest too large'); return await file.readFile('utf8'); }
   finally { await file.close(); }
 }
-export async function publishAndroidUpdate({ apk, apkUrl, privateKey, output, sdk, java = 'java', validityHours = 168 }) {
+export async function publishAndroidUpdate(options) {
+  if (typeof options?.apk !== 'string' || !options.apk) throw new Error('Required: --apk');
+  return withAndroidApkSnapshot(resolve(options.apk), apk => publishSnapshot({ ...options, apk }));
+}
+async function publishSnapshot({ apk, apkUrl, privateKey, output, sdk, java = 'java', validityHours = 168 }) {
   if (![apk,apkUrl,privateKey,output,sdk].every(x => typeof x === 'string' && x.length)) throw new Error('Required: --apk --apk-url --private-key --output --sdk [--java] [--validity-hours]');
   if (!Number.isFinite(validityHours) || validityHours <= 0 || validityHours > 168) throw new Error('Validity must be 0–168 hours');
   const project = dirname(dirname(fileURLToPath(import.meta.url))), destination = resolve(output), keyPath = resolve(privateKey), apkPath = resolve(apk);
   if (inside(project,keyPath) || inside(destination,keyPath)) throw new Error('The private signing key must remain outside the repository and public output directory');
+  await verifyAndroidArchive(apkPath);
   const pem = await readFile(keyPath,'utf8'), pinned = await readFile(new URL('../server/update-signing-public.pem',import.meta.url),'utf8');
   if (!createPublicKey(pem).export({type:'spki',format:'der'}).equals(createPublicKey(pinned).export({type:'spki',format:'der'}))) throw new Error('The metadata key does not match the pinned public key');
   const tools = join(resolve(sdk),'build-tools','36.0.0');
@@ -49,6 +55,7 @@ export async function publishAndroidUpdate({ apk, apkUrl, privateKey, output, sd
   const target = join(destination,`mirea-android-${payload.versionCode}.apk`);
   try { await copyFile(apkPath,target,constants.COPYFILE_EXCL); }
   catch (error) { if (error.code !== 'EEXIST' || await hashFile(target) !== payload.sha256) throw error; }
+  if (await hashFile(target) !== payload.sha256) throw new Error('Published APK does not match the verified snapshot');
   const temp = join(destination,`.manifest-${randomUUID()}.tmp`);
   try {
     const outputFile = await open(temp,'wx',0o600);

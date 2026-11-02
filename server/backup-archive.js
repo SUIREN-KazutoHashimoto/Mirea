@@ -8,16 +8,23 @@ import {createGzip} from 'node:zlib';
 
 const derive=promisify(scrypt),MAGIC=Buffer.from('MIREABACKUP1\n');
 const parameters={N:32768,r:8,p:1,maxmem:64*1024*1024};
-function tarHeader(path,size,mtime){
+function tarHeader(path,size,mtime,type=48){
   if(!path || path.startsWith('/') || path.includes('\\') || path.split('/').some(p=>p==='..'||p==='.') || Buffer.byteLength(path)>255)throw new Error('Unsafe archive path');
   const block=Buffer.alloc(512),parts=path.split('/');let name=parts.pop(),prefix=parts.join('/');
   while(Buffer.byteLength(prefix)>155&&parts.length){name=parts.pop()+'/'+name;prefix=parts.join('/');}
   if(Buffer.byteLength(name)>100||Buffer.byteLength(prefix)>155)throw new Error('Archive name exceeds ustar limits');
   block.write(name,0,100);block.write('0000600\0',100);block.write('0000000\0',108);block.write('0000000\0',116);
   if(size>0o77777777777){block.writeBigUInt64BE(BigInt(size),128);block[124]=0x80;}else block.write(size.toString(8).padStart(11,'0')+'\0',124);
-  block.write(Math.floor(mtime/1000).toString(8).padStart(11,'0')+'\0',136);block.fill(32,148,156);block[156]=48;
+  block.write(Math.max(0,Math.floor(mtime/1000)).toString(8).padStart(11,'0')+'\0',136);block.fill(32,148,156);block[156]=type;
   block.write('ustar\0',257);block.write('00',263);block.write(prefix,345,155);
   block.write([...block].reduce((a,b)=>a+b,0).toString(8).padStart(6,'0')+'\0 ',148);return block;
+}
+function paxMtime(nanoseconds){
+  const negative=nanoseconds<0n,value=negative?-nanoseconds:nanoseconds;
+  const seconds=(negative?'-':'')+(value/1000000000n)+'.'+String(value%1000000000n).padStart(9,'0');
+  const body=` mtime=${seconds}\n`;let length=Buffer.byteLength(body)+1;
+  while(length!==Buffer.byteLength(body)+String(length).length)length=Buffer.byteLength(body)+String(length).length;
+  return Buffer.from(String(length)+body);
 }
 export async function encryptBackup({files,destination,password,authorize=()=>{},progress=()=>{}}){
   const salt=randomBytes(16),iv=randomBytes(12),key=await derive(password,salt,32,parameters);
@@ -26,8 +33,16 @@ export async function encryptBackup({files,destination,password,authorize=()=>{}
   const cipher=createCipheriv('aes-256-gcm',key,iv);cipher.setAAD(prefix);
   let completed=0,total=files.reduce((n,f)=>n+f.size,0);
   const source=Readable.from((async function*(){
-    for(const file of files){
-      authorize();yield tarHeader(file.name,file.size,file.mtime??Date.now());
+    for(const [index,file] of files.entries()){
+      authorize();
+      // USTAR only records whole seconds. Download registrations identify a
+      // source by its exact filesystem mtime, so preserve nanoseconds in the
+      // standard PAX record that applies to the following file header.
+      const mtime=file.mtime??Date.now(),nanoseconds=file.mtimeNs!==undefined?BigInt(file.mtimeNs):file.path?(await stat(file.path,{bigint:true})).mtimeNs:BigInt(Math.trunc(mtime))*1000000n;
+      const extended=paxMtime(nanoseconds);
+      yield tarHeader('PaxHeaders/'+index,extended.length,mtime,120);yield extended;
+      if(extended.length%512)yield Buffer.alloc(512-extended.length%512);
+      yield tarHeader(file.name,file.size,mtime);
       let read=0;
       for await(const chunk of file.bytes?[file.bytes]:createReadStream(file.path,{highWaterMark:256*1024})){
         authorize();read+=chunk.length;completed+=chunk.length;if(read>file.size)throw new Error('Source changed during backup');yield chunk;progress({completed,total});

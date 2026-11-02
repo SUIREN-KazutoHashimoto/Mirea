@@ -32,7 +32,7 @@ test('nested folders display immediate children only, use recursive cover/count,
 test('bulk series selection appends multiple unique valid assets, retains labels/order and enforces the server size cap',()=>{
  const first=[{assetId:'one',label:'第1話'}],map=new Map([['one',{}],['two',{}],['three',{}]]);
  assert.deepEqual(appendSeriesAssets(first,['two','three','two','missing','one'],map),[{assetId:'one',label:'第1話'},{assetId:'two',label:''},{assetId:'three',label:''}]);assert.equal(first.length,1);
- assert.throws(()=>appendSeriesAssets(Array.from({length:1000},(_,i)=>({assetId:String(i)})),['two'],map),/1,000/);
+ assert.throws(()=>appendSeriesAssets(Array.from({length:100000},(_,i)=>({assetId:String(i)})),['two'],map),/100,000/);
 });
 test('layout CSS supports mobile 3-column/list and compact hides metadata without removing pending protection or card menus; audio motion remains foreground/reduced-motion gated',async()=>{
  const [css,main,audio,native]=await Promise.all(['../web/src/collection-view.css','../web/src/main.js','../web/src/audio-player.css','../android/app/src/main/java/com/suiren/mirea/playback/AudioBackdrop.java'].map(p=>readFile(new URL(p,import.meta.url),'utf8')));

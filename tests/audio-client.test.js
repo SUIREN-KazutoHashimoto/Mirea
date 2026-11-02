@@ -8,11 +8,11 @@ import { validateManifest, importDownloadKey, encryptedRangeResponse } from '../
 import { AUDIO_EXTENSIONS, AUDIO_TYPES, isTimedKind } from '../server/audio-types.js';
 
 class Audio extends EventTarget {
-  currentTime=0;duration=180;paused=true;ended=false;readyState=3;value='';
+  currentTime=0;duration=NaN;paused=true;ended=false;readyState=0;value='';
   canPlayType(){return '';}
-  set src(value){this.value=value;this.currentTime=0;}
+  set src(value){this.value=value;this.currentTime=0;this.duration=NaN;this.readyState=0;}
   get src(){return this.value;}
-  load(){this.dispatchEvent(new Event('loadedmetadata'));}
+  load(){this.duration=180;this.readyState=3;this.dispatchEvent(new Event('loadedmetadata'));this.dispatchEvent(new Event('canplay'));}
   async play(){this.paused=false;this.dispatchEvent(new Event('play'));}
 }
 test('audio uses progressive streaming (no full-file blob) and renewed ticket restores current playback rather than old bookmark',async()=>{
@@ -29,6 +29,7 @@ test('audio uses progressive streaming (no full-file blob) and renewed ticket re
 });
 test('audio ended advances an ordered series once; autoplay denial/cancellation is respected',async()=>{
   const audio=new Audio(),moves=[],a=randomUUID(),b=randomUUID(),context={series:{id:'album'},items:[{id:a,kind:'audio'},{id:b,kind:'audio'}],currentIndex:0};
+  audio.src='/loaded-audio';audio.load();
   const core=createSeriesContinuation({assetId:a,loadContext:async()=>context,move:async(...args)=>moves.push(args),delayMs:0});core.setContext(context);
   const cleanup=bindContinuationVideo(audio,{autoplay:true,onEnded:()=>core.videoEnded(),onReset:()=>core.cancel()});
   await new Promise(resolve=>setImmediate(resolve));assert.equal(audio.paused,false);
@@ -38,6 +39,15 @@ test('audio ended advances an ordered series once; autoplay denial/cancellation 
   const blocked=[];audio.play=async()=>{throw Error('policy');};
   const stop=bindContinuationVideo(audio,{autoplay:true,onBlocked:reason=>blocked.push(reason)});await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(blocked,['policy']);stop();
   assert.equal(isTimedKind('audio'),true);for(const mime of Object.values(AUDIO_EXTENSIONS))assert.ok(AUDIO_TYPES.includes(mime));
+});
+
+test('an already-preloaded audio source restores progress immediately and adoption does not reset it',()=>{
+ const audio=new Audio(),ticket={url:'/preloaded',expiresAt:Date.now()+3600000};
+ const stream=attachVideoStream(audio,{ticket,absoluteUrl:p=>p});audio.load();
+ const progress={initial:{positionMs:20000,durationMs:180000},bind(){},capture(){},checkpoint(){}};
+ const unbind=bindVideoProgress(audio,progress);
+ try{assert.equal(audio.currentTime,20);stream.adopt({});assert.equal(audio.currentTime,20);assert.equal(audio.src,'/preloaded');}
+ finally{stream.dispose();unbind();}
 });
 test('encrypted audio Range playback authenticates each chunk and denies expired grants and kind/MIME confusion',async()=>{
   const plain=randomBytes(1048576+71),rawKey=randomBytes(32),m={id:randomUUID(),assetId:randomUUID(),version:1,algorithm:'AES-256-GCM',chunkSize:1048576,kind:'audio',pageCount:1,files:[{index:0,number:1,size:plain.length,chunks:2,mime:'audio/mp4'}]};

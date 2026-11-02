@@ -1,6 +1,7 @@
 import { api } from './api.js';
 import { createBookChrome } from './book-viewer.js';
 import { validateEpubBundle,renderEpubChapter,epubScreen,epubFraction } from './epub-core.js';
+import { createReaderLoad } from './reader-load.js';
 
 export function openEpub(container,item,onError,tracker,progress,downloaded,seriesNavigation) {
   const chrome=createBookChrome(container,{kind:'epub',total:item.pageCount,onError}),stage=chrome.stage,zoom=chrome.zoom;
@@ -8,24 +9,24 @@ export function openEpub(container,item,onError,tracker,progress,downloaded,seri
   const input=container.querySelector('.page-input'),previous=container.querySelector('.previous'),next=container.querySelector('.next');
   input.setAttribute('aria-label','章番号');zoom.setAttribute('aria-label','文字サイズ');
   zoom.options[0].textContent='標準の文字';zoom.options[1].textContent='文字 100%';zoom.options[2].textContent='文字 150%';zoom.options[3].textContent='文字 200%';
-  let book,chapter=0,screen=0,count=1,ready=false,disposed=false,generation=0,viewport,flow,anchors=new Map(),resizeTimer,restartRequested=false;
+  let book,chapter=0,screen=0,count=1,ready=false,disposed=false,generation=0,viewport,flow,anchors=new Map(),resizeTimer,restartRequested=false,completed=Boolean(progress?.initial?.completed);
   const controller=new AbortController(),urls=new Map();
   if(progress?.initial?.zoom)zoom.value=progress.initial.zoom;
   const scale=()=>zoom.value==='fit'?1:Number(zoom.value);
-  const position=()=>ready?{page:chapter+1,scrollX:epubFraction(screen,count),scrollY:0,zoom:zoom.value}:null;
+  const position=()=>ready?{page:chapter+1,scrollX:epubFraction(screen,count),scrollY:0,zoom:zoom.value,completed}:null;
   progress?.bind(position);
   const stride=()=>viewport.clientWidth+48;
   function updateNext() {
     if(!ready||!book)return;
     const atEnd=chapter===book.chapters.length-1&&screen===count-1;
-    next.disabled=atEnd&&!seriesNavigation?.canContinue;
-    next.textContent=atEnd&&seriesNavigation?.canContinue?'次の作品 →':'→';
-    next.setAttribute('aria-label',atEnd&&seriesNavigation?.canContinue?'次のアセットへ読み進む':'次のページ');
+    next.disabled=false;
+    next.textContent=atEnd?seriesNavigation?.canContinue?'次の作品 →':'読了':'→';
+    next.setAttribute('aria-label',atEnd?seriesNavigation?.canContinue?'次のアセットへ読み進む':'読み終えた本にする':'次のページ');
   }
   function publish() {
     if(!book||!ready)return;
     flow.style.transform=`translateX(${-screen*stride()}px)`;
-    chrome.update({ready,page:chapter+1,total:book.chapters.length});
+    chrome.update({ready,page:chapter+1,total:book.chapters.length,completed});
     input.value=String(chapter+1);input.max=String(book.chapters.length);
     container.querySelector('.page-total').textContent=`/ ${book.chapters.length}章`;
     container.querySelector('.book-percent').textContent=`${screen+1}/${count}ページ`;
@@ -63,24 +64,25 @@ export function openEpub(container,item,onError,tracker,progress,downloaded,seri
     const geometry={getBoundingClientRect(){const rect=viewport.getBoundingClientRect(),width=count*stride()-48,left=rect.left-screen*stride();return {left,top:rect.top,right:left+width,bottom:rect.bottom,width,height:rect.height};}};
     tracker?.ready(chapter+1,geometry,viewport,scale());progress?.capture();
   }
+  const markComplete=(value=!completed)=>{if(!ready)return;completed=value;progress?.checkpoint();publish();};
   const navigate=async step=>{
     if(!ready)return;
     if(screen+step>=0&&screen+step<count){progress?.capture();screen+=step;publish();tracker?.viewport('page');}
     else if(chapter+step>=0&&chapter+step<book.chapters.length)await go(chapter+step+1,step<0?1:0);
-    else if(step>0)await seriesNavigation?.nextBook();
+    else if(step>0){markComplete(true);await seriesNavigation?.nextBook();}
   };
   const safely=fn=>Promise.resolve().then(fn).catch(error=>{if(!disposed&&error.name!=='AbortError')onError(error);});
   previous.onclick=()=>safely(()=>navigate(-1));next.onclick=()=>safely(()=>navigate(1));input.onchange=()=>safely(()=>go(Number(input.value)||1));
   zoom.onchange=()=>{progress?.capture();layout();tracker?.zoom(scale());};
-  chrome.bind({go:page=>go(page),next:()=>navigate(1),previous:()=>navigate(-1),outline:()=>chrome.outline(book?.chapters.map((entry,index)=>({title:entry.title,go:()=>go(index+1)}))??[])});
+  chrome.bind({go:page=>go(page),next:()=>navigate(1),previous:()=>navigate(-1),complete:()=>markComplete(),outline:()=>chrome.outline(book?.chapters.map((entry,index)=>({title:entry.title,go:()=>go(index+1)}))??[])});
   const observer=new ResizeObserver(()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>layout(),100);});observer.observe(stage);
-  safely(async()=>{
+  const initialLoad=createReaderLoad({onError(error){container.querySelector('.image-loading')?.setAttribute('hidden','');onError(error);},onStart(){container.querySelector('.viewer-error')?.remove();container.querySelector('.image-loading')?.removeAttribute('hidden');},load:async()=>{
     let data;
     if(downloaded){const response=await fetch(downloaded.url(0),{cache:'no-store',signal:controller.signal});if(!response.ok)throw Error('暗号化したEPUBを開けません。オンラインで開き直してください。');data=await response.json();}
     else data=await api(`/items/${item.id}/epub`,{signal:controller.signal});
     if(disposed)return;book=validateEpubBundle(data);chrome.direction.value=book.direction;
     await go(restartRequested?1:progress?.initial?.page??1,restartRequested?0:progress?.initial?.scrollX??0);stage.focus();
-  });
-  const cleanup=()=>{disposed=true;generation++;controller.abort();observer.disconnect();clearTimeout(resizeTimer);unsubscribeSeries?.();chrome.dispose();for(const url of urls.values())URL.revokeObjectURL(url);urls.clear();stage.replaceChildren();book=null;};
-  cleanup.restart=()=>{restartRequested=true;zoom.value='fit';safely(()=>go(1));};return cleanup;
+  }});void initialLoad.run();
+  const cleanup=()=>{disposed=true;initialLoad.dispose();generation++;controller.abort();observer.disconnect();clearTimeout(resizeTimer);unsubscribeSeries?.();chrome.dispose();for(const url of urls.values())URL.revokeObjectURL(url);urls.clear();stage.replaceChildren();book=null;};
+  cleanup.restart=()=>{restartRequested=true;completed=false;zoom.value='fit';safely(()=>go(1));};return cleanup;
 }

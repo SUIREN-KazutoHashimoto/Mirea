@@ -97,7 +97,7 @@ async function setup(t, overrides = {}) {
         assert.equal(status.state, expected, JSON.stringify(status));
         // Terminal publication is committed before best-effort disk cleanup.
         while (Date.now() < deadline && (await readdir(join(dataDir, 'uploads', 'staging'))).includes(id)) await delay(10);
-        while (Date.now() < deadline && (await readdir(join(dataDir, 'uploads', 'transfers'))).includes(id)) await delay(10);
+        if(status.state!=='failed')while (Date.now() < deadline && (await readdir(join(dataDir, 'uploads', 'transfers'))).includes(id)) await delay(10);
         return status;
       }
       await delay(15);
@@ -277,8 +277,8 @@ test('chunked short MP4 with an invalid edit list normalizes playback and preser
   assert.notDeepEqual((await ctx.request('GET',`/items/${item.id}/content`,ctx.owner)).rawPayload,video);
 });
 
-test('cancellation, logout and role revocation during thumbnail processing prevent publication', async t => {
-  for (const action of ['cancel', 'logout', 'revoke']) await t.test(action, async t => {
+test('accepted books survive logout while cancellation, disabled accounts and role revocation still prevent publication', async t => {
+  for (const action of ['cancel', 'logout', 'revoke','disable']) await t.test(action, async t => {
     let release, started;
     const gate = new Promise(resolve => { release = resolve; });
     const entered = new Promise(resolve => { started = resolve; });
@@ -299,15 +299,26 @@ test('cancellation, logout and role revocation during thumbnail processing preve
     if (action === 'cancel') await ctx.request('DELETE', `/uploads/${upload.id}`, editor);
     if (action === 'logout') await ctx.request('POST', '/auth/logout', editor);
     if (action === 'revoke') await ctx.request('PATCH', `/shelves/${ctx.shelfId}/members/${editor.user.id}`, ctx.owner, { role: 'viewer' });
+    if(action==='disable'){const access=new DatabaseSync(join(ctx.dataDir,'mirea.sqlite'));try{access.prepare("INSERT INTO user_access(user_id,server_role,disabled) VALUES(?,'user',1) ON CONFLICT(user_id) DO UPDATE SET disabled=1").run(editor.user.id);}finally{access.close();}}
     release();
     await ctx.app.close(); // waits for the background queue and file cleanup
     const db = new DatabaseSync(join(ctx.dataDir, 'mirea.sqlite'));
     try {
-      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM items').get().n, 0);
-      assert.equal(db.prepare('SELECT state FROM upload_sessions WHERE id=?').get(upload.id).state, action === 'cancel' ? 'cancelled' : 'failed');
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM items').get().n, action==='logout'?1:0);
+      assert.equal(db.prepare('SELECT state FROM upload_sessions WHERE id=?').get(upload.id).state, action === 'cancel' ? 'cancelled' : action==='logout'?'complete':'failed');
     } finally { db.close(); }
-    assert.equal((await readdir(join(ctx.dataDir, 'uploads', 'transfers'))).length, 0);
+    assert.equal((await readdir(join(ctx.dataDir, 'uploads', 'transfers'))).length, ['revoke','disable'].includes(action)?1:0,'failed accepted sources remain available within their retry deadline');
     assert.equal((await readdir(join(ctx.dataDir, 'uploads', 'staging'))).length, 0);
-    assert.equal((await readdir(join(ctx.dataDir, 'thumbnails'))).length, 0);
+    assert.equal((await readdir(join(ctx.dataDir, 'thumbnails'))).length, action==='logout'?1:0);
   });
+});
+
+test('failed accepted books keep verified source chunks for bounded retry without retransmission',async t=>{
+ let fail=true;const media=createMediaProcessor(),ctx=await setup(t,{mediaProcessor:{...media,thumbnail:async(...args)=>{if(fail)throw new Error('Synthetic temporary processor failure');return media.thumbnail(...args);}}});
+ const upload=await ctx.start();await ctx.send(upload,[pdf]);await ctx.request('POST','/uploads/'+upload.id+'/complete',ctx.owner);
+ const failed=await ctx.wait(upload.id,'failed');assert.equal(failed.sourceRetained,true);assert(failed.sourceExpiresAt>Date.now()+6*86400000&&failed.sourceExpiresAt<=Date.now()+7*86400000);
+ const remote=(await ctx.request('GET','/transfers/uploads',ctx.owner)).json().uploads.find(row=>row.id===upload.id);assert.equal(remote.sourceRetained,true);assert.equal(remote.sourceExpiresAt,failed.sourceExpiresAt);
+ assert((await readdir(join(ctx.dataDir,'uploads','transfers',upload.id))).length>0);
+ fail=false;assert.equal((await ctx.request('POST','/uploads/'+upload.id+'/retry',ctx.owner)).statusCode,202);const complete=await ctx.wait(upload.id);assert.equal(complete.item.kind,'pdf');assert.deepEqual(await readFile(join(ctx.dataDir,'uploads',upload.id)),pdf);
+ fail=true;const expires=await ctx.start();await ctx.send(expires,[pdf]);await ctx.request('POST','/uploads/'+expires.id+'/complete',ctx.owner);await ctx.wait(expires.id,'failed');const expiryDb=new DatabaseSync(join(ctx.dataDir,'mirea.sqlite'));try{expiryDb.prepare('UPDATE upload_sessions SET expires_at=? WHERE id=?').run(Date.now()-1,expires.id);}finally{expiryDb.close();}assert.equal((await ctx.request('POST','/uploads/'+expires.id+'/retry',ctx.owner)).statusCode,410);await ctx.app.close();ctx.app=await createApp(ctx.options);assert.equal((await ctx.request('GET','/uploads/'+expires.id,ctx.owner)).statusCode,404);assert(!(await readdir(join(ctx.dataDir,'uploads','transfers'))).includes(expires.id));
 });

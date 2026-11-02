@@ -27,6 +27,7 @@ jobs:
           node-version: 24.19.0
       - run: npm install --global pnpm@11.25.0
       - run: pnpm install --frozen-lockfile
+      - run: pnpm test:docs
       - run: pnpm test
       - run: pnpm build
       - run: pnpm test:startup
@@ -99,6 +100,8 @@ jobs:
           docker compose -f compose.yaml -f compose.host-data.yaml config --quiet
           docker compose -f compose.release.yaml -f compose.storage.yaml config --quiet
           docker compose -f deploy/truenas/compose.yaml config --quiet
+      - name: Verify published 0.25 image upgrade and full-backup rollback in both storage layouts
+        run: node scripts/check-container-upgrade.mjs
       - name: Export exactly the tested image for a release tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: docker save mirea:ci | gzip -n > "$RUNNER_TEMP/mirea-container-tested.tar.gz"
@@ -111,6 +114,7 @@ jobs:
           compression-level: 0
       - if: always()
         run: |
+          node scripts/check-container-upgrade.mjs --cleanup
           docker compose down
           COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}-separated" docker compose -f compose.yaml -f compose.storage.yaml down
   android:

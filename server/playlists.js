@@ -10,9 +10,9 @@ const object=(properties,required=Object.keys(properties))=>({type:'object',prop
 // Personal references never bypass shelf ACLs, including offline snapshots.
 export function userPlaylists(db,userId){
   const rows=db.prepare('SELECT * FROM playlists WHERE user_id=? ORDER BY updated_at DESC,id').all(userId);
-  const assets=db.prepare(`SELECT pi.asset_id,i.mime_type FROM playlist_items pi JOIN items i ON i.id=pi.asset_id
-    JOIN memberships m ON m.shelf_id=i.shelf_id AND m.user_id=? WHERE pi.playlist_id=? ORDER BY pi.position`);
-  return rows.map(p=>{const members=assets.all(userId,p.id),kinds=new Set(members.map(playlistKind));return {id:p.id,title:p.title,revision:p.revision,createdAt:p.created_at,updatedAt:p.updated_at,assetIds:members.map(i=>i.asset_id),kind:kinds.size===1?[...kinds][0]:null,mixed:kinds.size>1};});
+  const assets=new Map();for(const row of db.prepare(`SELECT pi.playlist_id,pi.asset_id,i.mime_type FROM playlist_items pi JOIN playlists p ON p.id=pi.playlist_id JOIN items i ON i.id=pi.asset_id
+    JOIN memberships m ON m.shelf_id=i.shelf_id AND m.user_id=? WHERE p.user_id=? ORDER BY pi.playlist_id,pi.position`).all(userId,userId)){if(!assets.has(row.playlist_id))assets.set(row.playlist_id,[]);assets.get(row.playlist_id).push(row);}
+  return rows.map(p=>{const members=assets.get(p.id)??[],kinds=new Set(members.map(playlistKind));return {id:p.id,title:p.title,revision:p.revision,createdAt:p.created_at,updatedAt:p.updated_at,assetIds:members.map(i=>i.asset_id),kind:kinds.size===1?[...kinds][0]:null,mixed:kinds.size>1};});
 }
 export function registerPlaylists(app,{db,authenticate,findItem,publicItem}){
   const auth={onRequest:async req=>authenticate(req)};
@@ -22,7 +22,8 @@ export function registerPlaylists(app,{db,authenticate,findItem,publicItem}){
   app.get('/api/v1/playlists/:id/playback',{...auth,schema:{params:object({id:uuid}),querystring:object({assetId:uuid})}},async req=>{
     find(req.params.id,req.user.id);const playlist=read(req.params.id,req.user.id);
     if(!playlist||playlist.mixed||!['audio','video'].includes(playlist.kind))throw httpError(422,'同じ種類の動画または音声のプレイリストを選んでください。');
-    const items=playlist.assetIds.map((id,index)=>({...publicItem(findItem(id,req.user.id)),series:{label:String(index+1)}})),currentIndex=items.findIndex(item=>item.id===req.query.assetId);
+    const records=new Map(db.prepare('SELECT i.* FROM items i JOIN memberships m ON m.shelf_id=i.shelf_id AND m.user_id=? WHERE i.id IN (SELECT value FROM json_each(?))').all(req.user.id,JSON.stringify(playlist.assetIds)).map(row=>[row.id,row]));
+    const items=publicItem.batch(playlist.assetIds.map(id=>records.get(id)).filter(Boolean)).map((item,index)=>({...item,series:{label:String(index+1)}})),currentIndex=items.findIndex(item=>item.id===req.query.assetId);
     if(currentIndex<0)throw httpError(404,'この作品はプレイリストにありません。');
     return {series:{id:playlist.id,title:playlist.title,playlist:true},items,currentIndex};
   });

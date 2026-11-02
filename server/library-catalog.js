@@ -2,12 +2,14 @@ import {shelfSeries,shelfSeriesMembership} from './series.js';
 import {publicProgress} from './progress.js';
 import {pendingShelfUploads} from './pending-uploads.js';
 import {userPlaylists} from './playlists.js';
+import {createCatalogResponses} from './catalog-response.js';
 
 // A complete, authenticated snapshot. No pagination/selected-shelf ambiguity:
 // removing a membership also removes its entire tree from the next snapshot.
 export function registerLibraryCatalog(app,{db,authenticate,publicItem}){
-  app.get('/api/v1/library/catalog',{onRequest:async req=>authenticate(req)},async req=>{
-    db.exec('BEGIN');
+  const responses=createCatalogResponses();app.addHook('onClose',async()=>responses.clear());
+  app.get('/api/v1/library/catalog',{onRequest:async req=>authenticate(req)},async(req,reply)=>{
+    db.exec('BEGIN');let snapshot;
     try{
       const shelves=db.prepare(`SELECT s.*,m.role,
         (SELECT COUNT(*) FROM items i WHERE i.shelf_id=s.id) itemCount,
@@ -17,12 +19,17 @@ export function registerLibraryCatalog(app,{db,authenticate,publicItem}){
       const items=[],series=[];
       for(const shelf of shelves){
         const membership=shelfSeriesMembership(db,shelf.id),context={shelfName:shelf.name,role:shelf.role};
-        series.push(...shelfSeries(db,shelf.id).map(s=>({...s,...context})));
-        items.push(...db.prepare('SELECT * FROM items WHERE shelf_id=? ORDER BY created_at DESC,id').all(shelf.id).map(i=>({...publicItem(i),...context,series:membership.get(i.id)??null,progress:progress.get(i.id)??null})),
-          ...pendingShelfUploads(db,shelf.id).map(i=>({...i,...context})));
+        for(const row of shelfSeries(db,shelf.id))series.push({...row,...context});
+        const records=db.prepare('SELECT * FROM items WHERE shelf_id=? ORDER BY created_at DESC,id').all(shelf.id);
+        for(const item of publicItem.batch(records))items.push({...item,...context,series:membership.get(item.id)??null,progress:progress.get(item.id)??null});
+        for(const item of pendingShelfUploads(db,shelf.id))items.push({...item,...context});
       }
       const playlists=userPlaylists(db,req.user.id);
-      db.exec('COMMIT');return {version:1,userId:req.user.id,serverTime:Date.now(),shelves,series,items,playlists};
+      snapshot={version:1,userId:req.user.id,serverTime:Date.now(),shelves,series,items,playlists};
+      db.exec('COMMIT');
     }catch(error){db.exec('ROLLBACK');throw error;}
+    const response=responses.respond(snapshot,{ifNoneMatch:req.headers['if-none-match'],delta:req.query.delta==='1'});
+    reply.headers(response.headers).header('Vary',[reply.getHeader('Vary'),'Authorization'].filter(Boolean).join(', '));
+    return response.status===304?reply.code(304).send():response.body;
   });
 }

@@ -2,6 +2,7 @@ FROM node:24.19.0-bookworm-slim AS build
 WORKDIR /app
 RUN npm install --global pnpm@11.25.0
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY patches ./patches
 RUN pnpm install --frozen-lockfile
 COPY web ./web
 COPY server/video-types.js ./server/video-types.js
@@ -11,12 +12,15 @@ COPY server/name-rules.js ./server/name-rules.js
 COPY server/error-diagnostic-schema.js ./server/error-diagnostic-schema.js
 COPY vite.config.js ./
 COPY scripts/pwa-icons.mjs ./scripts/pwa-icons.mjs
+COPY scripts/third-party-notices.mjs ./scripts/third-party-notices.mjs
+COPY third-party ./third-party
 RUN pnpm build
 
 FROM node:24.19.0-bookworm-slim AS dependencies
 WORKDIR /app
 RUN npm install --global pnpm@11.25.0
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY patches ./patches
 RUN pnpm install --prod --frozen-lockfile
 
 FROM node:24.19.0-bookworm-slim AS sandbox-build
@@ -26,7 +30,7 @@ RUN gcc -std=c11 -O2 -Wall -Wextra -Werror -D_FORTIFY_SOURCE=2 -fstack-protector
 
 FROM node:24.19.0-bookworm-slim AS runtime
 ARG VCS_REF=unknown
-ARG VERSION=0.25.0-beta
+ARG VERSION=1.0.0
 LABEL org.opencontainers.image.title="Mirea" \
       org.opencontainers.image.description="Shared video, audio and book library" \
       org.opencontainers.image.source="https://github.com/SUIREN-KazutoHashimoto/Mirea" \
@@ -42,6 +46,7 @@ COPY --from=dependencies /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY server ./server
 COPY package.json LICENSE ./
+COPY third-party ./third-party
 COPY scripts/prepare-media-storage.mjs ./scripts/prepare-media-storage.mjs
 RUN chmod -R go-w /app /usr/local/bin/mirea-launch && mkdir -p /data /media && chown node:node /data /media
 USER 1000:1000

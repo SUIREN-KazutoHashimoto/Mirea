@@ -18,7 +18,7 @@ export async function syncStoredProgress(){
       const r=await fetch(`${endpoint}/api/v1/items/${id}/progress`,{method,headers:{Authorization:'Bearer '+session.token,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,cache:'no-store',signal:AbortSignal.timeout(10000)}),value=await r.json();
       if(!r.ok)throw Object.assign(new Error('進行度を同期できません。'),{status:r.status});return value;
     };
-    const sync=createProgressSync({revision:row.pending?.revision??row.revision??null,pending:row.pending,desired:row.desired,read:()=>request('GET'),send:body=>request('PUT',body),persist:value=>cache.write(value?{...row,...value}:row.last?{last:row.last,revision:row.revision}:null),saved:progress=>{row.last=progress;row.revision=progress.revision;}});
+    const sync=createProgressSync({revision:row.pending?.revision??row.revision??null,pending:row.pending,desired:row.desired,conflict:row.conflict,read:()=>request('GET'),send:body=>request('PUT',body),persist:value=>cache.write(value?{...row,...value}:row.last?{last:row.last,revision:row.revision}:null),saved:progress=>{row.last=progress;row.revision=progress?.revision??row.revision;}});
     await sync.flush();
   }
 }
@@ -30,13 +30,21 @@ export async function clearAccountProgress(){
 }
 
 function cacheFor(partition,assetId){return createProgressCache(localStorage,partition,assetId);}
+export function cachedProgress(item){
+  const session=getSession();if(!session)return item.progress;
+  const row=cacheFor(`${getEndpoint()||location.origin}|${session.user.id}`,item.id).read();
+  if(!row)return item.progress;
+  const pending=row.desired??row.pending;
+  if(pending){const {updateId,revision,...position}=pending;return {...item.progress,...position,updatedAt:row.at,local:true};}
+  return row.last&&(row.last.revision??row.revision??0)>=(item.progress?.revision??0)?row.last:item.progress;
+}
 export function rememberDownloadProgress(item,result){
   const session=getSession();if(!session)return;
   const cache=cacheFor(`${getEndpoint()||location.origin}|${session.user.id}`,item.id),old=cache.read();
   if(!old?.pending&&!old?.desired&&![...active].some(manager=>manager.assetId===item.id))cache.write({last:result.progress,revision:result.revision});
 }
 
-export async function openProgress(item,{status=()=>{},saved=()=>{}}={}){
+export async function openProgress(item,{status=()=>{},saved=()=>{},startAtBeginning=false}={}){
   const session=getSession(),endpoint=getEndpoint();
   if(!session)throw new Error('ログインしてください。');
   const cache=cacheFor(`${endpoint || location.origin}|${session.user.id}`,item.id);
@@ -50,10 +58,19 @@ export async function openProgress(item,{status=()=>{},saved=()=>{}}={}){
   const read=()=>request('GET'),send=body=>request('PUT',body);
   let queued=cache.read(),initial=null,revision=null;
   if(queued?.pending||queued?.desired){
-    const recover=createProgressSync({revision:queued.pending?.revision??queued.revision??null,pending:queued.pending,desired:queued.desired,read,send,persist:row=>cache.write(row?{...queued,...row}:queued.last?{last:queued.last,revision:queued.revision}:null),status});
+    const recover=createProgressSync({revision:queued.pending?.revision??queued.revision??null,pending:queued.pending,desired:queued.desired,conflict:queued.conflict,read,send,persist:row=>cache.write(row?{...queued,...row}:queued.last?{last:queued.last,revision:queued.revision}:null),status,saved:value=>{queued.last=value;queued.revision=value?.revision??queued.revision;}});
     await recover.flush();queued=cache.read();
   }
-  try{const result=await read();initial=result.progress;revision=result.revision;}
+  try{const result=await read();initial=result.progress;revision=result.revision;
+    const local=queued?.desired??(queued?.pending?Object.fromEntries(Object.entries(queued.pending).filter(([key])=>!['revision','updateId'].includes(key))):null);
+    if(local){
+      const baseline=queued.pending?.revision??queued.revision??null;
+      const position=value=>!value?null:isTimedKind(item.kind)?{positionMs:value.positionMs,durationMs:value.durationMs}:{page:value.page,scrollX:value.scrollX??0,scrollY:value.scrollY??0,zoom:value.zoom??'fit',completed:value.completed===true};
+      if((baseline===null?Boolean(result.progress):baseline!==result.revision)&&JSON.stringify(position(local))!==JSON.stringify(position(result.progress))){queued.conflict={revision:baseline,at:Date.now()};cache.write(queued);}
+      initial=isTimedKind(item.kind)?{...local,completed:local.durationMs>0&&local.positionMs>=local.durationMs}:local;
+    }
+    if(queued?.conflict){initial??=queued.last;status('conflict');}
+  }
   catch(error){
     if([401,403,404].includes(error.status))throw error;
     status('pending');revision=queued?.pending?.revision??queued?.revision??item.progress?.revision??null;
@@ -63,15 +80,19 @@ export async function openProgress(item,{status=()=>{},saved=()=>{}}={}){
   // If an acknowledgement was lost, retain its exact request ID/revision.
   // A concurrent remote change will return 409 instead of rewinding progress.
   if(queued?.pending)revision=queued.pending.revision;
-  const lastValue=initial?(isTimedKind(item.kind)?{positionMs:initial.positionMs,durationMs:initial.durationMs}:{page:initial.page,scrollX:initial.scrollX,scrollY:initial.scrollY,zoom:initial.zoom}):null;
+  const lastValue=initial?(isTimedKind(item.kind)?{positionMs:initial.positionMs,durationMs:initial.durationMs}:{page:initial.page,scrollX:initial.scrollX,scrollY:initial.scrollY,zoom:initial.zoom,...(typeof initial.completed==='boolean'?{completed:initial.completed}:{})}):null;
   let lastSaved=initial,lastRevision=revision;
   if(!queued?.pending&&!queued?.desired&&revision!==null)cache.write({last:initial,revision});
   const persist=row=>cache.write(row?{...row,last:lastSaved,revision:lastRevision}:lastSaved?{last:lastSaved,revision:lastRevision}:null);
-  const sync=createProgressSync({revision,pending:queued?.pending,desired:queued?.desired,lastValue,read,send,persist,status,saved:value=>{lastSaved=value;lastRevision=value.revision;saved(value);}});
+  const sync=createProgressSync({revision,pending:queued?.pending,desired:queued?.desired,conflict:queued?.conflict,lastValue,read,send,persist,status,saved:value=>{lastSaved=value;lastRevision=value?.revision??lastRevision;saved(value);}});
   let disposed=false,snapshot=()=>null;
   const listeners=[];
   const listen=(target,event,fn)=>{target.addEventListener(event,fn);listeners.push(()=>target.removeEventListener(event,fn));};
-  const manager={assetId:item.id,initial,
+  // Starting another track is a presentation choice, independent of resolving
+  // a saved-position conflict. Preserve both records until the user chooses.
+  const manager={assetId:item.id,initial:startAtBeginning?null:initial,
+    get conflicted(){return sync.conflicted;},
+    resolveConflict(choice){manager.capture();return sync.resolveConflict(choice);},
     bind(fn){snapshot=fn;},
     capture(){if(!disposed)sync.update(snapshot());},
     checkpoint(){manager.capture();return sync.flush();},
@@ -86,7 +107,7 @@ export async function openProgress(item,{status=()=>{},saved=()=>{}}={}){
   active.add(manager);return manager;
 }
 
-export function bindVideoProgress(video,manager){
+export function bindVideoProgress(video,manager,{waitForMetadata=false}={}){
   let initialized=false,restoring=false,touched=false,restartRequested=false;
   const listeners=[];
   const listen=(type,fn)=>{video.addEventListener(type,fn);listeners.push(()=>video.removeEventListener(type,fn));};
@@ -95,12 +116,14 @@ export function bindVideoProgress(video,manager){
     const durationMs=Math.round(video.duration*1000);
     return {positionMs:video.ended?durationMs:Math.min(durationMs,Math.max(0,Math.round(video.currentTime*1000))),durationMs};
   });
-  listen('loadedmetadata',()=>{
-    if(initialized || !Number.isFinite(video.duration))return;
+  const initialize=()=>{
+    if(initialized || !Number.isFinite(video.duration)||video.duration<=0)return;
     initialized=true;const target=restartRequested?0:resumeVideoMs(manager.initial,video.duration*1000)/1000;
-    if(target>0){restoring=true;video.currentTime=target;}
+    touched||=!video.paused;
+    if(target>0&&Math.abs(video.currentTime-target)>.05){restoring=true;video.currentTime=target;}
     else if(restartRequested)manager.checkpoint();
-  });
+  };
+  listen('loadedmetadata',initialize);
   listen('seeking',()=>{if(!restoring)touched=true;});
   listen('seeked',()=>{
     if(restoring){restoring=false;if(!video.paused)touched=true;else return;}
@@ -109,6 +132,9 @@ export function bindVideoProgress(video,manager){
   listen('play',()=>{touched=true;});
   listen('timeupdate',()=>{if(!video.paused)manager.capture();});
   for(const event of ['pause','ended'])listen(event,()=>manager.checkpoint());
+  // A PiP handoff reuses a connected element that may still expose the previous
+  // asset's duration/position. Only the new source's metadata may initialize it.
+  if(!waitForMetadata&&video.readyState>=1)initialize();
   const cleanup=()=>listeners.forEach(remove=>remove());
   cleanup.restart=()=>{restartRequested=true;touched=true;restoring=false;video.currentTime=0;manager.checkpoint();};
   return cleanup;

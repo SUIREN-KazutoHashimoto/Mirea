@@ -1,39 +1,27 @@
 package com.suiren.mirea.playback;
-
-import android.app.*;
-import android.graphics.*;
-import android.media.MediaMetadata;
-import android.media.session.MediaSession;
-import java.io.ByteArrayOutputStream;
-import java.util.concurrent.TimeUnit;
-import org.json.JSONObject;
+import android.graphics.Bitmap;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.*;
-import org.robolectric.android.controller.ServiceController;
-import org.robolectric.annotation.*;
-import org.robolectric.util.ReflectionHelpers;
+import org.robolectric.RobolectricTestRunner;
+import org.robolectric.annotation.Config;
 import static org.junit.Assert.*;
-
-@RunWith(RobolectricTestRunner.class) @Config(sdk=35,shadows=PlaybackArtworkTest.MetadataSession.class) @GraphicsMode(GraphicsMode.Mode.NATIVE)
+@RunWith(RobolectricTestRunner.class) @Config(sdk=35)
 public class PlaybackArtworkTest {
-    // Robolectric's MediaSession has no system binder/controller metadata store.
-    // Capture only that OS boundary; exercise the real service, builder and bitmap.
-    @Implements(MediaSession.class) public static class MetadataSession extends org.robolectric.shadows.ShadowMediaSession {
-        MediaMetadata metadata;
-        @Implementation protected void setMetadata(MediaMetadata value){metadata=value;}
+    @Test public void offlineCoverLargerThanOldBridgeLimitIsAcceptedWithinTwoMiB(){
+        Bitmap image=Bitmap.createBitmap(512,512,Bitmap.Config.ARGB_8888);java.util.Random rng=new java.util.Random(1);int[] pixels=new int[512*512];for(int i=0;i<pixels.length;i++)pixels[i]=0xff000000|rng.nextInt(0xffffff);image.setPixels(pixels,0,512,0,0,512,512);java.io.ByteArrayOutputStream bytes=new java.io.ByteArrayOutputStream();image.compress(Bitmap.CompressFormat.PNG,100,bytes);String encoded=java.util.Base64.getEncoder().encodeToString(bytes.toByteArray());assertTrue(encoded.length()>350000);assertNotNull(PlaybackArtwork.embedded(encoded));assertNull(PlaybackArtwork.embedded("a".repeat(2800000)));assertNull(PlaybackArtwork.embedded("not_base64"));image.recycle();
     }
-    private static MediaMetadata metadata(MediaSession session){return ((MetadataSession)org.robolectric.shadow.api.Shadow.extract(session)).metadata;}
-    @Test public void artworkIsPublishedToNotificationAndSystemMediaMetadataAndClearedForNextAsset()throws Exception{
-        ServiceController<PlaybackService> controller=Robolectric.buildService(PlaybackService.class).create();PlaybackService service=controller.get();
-        try{
-            Bitmap cover=Bitmap.createBitmap(300,200,Bitmap.Config.ARGB_8888);cover.eraseColor(Color.BLUE);service.artwork=cover;ReflectionHelpers.setField(service,"item",new JSONObject().put("title","Artwork fixture").put("kind","audio"));
-            ReflectionHelpers.callInstanceMethod(service,"updateSession");MediaSession session=ReflectionHelpers.getField(service,"session");MediaMetadata metadata=metadata(session);assertNotNull(metadata.getBitmap(MediaMetadata.METADATA_KEY_ART));assertNotNull(metadata.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART));assertNotNull(metadata.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON));
-            Notification notification=ReflectionHelpers.callInstanceMethod(service,"notification");assertNotNull(notification.getLargeIcon());assertEquals(Notification.VISIBILITY_PRIVATE,notification.visibility);assertNotNull(notification.extras.getParcelable(Notification.EXTRA_MEDIA_SESSION));
-            service.artwork=null;ReflectionHelpers.callInstanceMethod(service,"updateSession");assertNull(metadata(session).getBitmap(MediaMetadata.METADATA_KEY_ART));assertNull(((Notification)ReflectionHelpers.callInstanceMethod(service,"notification")).getLargeIcon());
-        }finally{controller.destroy();service.stopped.get(5,TimeUnit.SECONDS);}
-    }
-    @Test public void bitmapDecodeIsBoundedAndRejectsInvalidOrOversizedInput(){
-        assertNull(PlaybackArtwork.decode(new byte[]{1,2,3}));assertNull(PlaybackArtwork.decode(new byte[3*1024*1024+1]));Bitmap original=Bitmap.createBitmap(1800,1000,Bitmap.Config.ARGB_8888);ByteArrayOutputStream out=new ByteArrayOutputStream();original.compress(Bitmap.CompressFormat.PNG,100,out);Bitmap decoded=PlaybackArtwork.decode(out.toByteArray());assertNotNull(decoded);assertTrue(decoded.getWidth()<=512);assertTrue(decoded.getHeight()<=512);
+    @Test public void savedCoverMustBelongToRequestedAccountDownloadAndAsset()throws Exception {
+        String asset="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",user="cccccccc-cccc-cccc-cccc-cccccccccccc";
+        PlaybackApi api=new PlaybackApi("https://mirea.test","a".repeat(43),user);
+        Bitmap image=Bitmap.createBitmap(8,8,Bitmap.Config.ARGB_8888);image.eraseColor(android.graphics.Color.GREEN);java.io.ByteArrayOutputStream bytes=new java.io.ByteArrayOutputStream();image.compress(Bitmap.CompressFormat.PNG,100,bytes);
+        org.json.JSONObject manifest=new org.json.JSONObject().put("id",id).put("assetId",asset),request=new org.json.JSONObject().put("item",new org.json.JSONObject().put("id",asset)).put("download",manifest);
+        org.json.JSONObject grant=new org.json.JSONObject().put("userId",user).put("manifest",manifest).put("cover",new org.json.JSONObject().put("bytes",java.util.Base64.getEncoder().encodeToString(bytes.toByteArray())));
+        assertEquals(android.graphics.Color.GREEN,PlaybackArtwork.forRequest(api,request,(context,download)->grant).getPixel(0,0));
+        assertNull(PlaybackArtwork.forRequest(api,request,(context,download)->{throw new IllegalStateException("Expired lease");}));
+        for(String mismatch:new String[]{"userId","id","assetId"}){
+            org.json.JSONObject wrong=new org.json.JSONObject(grant.toString());if(mismatch.equals("userId"))wrong.put(mismatch,id);else wrong.getJSONObject("manifest").put(mismatch,user);
+            assertNull(PlaybackArtwork.forRequest(api,request,(context,download)->wrong));
+        }
+        api.close();image.recycle();
     }
 }

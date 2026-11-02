@@ -46,7 +46,12 @@ try{
    await page.locator('select[name=seriesId] option[value="'+child+'"]').waitFor({state:'attached'});await page.locator('select[name=seriesId]').selectOption(child);
    const titles=['First','Waiting','Selected'].map(s=>name+' '+s),pdf=makePdf();
    await page.locator('input[name=file]').setInputFiles(titles.map(title=>({name:title+'.pdf',mimeType:'application/pdf',buffer:pdf})));
-   await page.locator('.manager-upload [type=submit]').click();await until(()=>!!firstId);
+   await page.locator('.manager-upload [type=submit]').click();
+   const review=page.locator('.upload-import-review:not([hidden])');await review.waitFor();
+   assert.match(await review.locator('.upload-review-total').innerText(),/追加 3件.*スキップ 0件.*除外 0件/);
+   assert.match(await review.innerText(),/親シリーズ \/ 子シリーズ・長い名前の追加先の表示確認/);
+   assert.equal(firstId,undefined,'Review must not begin transferring files before confirmation');
+   await review.getByRole('button',{name:'確認した内容でアップロード',exact:true}).click();await until(()=>!!firstId);
    await page.locator('.manager-upload .close-modal').click();await nav('#transfer-center');
    const queued=page.locator('.transfer-row').filter({hasText:titles[2]});
    await queued.locator('.transfer-start:visible').waitFor();await queued.locator('.transfer-start').click();await until(()=>!!manualId);

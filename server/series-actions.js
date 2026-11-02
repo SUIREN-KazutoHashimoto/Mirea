@@ -14,7 +14,11 @@ export function registerSeriesActions(app,{db,authenticate,membership,removeAsse
       SELECT s.* FROM series s JOIN branch b ON b.id=s.id ORDER BY s.id`).all(JSON.stringify(roots));
     const keys=JSON.stringify(rows.map(s=>s.id));
     const assets=db.prepare('SELECT i.* FROM items i JOIN series_items si ON si.asset_id=i.id WHERE si.series_id IN (SELECT value FROM json_each(?)) ORDER BY i.id').all(keys);
-    const pending=db.prepare('SELECT id,state FROM upload_sessions WHERE target_series_id IN (SELECT value FROM json_each(?)) ORDER BY id').all(keys);
+    // Published assets follow their current membership, not the destination
+    // retained in their upload history. Only unpublished transfers still use it.
+    const pending=db.prepare(`SELECT u.id,u.state FROM upload_sessions u WHERE
+      (u.target_series_id IN (SELECT value FROM json_each(?)) AND NOT EXISTS(SELECT 1 FROM items i WHERE i.id=u.id))
+      OR EXISTS(SELECT 1 FROM series_items si WHERE si.asset_id=u.id AND si.series_id IN (SELECT value FROM json_each(?))) ORDER BY u.id`).all(keys,keys);
     const hash=createHash('sha256').update(JSON.stringify([rows.map(s=>[s.id,s.revision,s.parent_id,s.title]),assets.map(i=>i.id),pending])).digest('hex');
     return {selected,rows,assets,pending,hash,keys};
   }
@@ -25,7 +29,7 @@ export function registerSeriesActions(app,{db,authenticate,membership,removeAsse
     let p;
     transaction(db,()=>{
       p=plan(roots,req.user.id);
-      if(deep&&(!hash||hash!==p.hash))throw httpError(409,'削除対象が変わりました。件数を確認し直してください。');
+      if((deep||hash!==undefined)&&(!hash||hash!==p.hash))throw httpError(409,'削除対象が変わりました。件数を確認し直してください。');
       if(!deep){
         const selectedIds=new Set(p.selected.map(row=>row.id)),allSeries=db.prepare('SELECT id,parent_id FROM series WHERE shelf_id=?').all(p.selected[0].shelf_id);assertSeriesChanges(db,p.selected[0].shelf_id,allSeries.filter(row=>selectedIds.has(row.id)||selectedIds.has(row.parent_id)).map(row=>selectedIds.has(row.id)?{id:row.id,remove:true}:{id:row.id,parentId:null}));
         const selected=JSON.stringify(p.selected.map(row=>row.id));const detached=db.prepare('SELECT i.id,i.shelf_id shelfId FROM items i JOIN series_items si ON si.asset_id=i.id WHERE si.series_id IN (SELECT value FROM json_each(?))').all(selected);

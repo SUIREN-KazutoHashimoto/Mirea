@@ -1,13 +1,13 @@
 import {mountPersonalExport} from './admin-downloads.js';
 import {sectionNavigation,bindSections} from './management-ui.js';
 
-export function openSettings({ dialog, api, esc, theme, apkUrl, version, onUpdated, onDeleted, manageShelf, manageDownloads,manageCatalog,manageDiagnostics, mountUpdates,mountPwa,flush=async()=>{},isCurrent=()=>true }) {
+export function openSettings({ dialog, api, esc, theme, apkUrl, version, onUpdated, onDeleted, manageShelf, manageDownloads,manageCatalog,manageDiagnostics, mountUpdates,mountPwa,flush=async()=>{},isCurrent=()=>true,offlineUser=null }) {
   const items=[['display','表示','テーマ・この端末'],['account','アカウント','名前・メール・パスワード'],['storage','保存とオフライン','作品・一覧・表紙'],['updates','アプリと更新','Android・PWA'],['records','記録と診断','書き出し・エラーの詳細'],['delete','アカウントの削除','退会について']];
   const node = dialog('設定', `<div class="manager-layout settings-layout">${sectionNavigation(items,{esc,prefix:'settings',label:'設定の項目'})}<div class="modal-body manager-panel settings-body"><p role="status">アカウントを確認しています…</p></div></div>`, 'settings-modal');
   const body = node.querySelector('.modal-body');
   let disposed = false, disposeUpdates,disposeExport,disposePwa;
   node.addEventListener('close', () => { disposed = true; disposeUpdates?.();disposeExport?.();disposePwa?.(); }, { once: true });
-  api('/account').then(account => {
+  (offlineUser?Promise.resolve({user:offlineUser,ownedShelves:[],lastServerAdmin:false}):api('/account')).then(account => {
     if (disposed||!isCurrent()) return;
     const user = account.user;
     const blocked = account.ownedShelves.filter(s => s.assetCount > 0 || s.memberCount > 1);
@@ -33,7 +33,7 @@ export function openSettings({ dialog, api, esc, theme, apkUrl, version, onUpdat
     const themeSelect = body.querySelector('.theme-select'); themeSelect.value = theme.value; themeSelect.onchange = () => theme.set(themeSelect.value);
     body.querySelector('.manage-downloads').onclick=()=>{node.close();manageDownloads?.();};
     manageCatalog?.(body.querySelector('.catalog-save-controls'));
-    disposeExport=mountPersonalExport(body.querySelector('.personal-export-container'),{api,flush});
+    if(offlineUser)body.querySelector('.personal-export-container').textContent='記録の書き出しは接続後に利用できます。';else disposeExport=mountPersonalExport(body.querySelector('.personal-export-container'),{api,flush});
     if(mountPwa)disposePwa=mountPwa(body.querySelector('.pwa-container'));
     if (mountUpdates) disposeUpdates = mountUpdates(body.querySelector('.update-container'), { onClose: () => node.close() });
     body.querySelectorAll('[data-manage-shelf]').forEach(button => { button.onclick = () => { node.close(); manageShelf(button.dataset.manageShelf); }; });
@@ -41,6 +41,7 @@ export function openSettings({ dialog, api, esc, theme, apkUrl, version, onUpdat
       event.preventDefault();if(!isCurrent()){node.close();return;} const button = form.querySelector('button'), error = form.querySelector('.form-error'); button.disabled = true; error.hidden = true;
       try { await action(form); } catch (err) { if (!disposed) { error.textContent = err.message; error.hidden = false; button.disabled = false; } }
     }; };
+    body.querySelector('.account-form').setAttribute('data-unsaved','');
     handle('.account-form', async form => {
       const fields = form.elements, payload = { name: fields.name.value.trim(), email: fields.email.value.trim(), currentPassword: fields.currentPassword.value };
       if (fields.newPassword.value) payload.newPassword = fields.newPassword.value;
@@ -52,6 +53,7 @@ export function openSettings({ dialog, api, esc, theme, apkUrl, version, onUpdat
       await api('/account', { method: 'DELETE', body: { confirmEmail: form.elements.confirmEmail.value.trim(), currentPassword: form.elements.currentPassword.value } });
       form.reset(); node.close(); await onDeleted();
     });
+    if(offlineUser)for(const form of body.querySelectorAll('.account-form,.account-delete')){for(const field of form.querySelectorAll('input,button'))field.disabled=true;const note=document.createElement('p');note.className='muted';note.textContent='アカウントの変更は接続後に利用できます。';form.before(note);}
   }).catch(error => { if (!disposed) body.textContent = error.message; });
   return node;
 }

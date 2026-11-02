@@ -71,3 +71,10 @@ test('save retries are idempotent and stale concurrent devices cannot rewind new
   c.db.prepare('DELETE FROM items WHERE id=?').run(c.video);
   assert.equal(c.db.prepare('SELECT COUNT(*) n FROM asset_progress').get().n,0,'deleted asset cleans resume state (not analytics logs)');
 });
+
+test('book completion is explicit and reading a final page alone does not mark a book finished',async t=>{
+  const c=await setup(t);
+  const reading=await c.save({page:10,zoom:'width'},c.pdf);assert.equal(reading.statusCode,200,reading.body);assert.equal(reading.json().progress.completed,false);
+  const done=await c.save({revision:1,page:10,zoom:'width',completed:true},c.pdf);assert.equal(done.statusCode,200,done.body);assert.equal(done.json().progress.completed,true);
+  const again=await c.save({revision:2,page:1,completed:false},c.pdf);assert.equal(again.json().progress.completed,false);
+});

@@ -32,7 +32,7 @@ export async function registerAdminBackups(app,{db,dataDir,mediaDir=dataDir,admi
       db.prepare("UPDATE admin_jobs SET state='running',updated_at=? WHERE id=?").run(Date.now(),id);
       const snapshot=join(work,'mirea.sqlite');await backup(db,snapshot);authorize();
       const files=[];
-      const add=async(path,name)=>{const info=await lstat(path);if(!info.isFile()||info.isSymbolicLink())throw new Error('Only regular backup files are allowed');files.push({path,name,size:info.size,mtime:info.mtimeMs});};
+      const add=async(path,name)=>{const info=await lstat(path),precise=await lstat(path,{bigint:true});if(!info.isFile()||info.isSymbolicLink()||!precise.isFile()||precise.isSymbolicLink())throw new Error('Only regular backup files are allowed');files.push({path,name,size:info.size,mtime:info.mtimeMs,mtimeNs:precise.mtimeNs.toString()});};
       const walk=async(path,name)=>{const info=await lstat(path);if(info.isSymbolicLink())throw new Error('Backup may not follow links');if(info.isDirectory()){for(const entry of await readdir(path))await walk(join(path,entry),name+'/'+entry);}else await add(path,name);};
       await add(snapshot,'data/mirea.sqlite');
       for(const name of mode==='full'?['keys','uploads','videos','originals','previews','thumbnails']:['keys']){
@@ -43,7 +43,7 @@ export async function registerAdminBackups(app,{db,dataDir,mediaDir=dataDir,admi
       const metadata=Buffer.from(JSON.stringify({format:1,mode,createdAt:new Date().toISOString(),schema:db.prepare('SELECT version FROM schema_version').get().version,
         settings:{...(operationalSettings?.value??{}),allowRegistration:options.allowRegistration??operationalSettings?.value.allowRegistration??process.env.ALLOW_REGISTRATION!=='false',analyticsEnabled:options.analyticsEnabled??operationalSettings?.value.analyticsEnabled??process.env.ANALYTICS_ENABLED!=='false',serverAdminUserIds:options.serverAdminUserIds??process.env.SERVER_ADMIN_USER_IDS??'',maxUploadBytes:options.maxUploadBytes??operationalSettings?.value.maxUploadBytes??process.env.MAX_UPLOAD_BYTES??2147483648},
         includesPersonalLogs:true,includesDownloadKey:true,mediaIncluded:mode==='full',storage:{separate:mediaDir!==dataDir,archiveLayout:'combined',restore:'Restore logical data/ tree into DATA_DIR; migrate media offline before enabling MEDIA_DIR'},
-        files:files.map(file=>({name:file.name,size:file.size,mtimeMs:file.mtime})),
+        files:files.map(file=>({name:file.name,size:file.size,mtimeMs:file.mtime,mtimeNs:file.mtimeNs})),
         excluded:['OS/runtime','TLS and CA private keys outside DATA_DIR','APK/update signing keys','other backup archives','maintenance helper configuration']},null,2));
       files.unshift({name:'backup-manifest.json',size:metadata.length,bytes:metadata});
       const total=files.reduce((n,f)=>n+f.size,0),free=await statfs(directory);

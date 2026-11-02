@@ -78,7 +78,10 @@ test('web upload client recovers a lost part response and resumes received parts
 
   mode = 'outage'; requests.length = 0;
   const interrupted = createResumableUpload(context, shelf.json().id, [file], 'Resume', () => {});
-  await assert.rejects(interrupted.promise, /通信が途切れ/);
+  // A temporary outage now waits rather than failing after a few seconds.
+  // Closing the tab detaches its network activity, retaining resumable parts.
+  await firstStoredPromise;await new Promise(resolve=>setTimeout(resolve,100));
+  interrupted.detach();await assert.rejects(interrupted.promise);
   assert.equal(memory.size, 1);
   const saved = JSON.parse([...memory.values()][0]);
   const received = await app.inject({ url: `/api/v1/uploads/${saved.id}`, headers: { authorization: `Bearer ${user.token}` } });

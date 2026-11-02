@@ -103,7 +103,7 @@ function workerOperation(data) {
 
 // Bound decoder memory independently for thumbnails, previews and validation.
 export function createMediaProcessor({thumbnailLimit=()=>2,previewLimit=()=>1}={}) {
-  const pools={thumbnail:createJobPool(thumbnailLimit),preview:createJobPool(previewLimit),'validate-image':createJobPool(()=>2)};
+  const pools={thumbnail:createJobPool(thumbnailLimit),preview:createJobPool(previewLimit),'validate-image':createJobPool(()=>2),'page-display':createJobPool(()=>2)};
   let sequence=0;const activity=new Map();
   const enqueue = (kind,job) => {
     const id='media-'+(++sequence),row={id,kind,state:'queued'};activity.set(id,row);
@@ -115,6 +115,9 @@ export function createMediaProcessor({thumbnailLimit=()=>2,previewLimit=()=>1}={
     inspect(){return [...activity.values()].map(row=>({...row}));},
     validateImage(source) {
       return enqueue('validate-image',() => workerOperation({ source, mode: 'validate-image' }));
+    },
+    pageDisplay(source,destination){
+      return enqueue('page-display',()=>workerOperation({source,destination,mode:'page-display'}));
     },
     preview(source, destination, mime, {startSeconds=0}={}) {
       return enqueue('preview',async () => {
