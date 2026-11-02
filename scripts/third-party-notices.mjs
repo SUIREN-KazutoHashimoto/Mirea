@@ -1,6 +1,7 @@
 import {access,mkdir,readFile,readdir,realpath,writeFile} from 'node:fs/promises';
 import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
+import {createHash} from 'node:crypto';
 
 const root=dirname(dirname(fileURLToPath(import.meta.url)));
 const noticeName=/(?:^|[-_.])(?:licen[cs]es?|notices?|copying|copyright)(?:$|[-_.])/i;
@@ -9,6 +10,24 @@ const hasLicense=documents=>documents.some(d=>/(?:^|[-_.])(?:licen[cs]es?|copyin
 const skipped=new Set(['node_modules','.git','.github','test','tests','__tests__']);
 const safeUrl=value=>{try{const url=new URL(String(value).replace(/^git\+/,''));return ['https:','http:'].includes(url.protocol)?url.href:undefined;}catch{return undefined;}};
 const escape=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const libvipsSupplement='sharp-libvips-linux-x64-1.3.4';
+const libvipsDocuments={
+  'README.md':'b4fb1a9f5909cfd58edb4177c2028ce3033cf8651aef740a554c1dc58b3c5ee3',
+  'versions.json':'e2611d5d854815a8b33c8a3d2ec649511a9596ccf16844e8eae7cf81e79881c4',
+  'LICENSE.LGPL-3.0-or-later.txt':'996af0513df21f7496288951c41428a03c174e9e4a9d63665c57d670f845ccb1'
+};
+async function libvipsNotices(item,directory,projectRoot){
+  // This exact Linux package omits LICENSE entirely. Its build-tool repository
+  // is Apache-2.0, but substituting that for the binary's LGPL would be wrong.
+  if(item.license!=='LGPL-3.0-or-later'||item.repository?.url!=='git+https://github.com/lovell/sharp-libvips.git'||item.repository?.directory!=='npm/linux-x64')throw Error('Unreviewed sharp-libvips license declaration');
+  const documents=[];
+  for(const [name,expected] of Object.entries(libvipsDocuments)){
+    const supplement=name.startsWith('LICENSE.'),path=supplement?join(projectRoot,'third-party',libvipsSupplement,name):join(directory,name),bytes=await readFile(path);
+    if(createHash('sha256').update(bytes).digest('hex')!==expected)throw Error('Reviewed sharp-libvips notice differs: '+name);
+    documents.push({path:supplement?'supplementary/'+name:name,text:bytes.toString('utf8')});
+  }
+  return documents;
+}
 
 async function packageDirectory(name,parent){
   for(let base=parent;;base=dirname(base)){
@@ -57,6 +76,10 @@ export async function collectNpmNotices({projectRoot=root}={}){
     if(!hasLicense(documents)&&['saxes@6.0.0','abstract-logging@2.0.1'].includes(item.name+'@'+item.version)){
       const name=item.name+'-'+item.version+'.LICENSE';
       documents.push({path:name,text:await readFile(join(projectRoot,'third-party',name),'utf8')});licenseSource='Supplementary notice; see third-party/README.md in the source distribution';
+    }
+    if(!hasLicense(documents)&&item.name==='@img/sharp-libvips-linux-x64'&&item.version==='1.3.4'){
+      documents.push(...await libvipsNotices(item,directory,projectRoot));
+      licenseSource='Exact npm README and component versions; supplementary unmodified LGPLv3 and incorporated GPLv3 text from SPDX license-list-data v3.27.0. Sources and hashes: third-party/'+libvipsSupplement+'/sources.json';
     }
     if(!hasLicense(documents))missing.push(item.name+'@'+item.version);
     packages.push({name:item.name,version:item.version,license:typeof item.license==='string'?item.license:JSON.stringify(item.license??item.licenses??'See included documents'),source:safeUrl(item.repository?.url??item.repository??item.homepage),...(licenseSource?{licenseSource}:{}),documents});

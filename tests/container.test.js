@@ -4,7 +4,38 @@ import http from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {checkHealth} from '../server/healthcheck.mjs';
 import pkg from '../package.json' with {type:'json'};
+import {upgradeBaseline,verifyUpgradeBaseline,upgradeProjects,fixtureProject,ownedUpgradeVolume,restoredUpgradeConfig} from '../scripts/container-upgrade-policy.mjs';
 const read=p=>readFile(new URL('../'+p,import.meta.url),'utf8');
+
+test('published-image upgrade fixtures pin the old identity and reject existing or external volume ownership',()=>{
+ const metadata={...upgradeBaseline,schemaVersion:1,platform:'linux/amd64',nonRoot:'1000:1000',testedImagePromoted:true,readOnlyRoot:true,separateStorageVerified:true,containerRecreationAndEncryptionVerified:true};
+ assert.equal(verifyUpgradeBaseline(metadata),upgradeBaseline);assert.match(upgradeBaseline.digestReference,/@sha256:[a-f0-9]{64}$/);
+ for(const key of ['tag','version','commit','image','digestReference'])assert.throws(()=>verifyUpgradeBaseline({...metadata,[key]:'changed'}));
+ assert.throws(()=>upgradeProjects({GITHUB_ACTIONS:'false',COMPOSE_PROJECT_NAME:'mirea-ci-1-1'}));assert.throws(()=>upgradeProjects({GITHUB_ACTIONS:'true',COMPOSE_PROJECT_NAME:'production'}));
+ const plans=upgradeProjects({GITHUB_ACTIONS:'true',COMPOSE_PROJECT_NAME:'mirea-ci-1-1'});assert.deepEqual(plans.map(p=>p.layout),['combined','separated']);
+ for(const plan of plans){assert(fixtureProject(plan.source));assert(fixtureProject(plan.restored));}
+ const project=plans[0].source,volume={Name:project+'_mirea-data',Driver:'local',Options:null,Labels:{'com.docker.compose.project':project,'com.docker.compose.volume':'mirea-data'}};
+ assert.equal(ownedUpgradeVolume(volume,project,'mirea-data'),volume.Name);
+ assert.throws(()=>ownedUpgradeVolume({...volume,Labels:{...volume.Labels,'com.docker.compose.project':'another'}},project,'mirea-data'));
+ assert.throws(()=>ownedUpgradeVolume({...volume,Options:{type:'none',device:'/outside',o:'bind'}},project,'mirea-data'));
+ assert.throws(()=>ownedUpgradeVolume(volume,'production','mirea-data'));
+});
+test('rollback uses saved configuration but can only remap fixture volumes and loopback ports',()=>{
+ const config={name:'mirea-ci-1-1-upgrade-separated',services:{mirea:{image:upgradeBaseline.digestReference,build:{context:'.'},environment:{MEDIA_DIR:'/media',MAX_CONCURRENT_JOBS:'5'},read_only:true,volumes:[{type:'volume',source:'mirea-data',target:'/data'},{type:'volume',source:'mirea-media',target:'/media'}],ports:[{host_ip:'127.0.0.1',target:3000,published:'31302'}]}},volumes:{'mirea-data':{name:'old-data'},'mirea-media':{name:'old-media'}},networks:{default:{name:'old-default'}}};
+ const restored=restoredUpgradeConfig(config,'mirea-ci-1-1-restore-separated',31304);
+ assert.equal(restored.services.mirea.image,upgradeBaseline.digestReference);assert.deepEqual(restored.services.mirea.environment,config.services.mirea.environment);assert.equal(restored.services.mirea.read_only,true);assert.equal(restored.services.mirea.build,undefined);
+ assert.equal(restored.volumes['mirea-media'].name,'mirea-ci-1-1-restore-separated_mirea-media');assert.equal(restored.services.mirea.ports[0].published,'31304');assert.equal(config.services.mirea.ports[0].published,'31302');
+ const bind=structuredClone(config);bind.services.mirea.volumes[0].type='bind';assert.throws(()=>restoredUpgradeConfig(bind,'mirea-ci-1-1-restore-separated',31304));
+ const external=structuredClone(config);external.volumes['mirea-data'].external=true;assert.throws(()=>restoredUpgradeConfig(external,'mirea-ci-1-1-restore-separated',31304));
+ assert.throws(()=>restoredUpgradeConfig(config,'production',31304));
+});
+test('container upgrade CI covers both layouts, stopped PAX backup and existing-key verification before rollback',async()=>{
+ const script=await read('scripts/check-container-upgrade.mjs'),fixture=await read('scripts/check-container.mjs'),ci=await read('.github/workflows/verify.yml');
+ for(const value of ['upgradeProjects(process.env)',"fixture('prepare',env);stopped(env)","fixture('verify',next);stopped(next)","fixture('verify',restored);stopped(restored)","'--format=pax'","'--interactive'","'1000:1000'","'--network','none'",'ownedUpgradeVolume','Restore volume must be empty','compose-resolved.json','compose-restored.json'])assert(script.includes(value),value);
+ assert(fixture.includes('downloadKeyHash'));assert(fixture.includes('s.downloadKeyHash'));assert(fixture.includes('HostPort===String(port)'));
+ assert(ci.includes('node scripts/check-container-upgrade.mjs'));assert(ci.includes('node scripts/check-container-upgrade.mjs --cleanup'));
+ assert(!script.includes("'down','-v'"));assert(!script.includes("'--privileged'"));assert(!script.includes('docker.sock'));
+});
 test('container context is source-only and excludes attachments, keys, production data and generated files',async()=>{
  const lines=(await read('.dockerignore')).split(/\r?\n/).map(s=>s.trim()).filter(s=>s&&!s.startsWith('#'));assert.equal(lines[0],'**');const allowed=path=>lines.slice(1).some(l=>l.startsWith('!')&&(l.endsWith('/**')?path.startsWith(l.slice(1,-2)):path===l.slice(1)));
  for(const path of ['container/launcher.c','scripts/prepare-media-storage.mjs','web/src/main.js','web/public/brand/orbit-icon.svg','server/app.js','package.json','pnpm-lock.yaml','Dockerfile'])assert(allowed(path),path);
