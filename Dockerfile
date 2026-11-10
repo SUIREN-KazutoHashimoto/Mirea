@@ -27,9 +27,15 @@ FROM node:24.19.0-bookworm-slim AS ai-build
 ARG AI_BACKENDS=both
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git cmake make g++ python3 python3-venv python3-dev libsndfile1 libvulkan-dev glslc spirv-headers && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
-COPY ai/runtime-versions.json ai/executor.c ai/music-requirements.txt ai/collect-notices.py ./ai/
-COPY scripts/build-ai-engines.mjs scripts/install-ai-music.mjs ./scripts/
+COPY ai/runtime-versions.json ai/executor.c ./ai/
+COPY scripts/build-ai-engines.mjs ./scripts/
 RUN node scripts/build-ai-engines.mjs --accept-runtime-licenses --backend=$AI_BACKENDS --destination=/app/ai/bin
+
+FROM node:24.19.0-bookworm-slim AS ai-music-build
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates python3 python3-venv python3-dev build-essential libsndfile1 && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY ai/music-requirements.txt ai/collect-notices.py ./ai/
+COPY scripts/install-ai-music.mjs ./scripts/
 RUN node scripts/install-ai-music.mjs --accept-runtime-licenses --destination=/app/ai/bin
 
 FROM node:24.19.0-bookworm-slim AS sandbox-build
@@ -54,6 +60,8 @@ COPY --from=sandbox-build /build/mirea-launch /usr/local/bin/mirea-launch
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=ai-build /app/ai/bin ./ai/bin
+COPY --from=ai-music-build /app/ai/bin/music ./ai/bin/music
+COPY --from=ai-music-build /app/ai/bin/notices ./ai/bin/notices
 COPY ai/music.py ai/neighborhood.py ./ai/
 COPY server ./server
 COPY package.json LICENSE ./

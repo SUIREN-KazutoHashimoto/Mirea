@@ -12,7 +12,9 @@ const command=(program,args)=>{const result=spawnSync(program,args,{stdio:'inher
 await mkdir(join(destination,'music'),{recursive:true});
 if(await lstat(provenance).catch(()=>null)){const saved=JSON.parse(await readFile(provenance,'utf8'));if(saved.version!==1||saved.torch!=='2.11.0')throw Error('Review existing runtime before replacing it.');console.log('CPU music runtime is already installed.');process.exit(0);}
 if(!await lstat(executable).catch(()=>null))command(python,['-m','venv',folder]);
-command(executable,['-m','pip','install','--require-virtualenv','torch==2.11.0','torchaudio==2.11.0','--index-url','https://download.pytorch.org/whl/cpu']);
+// Bootstrap a fixed installer; CPU wheels and general dependencies use separate indexes.
+command(executable,['-m','pip','install','--require-virtualenv','--index-url','https://pypi.org/simple','pip==26.3']);
+command(executable,['-m','pip','install','--require-virtualenv','--no-deps','--only-binary=:all:','torch==2.11.0','torchaudio==2.11.0','--index-url','https://download.pytorch.org/whl/cpu']);
 command(executable,['-m','pip','install','--require-virtualenv','--no-deps','--index-url','https://pypi.org/simple','-r',join(project,'ai/music-requirements.txt')]);
 command(executable,[join(project,'ai/collect-notices.py'),join(destination,'notices')]);
 await writeFile(provenance,JSON.stringify({version:1,engine:'allinone-cpu',torch:'2.11.0',weightsBundled:false},null,2));
