@@ -2,7 +2,7 @@
 
 Mireaは、本・動画・音楽を自分のサーバーに保存し、PCのブラウザーやAndroidから楽しむメディアライブラリです。本棚で共有相手を選び、シリーズで整理し、前回の続きから読んだり聴いたりできます。
 
-この文書は **Mirea 1.0.0** に対応します。[対象版と検証範囲](docs/status.md)を確認し、配布物は[GitHub Releases](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases)から取得してください。0.xベータ版からは、バックアップ後にサーバー、次にAndroidアプリの順で更新します。[正式版への移行手順](docs/operations/updates.md#ベータ版から正式版へ移るとき)
+この文書は **Mirea 2.0.0beta** に対応します。ローカルAIを追加した最初の2系ベータ版です。[対象版と検証範囲](docs/status.md)を確認し、配布物は[GitHub Releases](https://github.com/SUIREN-KazutoHashimoto/Mirea/releases)から取得してください。安定版1.0.0の文書はそのタグを参照します。更新前に完全バックアップを取得し、サーバー、次に同じメジャーのAndroidアプリの順で更新してください。AIは初期状態では無効で、モデルは[別途導入](docs/operations/ai.md)します。
 
 ## どこから始めますか
 

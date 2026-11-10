@@ -20,12 +20,14 @@
 | 本棚・シリーズ・プレイリストの整理 | [ライブラリ](user/library.md) |
 | ファイル・フォルダの一括追加、取消と再試行 | [アップロード](user/uploads.md) |
 | 本を読む、音楽・動画を再生する | [プレイヤー](user/playback.md) |
+| タグ、本文・セリフ、曲の構成、内容検索 | [ローカルAIの利用](user/ai.md) |
 | 外出前の保存、容量と視聴期限 | [ダウンロード](user/downloads.md) |
 | 共有・非公開本棚・閲覧記録・アカウント | [プライバシー](user/privacy.md) |
 | 作品が見えない、送信が止まった、音が途切れる | [利用者向けの問題解決](user/help.md) |
 
 ## 運用
 
+- [ローカルAIの準備](operations/ai.md) / [AIの実装設計](design/ai-implementation.md)
 - [管理画面の設定](operations/settings.md) / [設定値の一覧](reference/configuration.md)
 - [バックアップと復元](operations/backup-restore.md)
 - [更新と切り戻し](operations/updates.md)
@@ -52,6 +54,10 @@
 | [フォーク](development/fork.md) | 自分用の改修と独自配布の違い、変更箇所 |
 | [テスト](development/testing.md) | 自動テスト、画面確認、実機で確認する範囲 |
 | [リリース](development/release.md) | 版、CI、APK署名、イメージ、更新情報 |
+
+## 今後の仕様案
+
+- [2.0.0 ローカルAI機能仕様案](design/ai-2.0.0.md) — タグ、OCR、音楽構成、動画チャプター、内容検索、利用者操作、解析基盤の実装前の検討資料。
 
 ## 変更履歴と調査記録
 

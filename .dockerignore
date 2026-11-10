@@ -18,6 +18,15 @@
 !scripts/prepare-media-storage.mjs
 !scripts/pwa-icons.mjs
 !scripts/third-party-notices.mjs
+!scripts/build-ai-engines.mjs
+!scripts/install-ai-music.mjs
+!ai/
+!ai/runtime-versions.json
+!ai/executor.c
+!ai/music-requirements.txt
+!ai/collect-notices.py
+!ai/music.py
+!ai/neighborhood.py
 !third-party/
 !third-party/**
 !web/

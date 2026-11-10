@@ -25,7 +25,7 @@ final class OfflineSeries {
         if(manifest==null||!PlaybackApi.uuid(manifest.optString("id"))||!item.getString("id").equals(manifest.optString("assetId")))throw new IOException("次の作品は未保存・期限切れのため、オフラインでは開けません。");
         JSONObject asset=new JSONObject(item.toString());asset.remove("offlineDownload");asset.remove("offlineUnavailable");asset.remove("offlineStatus");
         JSONObject result=new JSONObject(request.toString()).put("item",asset).put("download",manifest).put("offline",true).put("restart",restart).put("autoplay",autoplay).put("orderContinuation",true);
-        result.remove("quality");result.remove("artwork");return result;
+        result.remove("startMs");result.remove("quality");result.remove("artwork");return result;
     }
 
     // A cached descriptor is only a candidate. The service must verify its lease
@@ -42,6 +42,6 @@ final class OfflineSeries {
         if(item.optJSONObject("offlineDownload")!=null)return nextRequest(request,item,restart,autoplay).put("offline",local);
         if(local)throw new IOException("次の作品は端末に保存されていません。");
         JSONObject result=new JSONObject(request.toString()).put("item",item).put("offline",false).put("restart",restart).put("autoplay",autoplay).put("orderContinuation",true);
-        result.remove("download");result.remove("quality");result.remove("artwork");return result;
+        result.remove("startMs");result.remove("download");result.remove("quality");result.remove("artwork");return result;
     }
 }

@@ -2,7 +2,7 @@
 
 容量上限・登録可否・処理数は、まずMireaの「サーバー管理」で変更します。保存先、接続ポート、TLS証明書など設置場所に関する値は、OSやコンテナの設定で管理します。
 
-対象: Mirea `1.0.0`。設定の名称・範囲は[実装](../../server/operational-settings.js)と[処理設定](../../server/processing-settings.js)に対応します。
+対象: Mirea `2.0.0beta`。設定の名称・範囲は[実装](../../server/operational-settings.js)と[処理設定](../../server/processing-settings.js)に対応します。
 
 ## 設定が反映される順番
 

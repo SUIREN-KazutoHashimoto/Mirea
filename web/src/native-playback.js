@@ -33,7 +33,7 @@ export async function initializeNativePlayback(){
   await NativePlayer.addListener('playbackState',state=>refreshNativePlayback(state).catch(()=>{}));
   await refreshNativePlayback();
 }
-export async function openNativePlayback(item,{restart=false,continuous=true,analytics=false,version='',playlistId,isCurrent=()=>true,progress=()=>{}}={}){
+export async function openNativePlayback(item,{restart=false,startMs,continuous=true,analytics=false,version='',playlistId,isCurrent=()=>true,progress=()=>{}}={}){
   requireCompatibleServer();
   clearPlaybackPresentation();
   await nativePlaybackStopped();const session=getSession(),origin=getEndpoint(),epoch=nativePlaybackGeneration();
@@ -58,6 +58,6 @@ export async function openNativePlayback(item,{restart=false,continuous=true,ana
     }
   }
   if(!valid())throw new Error('再生準備を取り消しました。');
-  await NativePlayer.open({...(playlistId?{playlistId}:{}),...(offlineSeries?{offlineSeries}:{}),...(artwork?{artwork}:{}),origin,token:session.token,userId:session.user.id,shelfUnlock:shelfUnlockValue(),item,restart,continuous,analytics,version,autoplay:true,...(download?{download,offline:isOfflineSession()}:{})});
+  await NativePlayer.open({...(playlistId?{playlistId}:{}),...(offlineSeries?{offlineSeries}:{}),...(artwork?{artwork}:{}),origin,token:session.token,userId:session.user.id,shelfUnlock:shelfUnlockValue(),item,restart,...(Number.isSafeInteger(startMs)&&startMs>=0?{startMs}:{}),continuous,analytics,version,autoplay:true,...(download?{download,offline:isOfflineSession()}:{})});
   await refreshNativePlayback();
 }

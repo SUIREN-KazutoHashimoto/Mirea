@@ -8,6 +8,7 @@ import android.text.TextUtils;
 import android.view.*;
 import android.widget.*;
 import org.json.JSONObject;
+import org.json.JSONArray;
 
 /** Responsive native presentation only. Playback, grants, progress and analytics stay in the service. */
 public final class PlaybackScreen extends FrameLayout {
@@ -40,7 +41,7 @@ public final class PlaybackScreen extends FrameLayout {
     private Boolean audioWide;
     private int insetLeft,insetTop,insetRight,insetBottom;
     private JSONObject model=new JSONObject();
-    private JSONObject shownNavigation;private Bitmap shownStoryboard;private Boolean videoMode;
+    private JSONObject shownNavigation,shownAnalysis,sectionsNavigation;private long analysisDuration=-1;private Bitmap shownStoryboard;private Boolean videoMode;
     private Bitmap artwork;
     private AudioBackdrop backdrop;private boolean motionForeground,audioPlaying;
     public void setMotionForeground(boolean value){motionForeground=value;updateMotion();}
@@ -121,6 +122,7 @@ public final class PlaybackScreen extends FrameLayout {
     @Override protected void onDetachedFromWindow(){if(backdrop!=null)backdrop.stop();cancelHold();cancelScrub();super.onDetachedFromWindow();}
     public void cancelScrub(){heatmap.setSeeking(false);if(preview!=null&&preview.precise)finishPrecise(false,scrubOrigin);if(preview!=null)preview.hide();if(scrubbing){scrubCancelled=true;scrubbing=false;actions.scrub(false);}}
     private void finishPrecise(boolean commit,long position){preview.hide();scrubbing=false;scrubCancelled=true;heatmap.setSeeking(false);actions.seek(commit?position:scrubOrigin);actions.scrub(false);if(scrubPlaying)actions.perform("resume-scrub");}
+    public void analysis(JSONObject pack){if(shownAnalysis==pack&&analysisDuration==duration&&sectionsNavigation==shownNavigation)return;shownAnalysis=pack;analysisDuration=duration;sectionsNavigation=shownNavigation;JSONArray rows=AnalysisNavigation.segments(pack),manual=shownNavigation==null?null:shownNavigation.optJSONArray("chapters");((ChapterSeekBar)audioSeek).sections(rows,duration);((ChapterSeekBar)videoSeek).sections(manual!=null&&manual.length()>0?manual:rows,duration);}
     public void navigation(JSONObject nav,Bitmap sheet){if(shownNavigation==nav&&shownStoryboard==sheet)return;shownNavigation=nav;shownStoryboard=sheet;preview.data(nav,sheet);if(videoSeek instanceof ChapterSeekBar)((ChapterSeekBar)videoSeek).chapters(nav);}
     public void resetZoom(){zoom=1;}
     public boolean cancelPrecise(){if(!preview.precise)return false;finishPrecise(false,scrubOrigin);return true;}
@@ -137,7 +139,7 @@ public final class PlaybackScreen extends FrameLayout {
     private void iconChip(TextView view,String name,String label,boolean active){view.setText("");view.setContentDescription(label);view.setTooltipText(label);PlaybackIcon icon=new PlaybackIcon(name,active?ACCENT:WHITE);icon.setBounds(0,0,dp(22),dp(22));view.setCompoundDrawables(icon,null,null,null);view.setGravity(Gravity.CENTER);}
     private TextView chip(String label,String action){TextView b=text(label,13,WHITE);b.setSingleLine(true);b.setEllipsize(android.text.TextUtils.TruncateAt.END);b.setGravity(Gravity.CENTER);b.setPadding(dp(12),0,dp(12),0);b.setMinWidth(dp(48));b.setMinHeight(dp(48));b.setBackground(ripple(round(0x182f4265,12)));b.setContentDescription(label);b.setFocusable(true);b.setAccessibilityDelegate(new View.AccessibilityDelegate(){@Override public void onInitializeAccessibilityNodeInfo(View host,android.view.accessibility.AccessibilityNodeInfo info){super.onInitializeAccessibilityNodeInfo(host,info);info.setClassName(Button.class.getName());}});b.setOnClickListener(v->actions.perform(action));return b;}
     private void addWeighted(LinearLayout row,View view,int height){row.addView(view,new LinearLayout.LayoutParams(0,dp(height),1));}
-    private SeekBar seek(String tag){SeekBar value=tag.equals("video-seek")?new ChapterSeekBar(getContext()):new SeekBar(getContext());value.setTag(tag);value.setMax(10000);value.setContentDescription("再生位置");value.setProgressTintList(ColorStateList.valueOf(ACCENT));value.setThumbTintList(ColorStateList.valueOf(ACCENT));value.setProgressBackgroundTintList(ColorStateList.valueOf(0x554a5b7d));value.setPadding(dp(4),0,dp(4),0);
+    private SeekBar seek(String tag){SeekBar value=new ChapterSeekBar(getContext());value.setTag(tag);value.setMax(10000);value.setContentDescription("再生位置");value.setProgressTintList(ColorStateList.valueOf(ACCENT));value.setThumbTintList(ColorStateList.valueOf(ACCENT));value.setProgressBackgroundTintList(ColorStateList.valueOf(0x554a5b7d));value.setPadding(dp(4),0,dp(4),0);
         value.setOnTouchListener((v,event)->{if(event.getActionMasked()==MotionEvent.ACTION_DOWN){scrubCancelled=false;scrubY=event.getY();scrubOrigin=model.optLong("positionMs");scrubPlaying=model.optBoolean("playing");}else if(event.getActionMasked()==MotionEvent.ACTION_MOVE&&isVideo&&scrubbing&&!preview.precise&&scrubY-event.getY()>dp(48)&&preview.available()){preview.show(duration*value.getProgress()/10000,true);actions.perform("pause-scrub");}else if(event.getActionMasked()==MotionEvent.ACTION_CANCEL){scrubCancelled=true;cancelScrub();}return false;});
         value.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){public void onStartTrackingTouch(SeekBar b){scrubbing=true;heatmap.setSeeking(isVideo&&b==videoSeek);actions.scrub(true);}public void onStopTrackingTouch(SeekBar b){if(preview.precise)return;boolean commit=!scrubCancelled;scrubbing=false;heatmap.setSeeking(false);preview.hide();if(commit)actions.seek(duration*b.getProgress()/10000);actions.scrub(false);}public void onProgressChanged(SeekBar b,int progress,boolean user){if(user){long time=duration*progress/10000;String label=PlaybackPresentation.time(time)+" / "+PlaybackPresentation.time(duration);videoTime.setText(label);audioTime.setText(label);if(isVideo&&scrubbing)preview.show(time,preview.precise);if(!scrubbing)actions.seek(time);}}});return value;
     }

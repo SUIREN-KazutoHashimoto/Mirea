@@ -2,7 +2,7 @@
 
 配布済みコンテナを使い、手元のPCまたはLinuxサーバーでMireaを起動します。Node.jsやpnpmをホストへ入れる必要はありません。空の新規環境を対象とします。既存データの移行は[保存先の分離](../storage.md)を先に読んでください。
 
-対象: Mirea `1.0.0`。以下は固定タグ`1.0.0`の例です。GitHub Releasesで公開状態と配布物を確認してから導入してください。
+対象: Mirea `2.0.0beta`。以下は固定タグ`2.0.0beta`の例です。GitHub Releasesで公開状態と配布物を確認してから導入してください。
 
 ## 1. 必要なものを確認する
 
@@ -35,14 +35,14 @@ DockerのClientとServerの情報、およびComposeのバージョンが表示�
 
 | 項目 | 最初の設定 |
 | --- | --- |
-| `image` | 選択したリリースの固定タグ。例 `ghcr.io/suiren-kazutohashimoto/mirea:1.0.0` |
+| `image` | 選択したリリースの固定タグ。例 `ghcr.io/suiren-kazutohashimoto/mirea:2.0.0beta` |
 | `user` | `1000:1000`。rootへ変更しない |
 | `host_ip` | `127.0.0.1`。まずホストPC内だけで開く |
 | `published` | `3000`。他のサービスと重なる場合だけ空いている番号へ変更 |
 | `volumes` | 基本設定は `mirea-data:/data`。手順4で分離構成を選ぶ場合は追加設定で `mirea-media:/media` も使用 |
 | `entrypoint` / `command` | 追加・変更しない |
 
-1.0.0のComposeは、次の設定を環境変数として渡します。管理画面から変更したい項目は、**その項目の行を `environment` から削除してから**起動します。省略時にもMireaの既定値があります。
+2.0.0betaのComposeは、次の設定を環境変数として渡します。管理画面から変更したい項目は、**その項目の行を `environment` から削除してから**起動します。省略時にもMireaの既定値があります。
 
 ```yaml
 MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-2147483648}

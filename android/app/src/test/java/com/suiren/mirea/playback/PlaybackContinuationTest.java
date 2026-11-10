@@ -85,6 +85,38 @@ public class PlaybackContinuationTest {
         }
     }
 
+    @Test public void customAnalysisRangePreservesBoundsAndCannotOutliveTheMonotonicGrant()throws Exception {
+        try(Fixture f=new Fixture()){
+            JSONObject pack=new JSONObject().put("expiresAt",System.currentTimeMillis()+10000);
+            ReflectionHelpers.callInstanceMethod(f.service,"acceptAnalysis",ReflectionHelpers.ClassParameter.from(JSONObject.class,pack));
+            assertTrue(f.service.analysisRange(2000,4000));assertTrue(f.service.analysisLooping());
+            assertFalse(f.service.analysisRange(-1,4000));assertFalse(f.service.analysisRange(2000,120001));assertFalse(f.service.analysisRange(4000,2000));
+            assertEquals(2000L,(long)ReflectionHelpers.getField(f.service,"analysisLoopStart"));
+            ReflectionHelpers.setField(f.service,"analysisDeadline",android.os.SystemClock.elapsedRealtime()-1);
+            assertNull(f.service.currentAnalysis());assertFalse(f.service.analysisLooping());assertFalse(f.service.analysisRange(2000,4000));
+        }
+    }
+
+    @Test public void analysisLoopAtMediaEndSeeksBackWithoutAdvancingTheSeriesAndHonorsExpiry()throws Exception {
+        try(Fixture f=new Fixture()){
+            ReflectionHelpers.setField(f.service,"analysis",new JSONObject());
+            ReflectionHelpers.setField(f.service,"analysisLoopStart",1000L);
+            ReflectionHelpers.setField(f.service,"analysisLoopEnd",120000L);
+            ReflectionHelpers.setField(f.service,"analysisLoopExpires",System.currentTimeMillis()+10000);
+            ReflectionHelpers.setField(f.service,"analysisLoopDeadline",android.os.SystemClock.elapsedRealtime()+10000);
+            ReflectionHelpers.setField(f.service,"desiredPlaying",true);
+            ReflectionHelpers.setField(f.service,"ended",true);
+            assertTrue((Boolean)ReflectionHelpers.callInstanceMethod(f.service,"repeatAnalysisEnd"));
+            assertTrue((Boolean)ReflectionHelpers.getField(f.service,"seeking"));
+            assertTrue((Boolean)ReflectionHelpers.getField(f.service,"resumeAfterSeek"));
+            assertFalse((Boolean)ReflectionHelpers.getField(f.service,"ended"));
+            assertTrue(f.metadata.tasks.isEmpty());
+            ReflectionHelpers.setField(f.service,"analysisLoopDeadline",android.os.SystemClock.elapsedRealtime());
+            assertFalse((Boolean)ReflectionHelpers.callInstanceMethod(f.service,"repeatAnalysisEnd"));
+            assertEquals(-1L,(long)ReflectionHelpers.getField(f.service,"analysisLoopStart"));
+        }
+    }
+
     @Test public void playerNextAndPreviousStartNewTracksAtZeroWhileKeepingPauseIntent()throws Exception {
         for(int direction:new int[]{1,-1})try(Fixture f=new Fixture()){
             if(direction<0){JSONObject first=asset(NEXT,"audio");ReflectionHelpers.setField(f.service,"item",first);JSONObject current=ReflectionHelpers.getField(f.service,"request");current.put("item",first);}

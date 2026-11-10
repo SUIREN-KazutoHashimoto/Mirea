@@ -14,11 +14,12 @@ export async function createOfflineVault(store,{cryptoApi=crypto,wall=Date.now,m
   // vault instances, so a late read cannot restore an older catalog/lease.
   let queues=timedQueues.get(store);if(!queues)timedQueues.set(store,queues=new Map());
   function serialized(partition,id,work){const name=slot(partition,id),before=queues.get(name)??Promise.resolve(),task=before.catch(()=>{}).then(work);queues.set(name,task);task.finally(()=>{if(queues.get(name)===task)queues.delete(name);}).catch(()=>{});return task;}
-  async function deviceKey(partition,create=false){
-    const name=`device|${partition}`;let key=await store.vaultGet(name);
-    if(!key&&create)key=await store.vaultInit(name,await cryptoApi.subtle.generateKey({name:'AES-GCM',length:256},false,['encrypt','decrypt']));
-    if(!key)throw new Error('この端末のオフライン鍵がありません。オンラインで開き直してください。');return key;
+  async function deviceRecord(partition,create=false){
+    const name=`device|${partition}`;let record=await store.vaultGet(name);
+    if(!record&&create){const key=await cryptoApi.subtle.generateKey({name:'AES-GCM',length:256},false,['encrypt','decrypt']),epoch=Array.from(cryptoApi.getRandomValues(new Uint8Array(16)),n=>n.toString(16).padStart(2,'0')).join('');record=await store.vaultInit(name,{key,epoch});}
+    if(!record)throw new Error('この端末のオフライン鍵がありません。オンラインで開き直してください。');return record.key?record:{key:record,epoch:'legacy'};
   }
+  const deviceKey=async(partition,create=false)=>(await deviceRecord(partition,create)).key;
   async function seal(partition,id,value){
     const key=await deviceKey(partition,true),iv=cryptoApi.getRandomValues(new Uint8Array(12)),bytes=encoder.encode(JSON.stringify(value));
     try{await store.vaultPut(slot(partition,id),{iv,bytes:await cryptoApi.subtle.encrypt({name:'AES-GCM',iv,additionalData:encoder.encode(slot(partition,id))},key,bytes)});}finally{bytes.fill(0);}
@@ -82,6 +83,13 @@ export async function createOfflineVault(store,{cryptoApi=crypto,wall=Date.now,m
       const id=userId??await store.vaultGet(`identity|${originOf(origin)}`);await store.vaultDelete(`identity|${originOf(origin)}`);
       if(id){const partition=offlinePartition(origin,id);await store.vaultDelete(`device|${partition}`);for(const key of anchorMap.keys())if(key.startsWith(`sealed|${partition}|`))anchorMap.delete(key);}
     },
+    metadataEpoch:async partition=>(await deviceRecord(partition,true)).epoch,
+    saveMetadata(partition,id,grant,value){return serialized(partition,id,async()=>{
+      if(!Number.isSafeInteger(grant.serverTime)||!Number.isSafeInteger(grant.expiresAt)||grant.expiresAt<=grant.serverTime||grant.expiresAt-grant.serverTime>OFFLINE_MS)throw Error('保存情報の有効期限が不正です。');
+      const time=wall();await seal(partition,id,{grant,wall:time,lastWall:time,value});anchorMap.set(slot(partition,id),{elapsed:0,mono:mono()});
+    });},
+    metadataWithLease(partition,id){return serialized(partition,id,async()=>{const saved=await unseal(partition,id);if(!saved)return null;const localExpiresAt=await remaining(partition,id,saved);return localExpiresAt?{value:saved.value,localExpiresAt}:null;});},
+    metadata(partition,id){return serialized(partition,id,async()=>{const saved=await unseal(partition,id);if(!saved)return null;return await remaining(partition,id,saved)?saved.value:null;});},
     seal,unseal
   };
 }

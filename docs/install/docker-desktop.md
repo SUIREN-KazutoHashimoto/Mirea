@@ -2,7 +2,7 @@
 
 Docker DesktopではWindows/macOS上のLinux VMでMireaコンテナを動かします。画面からコンテナを管理できますが、Mireaの操作手順・保存先・起動保護は[DockerとCompose](docker.md)と共通です。
 
-対象: Mirea `1.0.0`。すべてのDocker Desktop版・バックエンドの実機互換を保証していません。**Linux VMがLandlock ABI 3以上に対応していること**を起動時に確認します。
+対象: Mirea `2.0.0beta`。すべてのDocker Desktop版・バックエンドの実機互換を保証していません。**Linux VMがLandlock ABI 3以上に対応していること**を起動時に確認します。
 
 ## 1. Docker Desktopを準備する
 
@@ -20,7 +20,7 @@ Windowsの対応OS・WSL要件・仮想化要件は[Windows向け公式導入手
 まず本番データをマウントせずに、次の起動確認ができます。これは一時コンテナにのみ適用し、DBを起動しません。
 
 ```sh
-docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:rw,noexec,nosuid,size=64m,mode=1777 ghcr.io/suiren-kazutohashimoto/mirea:1.0.0 /usr/local/bin/node -e "console.log('Mirea launcher OK')"
+docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:rw,noexec,nosuid,size=64m,mode=1777 ghcr.io/suiren-kazutohashimoto/mirea:2.0.0beta /usr/local/bin/node -e "console.log('Mirea launcher OK')"
 ```
 
 `Mirea container sandbox enforced` と `Mirea launcher OK` が出れば、このVMで起動保護の確認を通っています。イメージ既定のEntrypointを通すことが重要です。

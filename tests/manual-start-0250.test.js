@@ -66,14 +66,14 @@ test('upload extra slot is account-wide, independent of normal admission, owner-
  assert.equal((await c.req('POST','/transfers/upload-queue/'+assets[2].id+'/start',second)).statusCode,202);
  assert.equal((await c.req('DELETE','/transfers/upload-queue/'+assets[2].id,second)).statusCode,204);
  assert.equal((await c.req('GET','/transfers/manual-upload',second)).json().slot,null);
- assert.equal(c.db.prepare('SELECT version FROM schema_version').get().version,25);
+ assert.equal(c.db.prepare('SELECT version FROM schema_version').get().version,26);
 });
 test('manual reservations are additive migrations and survive reopening without changing accounts or queued metadata',async t=>{
  const dir=await mkdtemp(join(tmpdir(),'mirea-manual-migration-')),path=join(dir,'state.sqlite');let db=openDatabase(path);
  t.after(async()=>{db.close();await rm(dir,{recursive:true,force:true});});
  db.exec("INSERT INTO users VALUES('u','keep@example.test','Keep','opaque',1);INSERT INTO shelves(id,name,created_at) VALUES('s','Keep',1);INSERT INTO memberships VALUES('s','u','owner');INSERT INTO upload_queue VALUES('q','u','s',NULL,'Keep','application/pdf',1,1,9999999999999,NULL);DROP TABLE manual_upload_starts;UPDATE schema_version SET version=24;");
  const before=db.prepare('SELECT * FROM upload_queue').all(),user=db.prepare('SELECT * FROM users').all();
- db.close();db=openDatabase(path);assert.equal(db.prepare('SELECT version FROM schema_version').get().version,25);
+ db.close();db=openDatabase(path);assert.equal(db.prepare('SELECT version FROM schema_version').get().version,26);
  assert.deepEqual(db.prepare('SELECT * FROM upload_queue').all(),before);assert.deepEqual(db.prepare('SELECT * FROM users').all(),user);
  db.prepare("INSERT INTO manual_upload_starts VALUES('u','q',1,9999999999999)").run();db.close();db=openDatabase(path);
  assert.equal(db.prepare('SELECT COUNT(*) n FROM manual_upload_starts').get().n,1);assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);

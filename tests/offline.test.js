@@ -17,7 +17,7 @@ test('offline lease encrypts content keys and profile, isolates origins/accounts
   const c=await setup();await c.vault.saveLease(c.partition,c.grant,c.userId);
   await c.vault.saveIdentity('https://mirea.test',{user:{id:c.userId,name:'Private Name',email:'private@test'},token:'bearer-not-persisted',expiresAt:c.grant.expiresAt+1000},true,{analytics:{enabled:true}});
   const serialized=JSON.stringify([...c.rows]);for(const secret of [c.grant.key,'bearer-not-persisted','Private Name','private@test'])assert.ok(!serialized.includes(secret));
-  const key=c.rows.get('device|'+c.partition);assert.equal(key.extractable,false);await assert.rejects(()=>crypto.subtle.exportKey('raw',key));
+  const record=c.rows.get('device|'+c.partition),key=record.key??record;assert.equal(key.extractable,false);await assert.rejects(()=>crypto.subtle.exportKey('raw',key));
   assert.equal((await c.vault.lease(c.partition,c.manifest.id)).key,c.grant.key);
   assert.equal(await c.vault.lease('https://other.test|'+c.userId,c.manifest.id),null);
   assert.equal(await c.vault.identity('https://other.test'),null);

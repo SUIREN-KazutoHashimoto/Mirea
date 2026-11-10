@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import {initializeAiSchema} from './ai-schema.js';
 import {orderSeriesItems} from './series-order.js';
 
 export function openDatabase(filename) {
@@ -80,7 +81,7 @@ export function openDatabase(filename) {
         UPDATE schema_version SET version = 2;
       `));
     } finally { db.exec('PRAGMA foreign_keys = ON'); }
-  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,21,22,23,24,25].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
+  } else if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,21,22,23,24,25,26].includes(version)) throw new Error(`Unsupported database schema: ${version}`);
   if (version < 10) {
     // v10 adds EPUB while retaining v9's nullable uploader attribution.
     // Account deletion removes attribution, not another member's shared assets.
@@ -482,6 +483,7 @@ export function openDatabase(filename) {
     queue_id TEXT NOT NULL UNIQUE REFERENCES upload_queue(id) ON DELETE CASCADE,
     requested_at INTEGER NOT NULL,expires_at INTEGER NOT NULL);
     UPDATE schema_version SET version=25;`);
+  transaction(db,()=>{ initializeAiSchema(db); db.exec('UPDATE schema_version SET version=26'); });
   if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Database foreign key validation failed');
   return db;
 }

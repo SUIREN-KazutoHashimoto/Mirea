@@ -26,6 +26,15 @@ public class PlaybackScreenTest {
     private void layout(PlaybackScreen screen,int width,int height){for(int n=0;n<4;n++){screen.measure(View.MeasureSpec.makeMeasureSpec(width,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(height,View.MeasureSpec.EXACTLY));screen.layout(0,0,width,height);org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();}assertEquals("actual rendering width",width,screen.getWidth());assertEquals("actual rendering height",height,screen.getHeight());}
     private Rect bounds(View view,View root){Rect r=new Rect(0,0,view.getWidth(),view.getHeight());((ViewGroup)root).offsetDescendantRectToMyCoords(view,r);return r;}
     private void touch(PlaybackScreen screen,int action,float x,float y){MotionEvent event=MotionEvent.obtain(0,android.os.SystemClock.uptimeMillis(),action,x,y,0);screen.dispatchTouchEvent(event);event.recycle();}
+    @Test public void analysisMarkersUseTheExistingSeekBarAndKeepManualVideoChapters()throws Exception{
+        try(ActivityController<Activity> controller=Robolectric.buildActivity(Activity.class).setup()){
+            PlaybackScreen screen=create(controller.get(),false);JSONObject pack=new JSONObject("{features:{structure:{result:{segments:[{startMs:0,endMs:100000,label:'Intro'},{startMs:100000,endMs:203000,label:'Chorus'}]}}}}");
+            layout(screen,360,800);screen.analysis(pack);Object rows=org.robolectric.util.ReflectionHelpers.getField(screen.findViewWithTag("audio-seek"),"chapters");assertEquals(2,((org.json.JSONArray)rows).length());
+            JSONObject manual=new JSONObject("{durationMs:203000,chapters:[{startMs:0,title:'Manual'}]}");screen.navigation(manual,null);screen.analysis(pack);
+            assertSame(manual.getJSONArray("chapters"),org.robolectric.util.ReflectionHelpers.getField(screen.findViewWithTag("video-seek"),"chapters"));screen.analysis(null);
+            assertEquals(0,((org.json.JSONArray)org.robolectric.util.ReflectionHelpers.getField(screen.findViewWithTag("audio-seek"),"chapters")).length());
+        }
+    }
     @Test public void audioMotionStopsForPauseBackgroundPipVideoAndDetach()throws Exception{
         try(ActivityController<Activity> controller=Robolectric.buildActivity(Activity.class).setup()){
             PlaybackScreen screen=create(controller.get(),false);layout(screen,360,800);screen.setMotionForeground(true);AudioBackdrop glow=(AudioBackdrop)screen.getBackground();assertTrue(glow.isRunning());

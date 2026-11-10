@@ -62,9 +62,21 @@ public final class OfflineLease {
         catch(PlaybackApi.Failure denied){if(denied.status<500&&denied.status!=429){revoke(api.partition,id);throw denied;}return load(api,id);}
         catch(java.io.IOException unavailable){return load(api,id);}
     }
+    private String analysisMarker(String name)throws Exception{String encoded=prefs.getString(name,null);if(encoded==null)return "";byte[] plain=SessionCipher.decrypt(keys.get(false),name,Base64.getDecoder().decode(encoded));try{return new JSONObject(new String(plain,StandardCharsets.UTF_8)).getString("id");}finally{Arrays.fill(plain,(byte)0);}}
+    public synchronized String analysisAuthorization(PlaybackApi api,String id)throws Exception{return analysisMarker("ai-epoch:"+api.partition)+":"+analysisMarker("ai-revoked:"+slot(api.partition,id));}
+    public synchronized void saveAnalysis(PlaybackApi api,JSONObject value,String authorization)throws Exception{
+        String id=value.getString("assetId");JSONObject pack=AnalysisNavigation.validate(value,api.userId,id);if(!analysisAuthorization(api,id).equals(authorization))throw new IllegalStateException("Analysis authorization changed");long wall=System.currentTimeMillis(),elapsed=SystemClock.elapsedRealtime();
+        write("ai:"+slot(api.partition,id),new JSONObject().put("grant",pack).put("authorization",authorization).put("wall",wall).put("lastWall",wall).put("elapsed",elapsed).put("lastElapsed",elapsed));
+    }
+    public synchronized JSONObject analysis(PlaybackApi api,String id)throws Exception{
+        String name="ai:"+slot(api.partition,id),encoded=prefs.getString(name,null);if(encoded==null)return null;byte[] plain=null;
+        try{plain=SessionCipher.decrypt(keys.get(false),name,Base64.getDecoder().decode(encoded));JSONObject record=new JSONObject(new String(plain,StandardCharsets.UTF_8));if(!record.optString("authorization",":").equals(analysisAuthorization(api,id)))return null;long wall=System.currentTimeMillis(),elapsed=SystemClock.elapsedRealtime(),remaining=remaining(record,wall,elapsed);if(remaining<=0){prefs.edit().remove(name).commit();return null;}record.put("lastWall",wall).put("lastElapsed",elapsed);write(name,record);return new JSONObject(record.getJSONObject("grant").toString()).put("expiresAt",wall+remaining);}
+        finally{if(plain!=null)Arrays.fill(plain,(byte)0);}
+    }
+    public synchronized void revokeAnalysis(PlaybackApi api,String id)throws Exception{write("ai-revoked:"+slot(api.partition,id),new JSONObject().put("id",UUID.randomUUID().toString()));if(!prefs.edit().remove("ai:"+slot(api.partition,id)).commit())throw new IllegalStateException();}
     public synchronized void revoke(String partition,String id)throws Exception{if(!prefs.edit().remove(slot(partition,id)).commit())throw new IllegalStateException();}
     public synchronized void clear(String partition)throws Exception{
-        if(!partition.matches("[0-9a-f]{64}"))throw new IllegalArgumentException();SharedPreferences.Editor edit=prefs.edit();
-        for(String name:prefs.getAll().keySet())if(name.startsWith(partition+"|"))edit.remove(name);if(!edit.commit())throw new IllegalStateException();
+        if(!partition.matches("[0-9a-f]{64}"))throw new IllegalArgumentException();write("ai-epoch:"+partition,new JSONObject().put("id",UUID.randomUUID().toString()));SharedPreferences.Editor edit=prefs.edit();
+        for(String name:prefs.getAll().keySet())if(name.startsWith(partition+"|")||name.startsWith("ai:"+partition+"|")||name.startsWith("ai-revoked:"+partition+"|"))edit.remove(name);if(!edit.commit())throw new IllegalStateException();
     }
 }

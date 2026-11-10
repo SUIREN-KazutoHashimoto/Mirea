@@ -24,6 +24,9 @@ export async function packageServer({projectRoot=root,outputDirectory=join(root,
     for(const path of ['server','dist','docs','scripts','patches','third-party','package.json','pnpm-lock.yaml','pnpm-workspace.yaml','.npmrc','.env.example','LICENSE','README.md','RELEASE.md']){
       await cp(join(projectRoot,path),join(destination,path),{recursive:true,errorOnExist:true,force:false});
     }
+    // Only inference adapter code and manifests are distributable. Models and installed runtimes are separate.
+    await mkdir(join(destination,'ai'));
+    for(const file of ['music.py','neighborhood.py','collect-notices.py','music-requirements.txt','runtime-versions.json','executor.c','README.md'])await cp(join(projectRoot,'ai',file),join(destination,'ai',file));
     await writeFile(join(destination,'release-manifest.json'),JSON.stringify({name:'Mirea',release:label,version:pkg.version,commit},null,2)+'\n');
     execFileSync(process.platform==='win32'?join(process.env.SystemRoot??'C:/Windows','System32','tar.exe'):'tar',['-czf',archive,'-C',staging,name],{windowsHide:true});
     const sha256=createHash('sha256').update(await readFile(archive)).digest('hex');

@@ -96,7 +96,7 @@ test('real workers that keep running after a result remain subject to timeout an
   for (const cancel of [false, true]) {
     const worker = new Worker(new URL('data:text/javascript,' + encodeURIComponent(source)));
     const controller = new AbortController(), reason = new Error('Synthetic cancellation');
-    const promise = waitForMediaWorker(worker, {signal: controller.signal, timeoutMs: 1000});
+    const promise = waitForMediaWorker(worker, {signal: controller.signal, timeoutMs: cancel ? 30000 : 1000});
     const rejected = assert.rejects(promise, error => cancel ? error === reason : error.code === 'MEDIA_PROCESSING_TIMEOUT');
     if (cancel) worker.once('message', () => controller.abort(reason));
     await rejected; assert.equal(worker.threadId, -1);

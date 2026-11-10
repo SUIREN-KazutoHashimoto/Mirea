@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import {registerAi} from './ai.js';
 import {createErrorDiagnostic} from './error-diagnostics.js';
 import {registerLibraryCatalog} from './library-catalog.js';
 import {registerPlaylists} from './playlists.js';
@@ -283,7 +284,8 @@ export async function createApp(options = {}) {
   registerAccounts(app, { db, authenticate, membership, loginResult, cleanupUploads: uploads.cleanupUploads, rateLimit: options.rateLimit,adminAccess });
   const videoPreviews = await registerVideoPreviews(app, { db, media, dataDir, uploadDir, authenticate, findItem,jobPool });
     const navigation = await registerVideoNavigation(app,{db,uploadDir,originalDir,videoDir,authenticate,findItem,membership,maintenance,rateLimit:options.rateLimit,jobPool,generateNavigation:options.generateNavigation});
-  async function removeAssetFiles(item){await mediaPipeline.cancel(item.id);return Promise.allSettled([
+  const ai=await registerAi(app,{db,dataDir,uploadDir,booksDir,originalDir,videoDir,publicItem,authenticate,findItem,membership,requireShelfUnlock,adminAccess,maintenance,jobPool,options});
+  async function removeAssetFiles(item){await ai.cancelAsset(item.id);await mediaPipeline.cancel(item.id);return Promise.allSettled([
     removeItemDirectory(stagingDir,item.id),
     item.mime_type===IMAGE_BOOK_MIME?removeItemDirectory(booksDir,item.id):unlink(join(uploadDir,item.id)),
     ...(item.mime_type===EPUB_MIME?[removeItemDirectory(booksDir,item.id)]:[]),unlink(join(thumbnailDir,item.id+'.jpg')),unlink(join(thumbnailDir,item.id+'.webp')),
@@ -292,7 +294,7 @@ export async function createApp(options = {}) {
   registerShelfManagement(app,{db,authenticate,membership,maintenance,removeFiles:removeAssetFiles,cleanupUploads:uploads.cleanupUploads,adminAccess,rateLimit:options.rateLimit});
   const adminJobs=await registerAdminJobs(app,{db,authenticate,findItem,adminAccess,media,videoTranscoder,uploadDir,booksDir,thumbnailDir,previewDir,videoDir,originalDir,dataDir,uploads,maintenance,videoPreviews,ensureThumbnail,jobPool,mediaPipeline,navigation,rateLimit:options.rateLimit});
   registerAdmin(app,{db,adminAccess,uploads,rateLimit:options.rateLimit,dataDir,mediaDir});
-  maintenance.setBusy(()=>uploads.busy||mediaPipeline.busy||adminJobs.busy||videoPreviews.busy||navigation.busy||media.busy);
+  maintenance.setBusy(()=>uploads.busy||mediaPipeline.busy||adminJobs.busy||videoPreviews.busy||navigation.busy||media.busy||ai.busy);
   await registerAdminCleanup(app,{db,dataDir,mediaDir,adminAccess,maintenance,options});
   registerAdminReset(app,{db,storage,adminAccess,maintenance,reset,options});
   await registerAdminBackups(app,{db,dataDir,mediaDir,adminAccess,maintenance,options,operationalSettings});
