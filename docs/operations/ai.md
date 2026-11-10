@@ -36,7 +36,7 @@ sudo apt-get install build-essential cmake git libvulkan-dev glslc spirv-headers
 node scripts/install-ai-engines.mjs --backend=both --accept-runtime-licenses
 ```
 
-モデルを取得せず、`ai/runtime-versions.json` の固定コミットからビルドします。Linuxの推論用通信制限ランチャーも作成します。異なる既存実行コードは勝手に上書きしません。Vulkanを使わないなら `--backend=cpu` でGPU用ビルドを省略できます。
+モデルを取得せず、`ai/runtime-versions.json` の固定コミットからビルドします。Linuxの推論用通信制限ランチャーも作成します。LinuxでVulkanを選ぶと、Khronos公式の固定版Vulkan-Headers（vulkan-sdk-1.4.363.0）をビルド作業領域へ取得し、OS付属ヘッダーの古さによるコンパイル不整合を避けます。実行時のVulkanローダーとドライバーはOS側のものを使い、ヘッダーの利用条件と取得元も導入先へ保存します。異なる既存実行コードは勝手に上書きしません。Vulkanを使わないなら `--backend=cpu` でGPU用ビルドを省略できます。
 
 ### 曲の構成解析も使う場合
 

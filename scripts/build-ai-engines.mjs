@@ -13,6 +13,18 @@ const jobs=Math.min(16,availableParallelism()),work=await mkdtemp(join(tmpdir(),
 const command=(program,args,cwd)=>{const result=spawnSync(program,args,{cwd,stdio:'inherit',windowsHide:true,shell:false});if(result.error||result.status!==0)throw Error('AI runtime build command failed: '+program);};
 try{
  await mkdir(destination,{recursive:true});
+ // Debian's loader can be used with newer, fixed header-only declarations.
+ // Keep build headers independent of the host package version; no driver or weights are fetched.
+ let vulkanHeaders;
+ if(backend!=='cpu'&&process.platform==='linux'){
+  const commit='6802bb4733b63ed5efd3adb308a6c885ef180ea1',source=join(work,'vulkan-headers');
+  await mkdir(source);command('git',['init','--quiet'],source);command('git',['remote','add','origin','https://github.com/KhronosGroup/Vulkan-Headers.git'],source);
+  command('git',['-c','advice.detachedHead=false','fetch','--depth=1','origin',commit],source);command('git',['-c','advice.detachedHead=false','checkout','--detach','FETCH_HEAD'],source);
+  const actual=spawnSync('git',['rev-parse','HEAD'],{cwd:source,encoding:'utf8',windowsHide:true});if(actual.status!==0||actual.stdout.trim()!==commit)throw Error('Vulkan header commit mismatch');
+  vulkanHeaders=join(source,'include');const notices=join(destination,'notices','Vulkan-Headers');await mkdir(notices,{recursive:true});
+  await cp(join(source,'LICENSE.md'),join(notices,'LICENSE.md'));await cp(join(source,'LICENSES'),join(notices,'LICENSES'),{recursive:true});
+  await writeFile(join(notices,'provenance.json'),JSON.stringify({repo:'KhronosGroup/Vulkan-Headers',tag:'vulkan-sdk-1.4.363.0',commit}));
+ }
  if(process.platform==='linux')command('cc',['-std=c11','-O2','-Wall','-Wextra','-Werror','-D_FORTIFY_SOURCE=2','-fstack-protector-strong','-fPIE','-pie','-Wl,-z,relro,-z,now','-o',join(destination,'mirea-ai-exec'),join(project,'ai/executor.c')],work);
  for(const [engine,version]of Object.entries(versions)){
   const source=join(work,engine);await mkdir(source);command('git',['init','--quiet'],source);command('git',['remote','add','origin','https://github.com/'+version.repo+'.git'],source);
@@ -24,6 +36,7 @@ try{
    const folder=engine==='llama'?'llama-'+variant:variant==='cpu'?'whisper':'whisper-vulkan',target=join(destination,folder);
    if(await lstat(target).catch(()=>null)){const info=JSON.parse(await readFile(join(target,'mirea-runtime.json'),'utf8'));if(info.commit===version.commit&&info.backend===variant){console.log('Verified installed runtime '+folder);continue;}throw Error('Existing runtime differs; install into a new destination and review before switching.');}
    const build=join(work,folder),flags=['-S',source,'-B',build,'-DCMAKE_BUILD_TYPE=Release','-DGGML_NATIVE=OFF','-DGGML_VULKAN='+(variant==='vulkan'?'ON':'OFF'),'-DGGML_OPENMP=ON','-DBUILD_SHARED_LIBS=ON','-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON','-DCMAKE_INSTALL_RPATH=$ORIGIN','-DGGML_CPU_ALL_VARIANTS=ON','-DGGML_BACKEND_DL=ON'];
+   if(variant==='vulkan'&&vulkanHeaders)flags.push('-DVulkan_INCLUDE_DIR='+vulkanHeaders);
    if(engine==='llama')flags.push('-DLLAMA_BUILD_TESTS=OFF','-DLLAMA_BUILD_EXAMPLES=ON','-DLLAMA_BUILD_TOOLS=ON','-DLLAMA_BUILD_SERVER=ON','-DLLAMA_BUILD_APP=OFF','-DLLAMA_BUILD_UI=OFF','-DLLAMA_USE_PREBUILT_UI=OFF','-DLLAMA_CONNECT=OFF','-DLLAMA_OPENSSL=OFF','-DLLAMA_SUBPROCESS=OFF');
    else flags.push('-DWHISPER_BUILD_TESTS=OFF','-DWHISPER_BUILD_EXAMPLES=ON','-DWHISPER_BUILD_SERVER=OFF','-DWHISPER_CURL=OFF');
    command('cmake',flags,work);command('cmake',['--build',build,'--config','Release','--target',engine==='llama'?'llama-server':'whisper-cli','--parallel',String(jobs)],work);
