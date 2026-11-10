@@ -5,18 +5,19 @@ import {mountAdminCleanup} from './admin-cleanup-ui.js';
 import {mountAdminReset} from './admin-reset-ui.js';
 import {mountAdminDiagnostics} from './admin-diagnostics.js';
 import {mountServerSettings} from './admin-server-settings.js';
+import {mountAiAdmin} from './ai-admin.js';
 
 const states={queued:'待機中',running:'実行中',processing:'処理中',uploading:'受信中',complete:'完了',failed:'失敗',cancelled:'取消',rolled_back:'旧版へ復旧'};
 export async function openAdmin({dialog,api,esc,bytes,onStatistics,onReset}){
   const actor=getSession(),actorRevision=sessionRevision();
   const sameActor=()=>sessionRevision()===actorRevision&&getSession()?.user.id===actor?.user.id&&getSession()?.token===actor?.token;
   const access=await api('/admin/access');if(!access.isServerAdmin||!sameActor())throw new Error('サーバー管理者のみ利用できます。');
-  const tabs=[['overview','概要'],['jobs','ジョブ管理'],['processing','処理の設定'],['server-settings','サーバーの設定'],['cleanup','ファイル整理'],['users','アカウント'],['shelves','本棚の権限'],['statistics','統計'],['backups','バックアップ'],['updates','サーバー更新'],['reports','エラー報告'],['audit','管理操作の記録'],['reset','データのリセット']];
+  const tabs=[['overview','概要'],['jobs','ジョブ管理'],['processing','処理の設定'],['ai','AI機能'],['server-settings','サーバーの設定'],['cleanup','ファイル整理'],['users','アカウント'],['shelves','本棚の権限'],['statistics','統計'],['backups','バックアップ'],['updates','サーバー更新'],['reports','エラー報告'],['audit','管理操作の記録'],['reset','データのリセット']];
   const groups={overview:'運用',users:'アカウント・本棚',backups:'保守'};
   const node=dialog('サーバー管理',`<div class="admin-layout manager-layout"><nav class="admin-nav manager-nav" aria-label="サーバー管理">${tabs.map(([id,label])=>`${groups[id]?`<span class="manager-nav-group">${groups[id]}</span>`:''}<button type="button" data-admin-tab="${id}" aria-current="false">${label}</button>`).join('')}</nav><label class="manager-mobile-nav admin-mobile-nav">管理項目<select class="admin-section-select">${tabs.map(([id,label])=>`<option value="${id}">${label}</option>`).join('')}</select></label><section class="admin-panel manager-panel" aria-busy="false"></section></div>`,'admin-modal');
-  const panel=node.querySelector('.admin-panel');let active='',revision=0,disposed=false,poll;
+  const panel=node.querySelector('.admin-panel');let active='',revision=0,disposed=false,poll,disposeAi;
   const current=()=>!disposed&&sameActor();
-  node.addEventListener('close',()=>{disposed=true;revision++;clearInterval(poll);},{once:true});
+  node.addEventListener('close',()=>{disposed=true;revision++;clearInterval(poll);disposeAi?.();},{once:true});
   const status=error=>{if(current()){let box=panel.querySelector('.admin-status');if(!box){box=document.createElement('p');box.className='admin-status';box.setAttribute('role','status');panel.append(box);}box.textContent=error.message??error;}};
   function confirm(title,description,fields,submit,{password=true}={}){
     const modal=dialog(title,`<form class="modal-body admin-confirm"><p>${esc(description)}</p>${fields}${password?'<label>現在の管理者パスワード<input name="currentPassword" type="password" autocomplete="current-password" maxlength="128" required></label>':''}<label class="confirm-row"><input name="confirmed" type="checkbox" required>操作内容を確認しました</label><p class="form-error" role="alert" hidden></p><button class="button primary" type="submit">実行する</button></form>`);
@@ -27,7 +28,7 @@ export async function openAdmin({dialog,api,esc,bytes,onStatistics,onReset}){
   }
   const action=(button,work)=>{button.onclick=async()=>{button.disabled=true;try{await work();}catch(error){status(error);}finally{if(current())button.disabled=false;}};};
   async function select(tab){
-    if(!current()||!tabs.some(([id])=>id===tab))return;active=tab;const generation=++revision;clearInterval(poll);panel.innerHTML='<p class="admin-loading" role="status">読み込んでいます…</p>';panel.setAttribute('aria-busy','true');panel.scrollTop=0;node.querySelector('.admin-section-select').value=tab;
+    if(!current()||!tabs.some(([id])=>id===tab))return;active=tab;const generation=++revision;clearInterval(poll);disposeAi?.();disposeAi=null;panel.innerHTML='<p class="admin-loading" role="status">読み込んでいます…</p>';panel.setAttribute('aria-busy','true');panel.scrollTop=0;node.querySelector('.admin-section-select').value=tab;
     node.querySelectorAll('[data-admin-tab]').forEach(b=>b.setAttribute('aria-current',String(b.dataset.adminTab===tab)));
     const valid=()=>current()&&generation===revision;
     try{
@@ -43,6 +44,8 @@ export async function openAdmin({dialog,api,esc,bytes,onStatistics,onReset}){
         if(conflicts.groups){const warning=document.createElement('p');warning.className='permission-note';warning.textContent='既存の同階層・同名シリーズが'+conflicts.groups+'組あります。自動改名・統合は行っていません。本棚の所有者が整理してください。';panel.prepend(warning);}
         const form=panel.querySelector('form');for(const key of Object.keys(settings)){const input=form.elements[key];input.value=settings[key];const override=meta.processingOverrides[key];if(override){input.disabled=true;const note=document.createElement('small');note.className='setting-override';note.textContent=override.variable+' = '+override.value+' で上書き中';input.closest('label').append(note);}}
         form.onsubmit=async event=>{event.preventDefault();const button=form.querySelector('button');button.disabled=true;try{await api('/admin/processing-settings',{method:'PATCH',body:{maxConcurrentUploads:Number(form.elements.maxConcurrentUploads.value),maxConcurrentJobs:Number(form.elements.maxConcurrentJobs.value),maxConcurrentThumbnails:Number(form.elements.maxConcurrentThumbnails.value),maxConcurrentPreviews:Number(form.elements.maxConcurrentPreviews.value),maxConcurrentIngest:Number(form.elements.maxConcurrentIngest.value),maxUploadAssets:Number(form.elements.maxUploadAssets.value),currentPassword:form.elements.currentPassword.value}});form.elements.currentPassword.value='';status('設定を保存しました。');}catch(error){status(error);}finally{button.disabled=false;}};
+      }else if(tab==='ai'){
+        const dispose=await mountAiAdmin({panel,api,valid,esc,bytes,status,confirm});if(valid())disposeAi=dispose;else dispose?.();
       }else if(tab==='server-settings'){
         await mountServerSettings({panel,api,valid,esc,status});
       }else if(tab==='reports'){

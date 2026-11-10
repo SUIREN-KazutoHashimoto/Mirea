@@ -29,17 +29,17 @@ export const epubFraction = (screen,count) => count>1?Math.max(0,Math.min(1,scre
 // Build only allowlisted elements; no book HTML, CSS, URLs or event attributes enter the DOM.
 export function renderEpubChapter(chapter,{doc=document,imageUrl,onLink}) {
   const anchors=new Map();
-  function render(value) {
-    if(value.text!==undefined)return doc.createTextNode(value.text);
+  function render(value,path) {
+    if(value.text!==undefined){const node=doc.createTextNode(value.text);anchors.set('node:'+path,node);return node;}
     const node=doc.createElement(value.tag);
     if(value.id && !anchors.has(value.id))anchors.set(value.id,node);
     if(value.tag==='img'){node.src=imageUrl(value.image);node.alt=value.alt??'挿絵';node.draggable=false;}
     else {
-      for(const child of value.children)node.append(render(child));
+      for(const [index,child]of value.children.entries())node.append(render(child,path+'.'+index));
       if(value.tag==='a'){node.href='#';node.onclick=event=>{event.preventDefault();event.stopPropagation();onLink(value.chapter,value.anchor);};}
     }
     return node;
   }
-  const fragment=doc.createDocumentFragment();for(const node of chapter.children)fragment.append(render(node));
+  const fragment=doc.createDocumentFragment();for(const [index,node]of chapter.children.entries())fragment.append(render(node,String(index)));
   return {fragment,anchors};
 }

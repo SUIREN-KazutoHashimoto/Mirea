@@ -98,3 +98,19 @@ healthcheckはコンテナ内の `127.0.0.1` へ接続し、TLSを使う場合�
 正本は [runtime.js](../../server/runtime.js)、[operational-settings.js](../../server/operational-settings.js)、[processing-settings.js](../../server/processing-settings.js)、[admin-access.js](../../server/admin-access.js)、[healthcheck.mjs](../../server/healthcheck.mjs) です。[設定回帰テスト](../../tests/server-settings-0230.test.js)は保存値・環境変数・適用値の区別を検証します。
 
 テスト専用フラグやNodeの内部フラグは通常運用の設定APIではありません。起動エラーを回避するために内部パラメーターを推測して追加しません。
+
+## ローカルAI（開発ブランチ）
+
+[導入手順](../operations/ai.md)と[実装設計](../design/ai-implementation.md)を参照します。初期状態は無効・CPUで、モデルは別途取得します。以下の上書きは管理画面にも表示します。
+
+| 環境変数 | 画面/APIキー | 初期値・範囲 |
+| --- | --- | --- |
+| AI_ENABLED | enabled | false。true / falseのみ |
+| AI_BACKEND | backend | cpu。cpu / vulkan |
+| AI_THREADS | threads | CPU数に応じ1〜4。指定範囲1〜64 |
+| AI_MEMORY_MIB | memoryMiB | 制約されたRAMの半分を基準、上限8192。指定範囲512〜131072 MiB |
+| AI_CONCURRENT_JOBS | concurrentJobs | 1。指定範囲1〜4 |
+
+管理画面では常駐モデル数1〜3、文脈2048〜32768 token、出力512〜16384 token（文脈以下）、起動待ち30〜600秒、未使用解放10〜600秒、一時容量128〜32768 MiB、解析可能時間帯、機能別モデルも設定します。メモリー予算は推論予約の上限で、OS全体のRAM使用量を保証する値ではありません。
+
+実行コードの配置は起動環境で指定します。AI_RUNTIME_DIRは既定のai/binを変更し、AI_MUSIC_PYTHONは管理者が準備した専用Pythonを指定します。AI_EXECUTORはLinuxの非特権推論ランチャーの明示配置です。モデルや利用者の書き込み可能なデータ領域へ実行コードを置きません。AI_VULKAN_RENDER_NODEはコンテナへ割り当てた1個のDRM renderデバイスを指定します。CPUだけなら不要です。

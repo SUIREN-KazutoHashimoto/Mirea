@@ -9,8 +9,8 @@ const db=openDatabase(':memory:');
 const cell=value=>String(value??'—').replaceAll('|','\\|').replaceAll('\n',' ');
 const quoted=name=>'"'+name.replaceAll('"','""')+'"';
 const version=db.prepare('SELECT version FROM schema_version').get().version;
-const tables=db.prepare("SELECT name,sql FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
-let text=`# SQLite スキーマ参照\n\n[設計書の入口](overview.md) · [データ設計](data-model.md)\n\nこの参照表は server/database.js を空のインメモリDBへ適用して生成します。既存のデータ領域・利用者レコードは読みません。現在のスキーマ番号は **${version}**、アプリケーションテーブルは **${tables.length}個**です。移行途中の置換テーブルとSQLite内部テーブルは含みません。\n\n再生成: リポジトリ直下で node scripts/generate-schema-docs.mjs。差分確認のみ: node scripts/generate-schema-docs.mjs --check。この資料は作業ツリーの定義を示します。配布版を調べる場合は対応するGitタグの資料を参照してください。\n\n## テーブル一覧\n\n${tables.map(row=>`- [${row.name}](#${row.name.replaceAll('_','-')})`).join('\n')}\n`;
+const tables=db.prepare("SELECT name,sql FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN (SELECT name FROM pragma_table_list WHERE type='shadow') ORDER BY name").all();
+let text=`# SQLite スキーマ参照\n\n[設計書の入口](overview.md) · [データ設計](data-model.md)\n\nこの参照表は server/database.js を空のインメモリDBへ適用して生成します。既存のデータ領域・利用者レコードは読みません。現在のスキーマ番号は **${version}**、アプリケーションテーブルは **${tables.length}個**です。FTS仮想表を含み、FTSのshadow表、移行途中の置換表、SQLite内部表は含みません。\n\n再生成: リポジトリ直下で node scripts/generate-schema-docs.mjs。差分確認のみ: node scripts/generate-schema-docs.mjs --check。この資料は作業ツリーの定義を示します。配布版を調べる場合は対応するGitタグの資料を参照してください。\n\n## テーブル一覧\n\n${tables.map(row=>`- [${row.name}](#${row.name.replaceAll('_','-')})`).join('\n')}\n`;
 for(const row of tables){
  text+=`\n## ${row.name.replaceAll('_',' ')}\n\nテーブル名: \`${row.name}\`\n\n| 列 | SQLite型 | NOT NULL | 既定値 | 主キー順 |\n| --- | --- | --- | --- | --- |\n`;
  for(const column of db.prepare(`PRAGMA table_info(${quoted(row.name)})`).all())text+=`| ${cell(column.name)} | ${cell(column.type)} | ${column.notnull?'はい':'いいえ'} | ${cell(column.dflt_value)} | ${column.pk||'—'} |\n`;

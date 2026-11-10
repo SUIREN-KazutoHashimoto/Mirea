@@ -79,7 +79,7 @@ export function createMediaReset({db,storage}){
       // No root is deleted in place and no account/secret/config is touched.
       for(const g of groups){authorize();await rename(g.root,quarantine(g,id));await syncDirectory(dirname(g.root));}
       authorize();transaction(db,()=>{
-        db.exec("DELETE FROM analytics_views; DELETE FROM upload_sessions; DELETE FROM admin_jobs WHERE kind NOT IN ('backup_metadata','backup_full'); DELETE FROM series; DELETE FROM shelves;");
+        db.exec("DELETE FROM ai_requests; DELETE FROM ai_batches; DELETE FROM ai_smart_lists; DELETE FROM analytics_views; DELETE FROM upload_sessions; DELETE FROM admin_jobs WHERE kind NOT IN ('backup_metadata','backup_full'); DELETE FROM series; DELETE FROM shelves;");
         audit(id);
       });
       await recover();

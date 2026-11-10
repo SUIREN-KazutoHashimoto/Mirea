@@ -48,7 +48,7 @@ export function openEpub(container,item,onError,tracker,progress,downloaded,seri
     if(!urls.has(index)) {const resource=book.resources[index],bytes=Uint8Array.from(atob(resource.data),c=>c.charCodeAt(0));urls.set(index,URL.createObjectURL(new Blob([bytes],{type:resource.mime})));}
     return urls.get(index);
   }
-  async function go(value,fraction=0,anchor='') {
+  async function go(value,fraction=0,anchor='',textOffset=0) {
     if(!book||disposed)return;
     progress?.capture();ready=false;tracker?.loading();const revision=++generation;
     chapter=Math.max(0,Math.min(book.chapters.length-1,value-1));screen=0;count=1;
@@ -59,7 +59,7 @@ export function openEpub(container,item,onError,tracker,progress,downloaded,seri
     await document.fonts.ready;
     if(disposed||revision!==generation)return;
     ready=true;layout(fraction);
-    if(anchor&&anchors.has(anchor)) { const rect=anchors.get(anchor).getBoundingClientRect(),base=flow.getBoundingClientRect();screen=Math.max(0,Math.min(count-1,Math.floor((rect.left-base.left)/stride())));publish(); }
+    if(anchor&&anchors.has(anchor)) { const target=anchors.get(anchor),range=target.nodeType===3?document.createRange():null;if(range){range.setStart(target,Math.max(0,Math.min(target.length,textOffset)));range.setEnd(target,Math.max(0,Math.min(target.length,textOffset+120)));}const rect=(range??target).getBoundingClientRect(),base=flow.getBoundingClientRect();screen=Math.max(0,Math.min(count-1,Math.floor((rect.left-base.left)/stride())));publish(); }
     // Analytics coordinates describe the visible fraction of the complete chapter.
     const geometry={getBoundingClientRect(){const rect=viewport.getBoundingClientRect(),width=count*stride()-48,left=rect.left-screen*stride();return {left,top:rect.top,right:left+width,bottom:rect.bottom,width,height:rect.height};}};
     tracker?.ready(chapter+1,geometry,viewport,scale());progress?.capture();
@@ -81,7 +81,7 @@ export function openEpub(container,item,onError,tracker,progress,downloaded,seri
     if(downloaded){const response=await fetch(downloaded.url(0),{cache:'no-store',signal:controller.signal});if(!response.ok)throw Error('暗号化したEPUBを開けません。オンラインで開き直してください。');data=await response.json();}
     else data=await api(`/items/${item.id}/epub`,{signal:controller.signal});
     if(disposed)return;book=validateEpubBundle(data);chrome.direction.value=book.direction;
-    await go(restartRequested?1:progress?.initial?.page??1,restartRequested?0:progress?.initial?.scrollX??0);stage.focus();
+    await go(restartRequested?1:progress?.initial?.page??1,restartRequested?0:progress?.initial?.scrollX??0,restartRequested?'':progress?.initial?.element??'',progress?.initial?.textOffset??0);stage.focus();
   }});void initialLoad.run();
   const cleanup=()=>{disposed=true;initialLoad.dispose();generation++;controller.abort();observer.disconnect();clearTimeout(resizeTimer);unsubscribeSeries?.();chrome.dispose();for(const url of urls.values())URL.revokeObjectURL(url);urls.clear();stage.replaceChildren();book=null;};
   cleanup.restart=()=>{restartRequested=true;completed=false;zoom.value='fit';safely(()=>go(1));};return cleanup;

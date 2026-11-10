@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -64,6 +65,21 @@ static void rule(int ruleset, const char *path, unsigned long long rights, int d
     if (close(fd)) fail("cannot close path descriptor");
 }
 
+static void optional_ai_gpu(int ruleset) {
+    const char *path = getenv("AI_VULKAN_RENDER_NODE");
+    if (!path || !path[0]) return;
+    const char *prefix = "/dev/dri/renderD";
+    if (strncmp(path, prefix, strlen(prefix))) fail("AI GPU must be a DRM render node");
+    char *end = NULL; long number = strtol(path + strlen(prefix), &end, 10);
+    char canonical[64]; snprintf(canonical, sizeof(canonical), "/dev/dri/renderD%ld", number);
+    struct stat info;
+    if (!end || *end || number < 128 || number > 255 || strcmp(path, canonical) ||
+        lstat(path, &info) || !S_ISCHR(info.st_mode) || info.st_uid != 0 ||
+        major(info.st_rdev) != 226 || minor(info.st_rdev) != (unsigned long)number)
+        fail("AI GPU requires the explicitly mounted DRM render device");
+    rule(ruleset, path, LANDLOCK_ACCESS_FS_WRITE_FILE, 0);
+}
+
 int main(int argc, char **argv) {
     if (argc < 2 || argv[1][0] != '/') fail("absolute executable required");
     identity();
@@ -96,6 +112,7 @@ int main(int argc, char **argv) {
     rule(fd, "/tmp", write_rights, 1);
     /* Node's ignored stdio opens /dev/null; no other device write is allowed. */
     rule(fd, "/dev/null", LANDLOCK_ACCESS_FS_WRITE_FILE, 0);
+    optional_ai_gpu(fd);
     rule(fd, "/usr", LANDLOCK_ACCESS_FS_EXECUTE, 1);
     rule(fd, "/app", LANDLOCK_ACCESS_FS_EXECUTE, 1);
     if (syscall(SYS_landlock_restrict_self, fd, 0)) fail("cannot enforce filesystem restrictions");

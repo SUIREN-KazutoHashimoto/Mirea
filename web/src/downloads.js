@@ -10,6 +10,7 @@ import {trackTransfer} from './transfer-manager.js';
 import {shelfUnlockValue} from './private-shelves.js';
 import {transferRetryDelay,abortableDelay} from './transfer-retry.js';
 import {offlineCatalog} from './offline-catalog.js';
+import {syncAiContent} from './ai-offline.js';
 import {commitDownload,createDownloadResetGuard,clearNativeTransfers} from './download-commit.js';
 
 let nativeImport;const downloadReset=createDownloadResetGuard(),removing=new Set();
@@ -42,7 +43,7 @@ export function syncNativeDownloads(){
         const vault=await offlineVault();await vault.saveLease(ctx.partition,grant,ctx.userId);grant.key='';
         if(grant.cover&&['image/jpeg','image/png','image/webp'].includes(grant.cover.mime)&&typeof grant.cover.bytes==='string'&&grant.cover.bytes.length<=2796204)await vault.seal(ctx.partition,'cover:'+manifest.assetId,grant.cover);
       },commit:()=>nativeReady?store.completeNative(key,manifest.id):store.complete(key,manifest.id),cleanup:ready=>cleanupReplacedDownload(ctx,existing,ready)});
-      if(current(ctx)){await NativeTransfer.remove({...args,id:manifest.id});if(!isOfflineSession())saveThumbnail(ctx,manifest.assetId);}
+      if(current(ctx)){await NativeTransfer.remove({...args,id:manifest.id});if(!isOfflineSession()){saveThumbnail(ctx,manifest.assetId);void syncAiContent({origin:ctx.endpoint,userId:ctx.userId,token:ctx.token},manifest.assetId,api,()=>current(ctx)).catch(()=>{});}}
     }
     if(current(ctx)&&(completed.manifests?.length??0)>0)window.dispatchEvent(new Event('mirea:downloads-imported'));
   })().finally(()=>{nativeImport=null;});return nativeImport;
@@ -225,6 +226,7 @@ async function performDownload(ctx,item,onProgress=()=>{},externalSignal,quality
       return lease;
     },commit:()=>nativeReady?store.completeNative(key,manifest.id):store.complete(key,manifest.id),cleanup:ready=>cleanupReplacedDownload(ctx,existing,ready)});
     await saveThumbnail(ctx,item.id);
+    if(current(ctx))void syncAiContent({origin:ctx.endpoint,userId:ctx.userId,token:ctx.token},item.id,api,()=>current(ctx)).catch(()=>{});
     try{const snapshot=await api(`/items/${item.id}/progress`);if(current(ctx))rememberDownloadProgress(item,snapshot);}catch{/* The exact cached baseline is kept until the next online sync. */}
     return complete;
   }finally{tasks.delete(controller);releaseUpdate();}
@@ -365,4 +367,21 @@ async function prepareNativeRecord(ctx,store,record,valid,onProgress,existingLea
   }
   if(!valid()||!current(ctx))throw new Error('再生準備を取り消しました。');
   await NativePlayer.cacheComplete({partition:prepared.partition,id:manifest.id});return manifest;
+}
+
+const aiSyncAt=new Map();let aiRefresh;
+export function refreshDownloadedAnalysis(catalog){
+  if(aiRefresh||isOfflineSession()||!getSession()?.token)return;
+  const ctx=context();if(!current(ctx))return;
+  const actor={origin:ctx.endpoint,userId:ctx.userId,token:ctx.token};
+  aiRefresh=(async()=>{
+    const rows=await(await openDownloadDb()).list(ctx.partition),items=new Map(catalog.items.map(item=>[item.id,item])),shelves=new Map(catalog.shelves.map(s=>[s.id,s]));
+    const candidates=rows.filter(row=>row.state==='ready'&&items.has(row.assetId)&&!shelves.get(items.get(row.assetId).shelfId)?.private).sort((a,b)=>(aiSyncAt.get(ctx.partition+'|'+a.assetId)??0)-(aiSyncAt.get(ctx.partition+'|'+b.assetId)??0)).slice(0,8);
+    for(const row of candidates){
+      if(!current(ctx)||isOfflineSession())return;const key=ctx.partition+'|'+row.assetId;if(Date.now()-(aiSyncAt.get(key)??0)<300000)continue;
+      try{await syncAiContent(actor,row.assetId,api,()=>current(ctx)&&!isOfflineSession());if(current(ctx))aiSyncAt.set(key,Date.now());}
+      catch{aiSyncAt.set(key,Date.now()-240000);}
+      while(aiSyncAt.size>10000)aiSyncAt.delete(aiSyncAt.keys().next().value);
+    }
+  })().catch(()=>{}).finally(()=>{aiRefresh=null;});
 }

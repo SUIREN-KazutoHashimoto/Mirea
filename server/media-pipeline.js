@@ -53,6 +53,7 @@ export async function createMediaPipeline(app,context){
   const release=maintenance.tryReserve();if(!release)return Promise.resolve();
   reaping=(async()=>{for(const row of db.prepare(`SELECT * FROM media_ingest m WHERE retain_original=0 AND canonical_ready=1 AND source_removed=0
    AND NOT EXISTS(SELECT 1 FROM media_tasks t WHERE t.asset_id=m.asset_id AND t.state!='complete')
+    AND NOT EXISTS(SELECT 1 FROM ai_jobs a WHERE a.asset_id=m.asset_id AND a.state IN ('queued','running','paused','resource-wait','dependency-wait'))
    AND NOT EXISTS(SELECT 1 FROM playback_tickets p JOIN playback_generations g ON g.token_hash=p.token_hash WHERE p.item_id=m.asset_id AND g.generation='source' AND p.expires_at>?)`).all(Date.now())){
    await unlink(join(originalDir,row.asset_id)).catch(error=>{if(error.code!=='ENOENT')throw error;});db.prepare('UPDATE media_ingest SET source_removed=1 WHERE asset_id=?').run(row.asset_id);
   }})().finally(()=>{reaping=null;release();});

@@ -56,6 +56,7 @@ jobs:
             .local/ui-checks
             .local/player-ui-checks
             .local/workspace-ui-checks
+            .local/ai-ui-checks
           retention-days: 7
   container:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
@@ -73,6 +74,10 @@ jobs:
         run: node scripts/check-container-sandbox.mjs
       - run: docker compose up -d --wait
       - run: curl --fail http://localhost:3000/
+      - name: Verify local inference code and outbound network denial without models
+        run: docker compose run --rm --no-deps -T mirea /usr/local/bin/node --input-type=module < scripts/check-ai-runtime.mjs
+      - name: Compare CPU music attention with an independent numerical reference
+        run: docker compose run --rm --no-deps -T mirea /app/ai/bin/mirea-ai-exec /app/ai/bin/music/venv/bin/python - < tests/ai-neighborhood.py
       - name: Verify video and audio conversion inside the read-only container
         run: docker compose run --rm --no-deps -T mirea /usr/local/bin/node --input-type=module < scripts/check-media-runtime.mjs
       - name: Verify a 106-page high-resolution image book with bounded temporary storage

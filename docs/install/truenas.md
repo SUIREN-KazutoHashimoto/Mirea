@@ -2,7 +2,7 @@
 
 TrueNASはMireaを動かすコンテナ基盤の一つです。この手順は汎用的な新規導入例で、特定の利用者の構成を表すものではありません。既存アプリの再作成・データ移行は[バックアップと復元](../operations/backup-restore.md)を先に確認します。
 
-対象: Mirea `1.0.0`。画面名はTrueNAS 25.04系のCustom Appを基準にします。配布イメージの例は固定タグ`1.0.0`です。GitHub Releasesで公開状態を確認してください。別のTrueNAS版では項目名と対応機能を公式資料で確認します。
+対象: Mirea `2.0.0beta`。画面名はTrueNAS 25.04系のCustom Appを基準にします。配布イメージの例は固定タグ`2.0.0beta`です。GitHub Releasesで公開状態を確認してください。別のTrueNAS版では項目名と対応機能を公式資料で確認します。
 
 ## 1. 始める前の準備
 
@@ -42,7 +42,7 @@ AppsのDiscover AppsからCustom Appのインストール画面を開きます�
 | --- | --- | --- |
 | アプリ | Application Name | `mirea` |
 | イメージ | Repository | `ghcr.io/suiren-kazutohashimoto/mirea` |
-| イメージ | Tag | 選んだ固定版。例 `1.0.0` |
+| イメージ | Tag | 選んだ固定版。例 `2.0.0beta` |
 | イメージ | Pull Policy | 固定版は未取得時取得。追従タグなら更新時に再取得する設定 |
 | コンテナ | Entrypoint / Command | 空欄。イメージ既定値を使う |
 | セキュリティ | Custom User | 有効。保存先に合わせたUID/GID |

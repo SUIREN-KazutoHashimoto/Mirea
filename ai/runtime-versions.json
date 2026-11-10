@@ -1,0 +1,12 @@
+{
+  "llama": {
+    "repo": "ggml-org/llama.cpp",
+    "tag": "b12211",
+    "commit": "7d7f0287530bc8981690f361d8c1627dbae1c99a"
+  },
+  "whisper": {
+    "repo": "ggml-org/whisper.cpp",
+    "tag": "b5454",
+    "commit": "d1be6fde11ac6e0407606b4e42fe72d34add8037"
+  }
+}

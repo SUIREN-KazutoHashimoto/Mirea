@@ -2,7 +2,7 @@
 
 Dockerを使わず、WindowsまたはLinuxでMireaサーバーを起動します。最初は同じPCのブラウザーだけから接続し、その後HTTPSを設定します。
 
-対象: Mirea `1.0.0`。配布済みの版を使う場合は、その版のファイルと手順を組み合わせます。
+対象: Mirea `2.0.0beta`。配布済みの版を使う場合は、その版のファイルと手順を組み合わせます。
 
 ## 1. ソフトウェアを用意する
 
@@ -51,20 +51,20 @@ Linuxの既定パスは `/usr/bin/ffmpeg` と `/usr/bin/ffprobe` です。別パ
 WindowsのPowerShellでは、ダウンロード先で次を実行します。
 
 ```powershell
-$archive = 'mirea-1.0.0-server.tar.gz'
+$archive = 'mirea-2.0.0beta-server.tar.gz'
 $expected = ((Get-Content "$archive.sha256" -Raw).Trim() -split '\s+')[0]
 $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
 if ($actual -ine $expected) { throw 'SHA-256が一致しません。展開せず、取得元とファイルを確認してください。' }
 tar -xf $archive
-cd mirea-1.0.0-server
+cd mirea-2.0.0beta-server
 ```
 
 Linuxでは同じダウンロード先で実行します。
 
 ```sh
-sha256sum -c mirea-1.0.0-server.tar.gz.sha256
-tar -xf mirea-1.0.0-server.tar.gz
-cd mirea-1.0.0-server
+sha256sum -c mirea-2.0.0beta-server.tar.gz.sha256
+tar -xf mirea-2.0.0beta-server.tar.gz
+cd mirea-2.0.0beta-server
 ```
 
 Linuxは最初の行が `OK` になったことを確認してから展開します。既存の設置先へ上書き展開せず、空の場所を使います。SHA-256は取得したファイルの一致確認です。配布元も公式Releaseであることを確認してください。
@@ -78,7 +78,7 @@ Linuxは最初の行が `OK` になったことを確認してから展開しま
 Gitを使う場合の、公開済み固定版の例です。
 
 ```sh
-git clone --branch v1.0.0 --depth 1 https://github.com/SUIREN-KazutoHashimoto/Mirea.git mirea-server
+git clone --branch v2.0.0beta --depth 1 https://github.com/SUIREN-KazutoHashimoto/Mirea.git mirea-server
 cd mirea-server
 ```
 
