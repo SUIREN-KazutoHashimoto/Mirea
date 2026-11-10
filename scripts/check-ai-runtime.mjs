@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import {createServer} from 'node:net';
 import {spawn} from 'node:child_process';
 import {join} from 'node:path';
-import {readdir} from 'node:fs/promises';
+import {readdir,readFile} from 'node:fs/promises';
 import {pathToFileURL} from 'node:url';
 const {AI_RUNTIME_ROOT,createAiRuntime,runAiProcess,aiProcessEnvironment}=await import(new URL('server/ai-runtime.js',pathToFileURL(process.cwd()+'/')));
 if(process.platform!=='linux')throw Error('Linux container verification required');
-async function inspectCode(path){for(const entry of await readdir(path,{withFileTypes:true})){const file=join(path,entry.name);if(entry.isSymbolicLink())continue;if(entry.isDirectory())await inspectCode(file);else assert(!/\.(?:gguf|safetensors|pth|pt|th|onnx|ckpt|tflite|weights)$/i.test(entry.name),'Model weights must not be bundled with inference code');}}
+async function inspectCode(path){for(const entry of await readdir(path,{withFileTypes:true})){const file=join(path,entry.name);if(entry.isSymbolicLink())continue;if(entry.isDirectory())await inspectCode(file);else if(/\.(?:gguf|safetensors|pth|pt|th|onnx|ckpt|tflite|weights)$/i.test(entry.name)){if(entry.name==='distutils-precedence.pth'&&path.endsWith('/site-packages')){const text=await readFile(file,'utf8');assert(text.length<2048&&/^import os; var = 'SETUPTOOLS_USE_DISTUTILS';/.test(text)&&!text.includes('\u0000'),'Unexpected Python path configuration');}else assert.fail('Model weights must not be bundled with inference code');}}}
 await inspectCode(AI_RUNTIME_ROOT);
 const runtime=createAiRuntime({settings:()=>({})});
 try{const supported=await runtime.supported();assert(supported.cpu&&supported.transcription&&supported.music,'Inference code must be installed without weights');
