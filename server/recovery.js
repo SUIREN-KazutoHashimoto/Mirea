@@ -85,16 +85,16 @@ export async function registerRecovery(app,{db,prepared,version,adminAccess:a,ma
  }
  const timer=setInterval(()=>tick().catch(()=>{}),Math.min(60000,options.recoveryTickMs??60000));timer.unref();
  app.addHook('onClose',async()=>{closing=true;clearInterval(timer);await active?.catch(()=>{});});
- const auth={onRequest:async req=>a.requireAdmin(req)};
+ const auth={onRequest:async req=>a.requireAdmin(req)},writeAuth={...auth,config:{rateLimit:options.rateLimit===false?false:{max:6,timeWindow:'1 minute'}}};
  const snapshots=async()=> (await store.list()).slice(0,100).map(s=>s.invalid?{id:s.id,invalid:true}:{id:s.id,createdAt:s.createdAt,scope:s.scope,reason:s.reason,version:s.version,previousVersion:s.previousVersion,files:s.fileCount,bytes:s.bytes,database:s.database});
  app.get('/api/v1/admin/recovery',auth,async()=>({...state,settings:settings.metadata,directory:store.directory,snapshots:await snapshots(),databaseOverdue:Date.now()-(state.lastDatabaseAt??0)>settings.value.intervalMinutes*3*60000,fullOverdue:Date.now()-(state.lastFullAt??0)>settings.value.fullIntervalHours*2*3600000,restoration:'offline-empty-destination',mediaBackupIsSeparate:true}));
- app.patch('/api/v1/admin/recovery/settings',{...auth,schema:{body:adminBody({values:{type:'object',additionalProperties:false,properties:Object.fromEntries(Object.entries(RECOVERY_LIMITS).map(([key,[minimum,maximum]])=>[key,{type:'integer',minimum,maximum}]))}})}},async req=>{await a.reauthenticate(req);const value=settings.update(req.body.values);a.audit(req,'recovery.settings');return value;});
- app.post('/api/v1/admin/recovery',{...auth,schema:{body:adminBody({scope:{enum:['database','full']},acknowledgePause:{type:'boolean'}})}},async(req,reply)=>{
+ app.patch('/api/v1/admin/recovery/settings',{...writeAuth,schema:{body:adminBody({values:{type:'object',additionalProperties:false,properties:Object.fromEntries(Object.entries(RECOVERY_LIMITS).map(([key,[minimum,maximum]])=>[key,{type:'integer',minimum,maximum}]))}})}},async req=>{await a.reauthenticate(req);const value=settings.update(req.body.values);a.audit(req,'recovery.settings');return value;});
+ app.post('/api/v1/admin/recovery',{...writeAuth,schema:{body:adminBody({scope:{enum:['database','full']},acknowledgePause:{type:'boolean'}})}},async(req,reply)=>{
   await a.reauthenticate(req);if(req.body.scope==='full'&&!req.body.acknowledgePause)throw httpError(400,'全体保全中は操作を一時制限することを確認してください。');
   if(active||closing)throw httpError(409,'別の保全処理を実行中です。');
   a.audit(req,'recovery.create',null,{scope:req.body.scope});execute({scope:req.body.scope,reason:'manual'}).catch(()=>{});return reply.code(202).send({started:true});
  });
- app.post('/api/v1/admin/recovery/:id/verify',{...auth,schema:{params:{type:'object',required:['id'],properties:{id:{type:'string',format:'uuid'}}},body:adminBody()}},async(req,reply)=>{
+ app.post('/api/v1/admin/recovery/:id/verify',{...writeAuth,schema:{params:{type:'object',required:['id'],properties:{id:{type:'string',format:'uuid'}}},body:adminBody()}},async(req,reply)=>{
   await a.reauthenticate(req);if(active||closing)throw httpError(409,'別の保全処理を実行中です。');await readManifest(store.directory,req.params.id);if(active||closing)throw httpError(409,'別の保全処理を実行中です。');a.audit(req,'recovery.verify',req.params.id);execute({verifyId:req.params.id,reason:'manual'}).catch(()=>{});return reply.code(202).send({started:true});
  });
  return {execute,tick,get state(){return state;}};
