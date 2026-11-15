@@ -14,6 +14,7 @@ import {createApp} from '../server/app.js';
 import Fastify from 'fastify';
 import {registerRecovery} from '../server/recovery.js';
 import {createMaintenanceGate} from '../server/maintenance-gate.js';
+import {execFileSync} from 'node:child_process';
 
 async function fixture(t,{separate=false}={}){
  const directory=await mkdtemp(join(tmpdir(),'mirea-recovery-test-'));const dataDir=join(directory,'data'),mediaDir=separate?join(directory,'media'):dataDir;
@@ -41,6 +42,11 @@ test('online database snapshot includes WAL commits and refuses full restoration
  const f=await fixture(t),snapshot=await f.store.capture({db:f.db,scope:'database',version:'2.1.0-beta',reserveMiB:0});
  const manifest=await f.store.verify(snapshot.id);assert.equal(manifest.database.users,1);assert(!manifest.files.some(file=>file.name.startsWith('data/uploads/')));
  await assert.rejects(restoreRecoveryPoint({directory:f.store.directory,id:snapshot.id,destination:join(f.directory,'restore')}),{code:'RECOVERY_MEDIA_NOT_INCLUDED'});
+});
+test('database verifier inherits safe Worker options and supports a module-stdin launcher',async t=>{
+ const f=await fixture(t),entry=new URL('../server/recovery-store.js',import.meta.url).href;
+ const source='import {checkDatabaseAsync} from '+JSON.stringify(entry)+'; console.log(JSON.stringify(await checkDatabaseAsync('+JSON.stringify(join(f.dataDir,'mirea.sqlite'))+',{full:true})));';
+ const output=execFileSync(process.execPath,['--input-type=module'],{input:source,encoding:'utf8',windowsHide:true,timeout:30000,stdio:['pipe','pipe','pipe']});assert.equal(JSON.parse(output).assets,1);
 });
 test('damaged backup is detected and live media and nonempty destinations are preserved',async t=>{
  const f=await fixture(t),snapshot=await f.store.capture({db:f.db,scope:'full',version:'2.1.0-beta',reserveMiB:0});

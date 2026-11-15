@@ -6,6 +6,7 @@ import {join,resolve,relative,sep,isAbsolute,dirname} from 'node:path';
 import {spawn} from 'node:child_process';
 import {pipeline} from 'node:stream/promises';
 import {tarBackupStream} from './backup-archive.js';
+import {Worker} from 'node:worker_threads';
 
 export const RECOVERY_FORMAT=1;
 const UUID=/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
@@ -23,6 +24,21 @@ export function checkDatabase(file,{full=false}={}){const db=new DatabaseSync(fi
  if(!schema)throw fail('RECOVERY_DATABASE_INVALID','Database schema is missing');
  return {schema:db.prepare('SELECT version FROM schema_version').get().version,users:db.prepare('SELECT count(*) n FROM users').get().n,assets:db.prepare('SELECT count(*) n FROM items').get().n};
  }finally{db.close();}}
+export function checkDatabaseAsync(file,{full=false}={}){
+ return new Promise((yes,no)=>{
+  // Let Node inherit its worker-compatible/security options itself. Repassing
+  // process.execArgv also passes process-only flags which Worker rejects. A
+  // fixed eval bootstrap supports --input-type stdin launchers without ever
+  // evaluating a caller-provided path or changing the permission model.
+  const entry=new URL('./recovery-verify-worker.js',import.meta.url).href;
+  const worker=new Worker('import('+JSON.stringify(entry)+')',{eval:true,workerData:{file,full},stdout:true,stderr:true});worker.stdout.resume();worker.stderr.resume();let completed=false,timedOut=false;
+  const timer=setTimeout(()=>{timedOut=true;void worker.terminate().then(()=>finish(fail('RECOVERY_DATABASE_TIMEOUT','Database verification timed out')),()=>finish(fail('RECOVERY_DATABASE_TIMEOUT','Database verification timed out')));},600000);timer.unref();
+  function finish(error,value){if(completed)return;completed=true;clearTimeout(timer);error?no(error):yes(value);}
+  worker.once('error',()=>finish(fail('RECOVERY_DATABASE_INVALID','Database verification failed')));
+  worker.once('message',result=>result?.ok===true?finish(null,result.value):finish(fail('RECOVERY_DATABASE_INVALID','Database verification failed')));
+  worker.once('exit',()=>{if(!completed)finish(fail(timedOut?'RECOVERY_DATABASE_TIMEOUT':'RECOVERY_DATABASE_INVALID','Database verifier exited without a result'));});
+ });
+}
 function safeName(name){return typeof name==='string'&&/^(data|media|configuration)\//.test(name)&&Buffer.byteLength(name)<=16384&&!/[\\:\0\r\n]/.test(name)&&name.split('/').every(p=>p&&p!=='.'&&p!=='..'&&!/[. ]$/.test(p)&&!/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)/i.test(p));}
 export function validateManifest(envelope){
  const {manifest,sha256}=envelope??{};
@@ -37,7 +53,7 @@ export async function verifyRecoveryPoint(directory,id,{database=true}={}){
  for(const target of [directory,join(directory,'snapshots'),join(directory,'objects')]){const info=await lstat(target);if(!info.isDirectory()||info.isSymbolicLink())throw fail('RECOVERY_PATH_INVALID','Recovery storage may not follow links');}
  const manifest=await readManifest(directory,id);
  for(const file of manifest.files){const location=join(directory,'objects',file.sha256),info=await lstat(location);if(!info.isFile()||info.isSymbolicLink()||info.size!==file.size||await fileHash(location)!==file.sha256)throw fail('RECOVERY_CHECKSUM_MISMATCH','Recovery content verification failed');}
- if(database)checkDatabase(join(directory,'objects',manifest.files.find(f=>f.name==='data/mirea.sqlite').sha256),{full:true});return manifest;
+ if(database)await checkDatabaseAsync(join(directory,'objects',manifest.files.find(f=>f.name==='data/mirea.sqlite').sha256),{full:true});return manifest;
 }
 
 export async function openRecoveryStore({dataDir,mediaDir=dataDir,directory,storageId}){
@@ -92,7 +108,7 @@ export async function openRecoveryStore({dataDir,mediaDir=dataDir,directory,stor
     verified.add(sha256);files.push({name,sha256,size:before.size,mtimeMs:before.mtimeMs,mtimeNs:precise.mtimeNs.toString()});bytes+=before.size;onProgress({files:files.length,bytes});
    }
    async function walk(source,name){const info=await lstat(source);if(info.isSymbolicLink())throw fail('RECOVERY_PATH_INVALID','Recovery may not follow links');if(info.isDirectory()){for(const child of (await readdir(source)).sort())await walk(join(source,child),name+'/'+child);}else await add(source,name);}
-   const snapshot=join(work,'mirea.sqlite');await backup(db,snapshot,{rate:128});const sealed=new DatabaseSync(snapshot);try{sealed.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;');}finally{sealed.close();}checkDatabase(snapshot,{full:true});await add(snapshot,'data/mirea.sqlite');
+   const snapshot=join(work,'mirea.sqlite');await backup(db,snapshot,{rate:128});const sealed=new DatabaseSync(snapshot);try{sealed.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;');}finally{sealed.close();}const database=await checkDatabaseAsync(snapshot,{full:true});await add(snapshot,'data/mirea.sqlite');
    if(scope==='full'){
     for(const name of (await readdir(dataDir)).sort()){
      const source=join(dataDir,name);if(['mirea.sqlite','mirea.sqlite-wal','mirea.sqlite-shm','mirea.sqlite-journal','recovery-transition.json'].includes(name)||within(directory,source)||within(source,directory))continue;
@@ -105,7 +121,7 @@ export async function openRecoveryStore({dataDir,mediaDir=dataDir,directory,stor
    for(const entry of configuration)if(entry.bytes!==undefined){const file=join(work,randomUUID());await writeFile(file,entry.bytes,{mode:0o600,flag:'wx'});await add(file,'configuration/'+entry.name);}else if(await exists(entry.path))await add(entry.path,'configuration/'+entry.name);
    // Metadata snapshots must not publish a key set that changed while SQLite was copied.
    for(const file of files.filter(f=>f.name.startsWith('data/keys/')))if(await fileHash(join(dataDir,...file.name.slice(5).split('/')))!==file.sha256)throw fail('RECOVERY_SOURCE_CHANGED','Backup key changed');
-   const manifest={format:1,id,createdAt:now,scope,reason,version,previousVersion,separate:mediaDir!==dataDir,storageId,database:checkDatabase(snapshot),files,bytes};
+   const manifest={format:1,id,createdAt:now,scope,reason,version,previousVersion,separate:mediaDir!==dataDir,storageId,database,files,bytes};
    const envelope={manifest,sha256:createHash('sha256').update(JSON.stringify(manifest)).digest('hex')};
    validateManifest(envelope);
    await durableJson(join(work,'manifest.json'),envelope);await syncDirectory(join(directory,'objects'));
@@ -152,5 +168,5 @@ export async function restoreRecoveryPoint({directory,id,destination,metadataOnl
  const completed=new Promise((yes,no)=>{child.once('error',no);child.once('exit',code=>code===0?yes():no(fail('RECOVERY_EXTRACT_FAILED','Recovery extraction failed')));});
  try{await Promise.all([pipeline(tarBackupStream(manifest.files.map(file=>({...file,path:join(directory,'objects',file.sha256),mtime:file.mtimeMs}))),child.stdin),completed]);}catch(error){child.kill();await completed.catch(()=>{});throw error;}
  for(const file of manifest.files){const target=join(destination,...file.name.split('/'));if(!within(destination,target))throw fail('RECOVERY_PATH_INVALID','Unsafe restore target');const info=await lstat(target);if(!info.isFile()||info.isSymbolicLink()||await fileHash(target)!==file.sha256)throw fail('RECOVERY_CHECKSUM_MISMATCH','Restored content verification failed');const handle=await open(target,'r+');try{await handle.sync();}finally{await handle.close();}}
- checkDatabase(join(destination,'data','mirea.sqlite'),{full:true});await unlink(incomplete);await syncDirectory(join(destination,'data'));await durableJson(join(destination,'restore-result.json'),{format:1,snapshot:id,scope:manifest.scope,previousVersion:manifest.previousVersion,createdBy:manifest.version,files:manifest.files.length,restoredAt:Date.now(),verified:true});return manifest;
+ await checkDatabaseAsync(join(destination,'data','mirea.sqlite'),{full:true});await unlink(incomplete);await syncDirectory(join(destination,'data'));await durableJson(join(destination,'restore-result.json'),{format:1,snapshot:id,scope:manifest.scope,previousVersion:manifest.previousVersion,createdBy:manifest.version,files:manifest.files.length,restoredAt:Date.now(),verified:true});return manifest;
 }
