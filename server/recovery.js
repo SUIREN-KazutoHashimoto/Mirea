@@ -14,10 +14,10 @@ function compareVersions(left,right){const tuple=value=>{const m=/^(\d+)\.(\d+)\
 async function containsFile(directory){try{for(const name of await readdir(directory)){const info=await lstat(join(directory,name));if(info.isFile()||info.isSymbolicLink()||info.isDirectory()&&await containsFile(join(directory,name)))return true;}return false;}catch(error){if(error.code==='ENOENT')return false;throw error;}}
 export async function prepareRecovery({storage,version,options={}}){
  const {dataDir,mediaDir}=storage,filename=join(dataDir,'mirea.sqlite'),runtimeFile=join(dataDir,'recovery-runtime.json'),transitionFile=join(dataDir,'recovery-transition.json');
- if(await optional(join(dataDir,'.mirea-restore-incomplete')))throw reject('RECOVERY_RESTORE_INCOMPLETE','Restore was not completed. Keep the original data and complete recovery into an empty directory.');
+ if(await optional(join(dataDir,'.mirea-restore-incomplete'))!==null)throw reject('RECOVERY_RESTORE_INCOMPLETE','Restore was not completed. Keep the original data and complete recovery into an empty directory.');
  const runtime=JSON.parse(await optional(runtimeFile)??'null');
  if(runtime&&compareVersions(version,runtime.version)<0)throw reject('RECOVERY_DOWNGRADE_BLOCKED','Older application code cannot open newer data. Restore a matching pre-upgrade recovery point into a separate directory.');
- if(await optional(transitionFile))throw reject('RECOVERY_STARTUP_INCOMPLETE','Previous upgrade did not finish. Preserve these data and restore the pre-upgrade recovery point before retrying.');
+ if(await optional(transitionFile)!==null)throw reject('RECOVERY_STARTUP_INCOMPLETE','Previous upgrade did not finish. Preserve these data and restore the pre-upgrade recovery point before retrying.');
  const identity=JSON.parse(await readFile(join(dataDir,'storage-layout.json'),'utf8'));
  const store=await openRecoveryStore({dataDir,mediaDir,directory:options.recoveryDirectory??process.env.RECOVERY_DIR,storageId:identity.id});
  const selectedEnvironment=['HOST','PORT','DATA_DIR','MEDIA_DIR','HTTPS_KEY_FILE','HTTPS_CERT_FILE','CORS_ORIGINS','SERVER_ADMIN_USER_IDS','ALLOW_REGISTRATION','ANALYTICS_ENABLED','MAX_UPLOAD_BYTES','UPLOAD_CHUNK_BYTES','APP_UPDATES_DIR','APP_UPDATES_SOURCE','WINDOWS_MAINTENANCE_DIR','RECOVERY_DIR','RECOVERY_INTERVAL_MINUTES','RECOVERY_FULL_INTERVAL_HOURS','RECOVERY_RETENTION_DAYS','RECOVERY_RESERVE_MIB'];

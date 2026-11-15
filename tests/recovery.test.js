@@ -75,6 +75,9 @@ test('missing or corrupt live database never becomes an empty collection',async 
  const {unlink}=await import('node:fs/promises');await unlink(join(f.dataDir,'mirea.sqlite'));
  await assert.rejects(prepareRecovery({storage:f.storage,version:'2.1.0-beta'}),{code:'RECOVERY_DATABASE_MISSING'});
 });
+test('even an empty interrupted-restore or upgrade guard blocks startup',async t=>{
+ const f=await fixture(t);for(const [name,code]of [['.mirea-restore-incomplete','RECOVERY_RESTORE_INCOMPLETE'],['recovery-transition.json','RECOVERY_STARTUP_INCOMPLETE']]){const file=join(f.dataDir,name);await writeFile(file,'');await assert.rejects(prepareRecovery({storage:f.storage,version:'2.1.0-beta'}),{code});const {unlink}=await import('node:fs/promises');await unlink(file);}
+});
 test('newer database schema is rejected before modifying its contents',async t=>{
  const f=await fixture(t);f.db.exec('UPDATE schema_version SET version=999');f.db.close();const file=join(f.dataDir,'mirea.sqlite'),before=await fileHash(file);assert.throws(()=>openDatabase(file),/Unsupported database schema/);assert.equal(await fileHash(file),before);
 });
