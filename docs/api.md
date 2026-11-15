@@ -219,6 +219,18 @@ GET/HEAD `/app-updates/android/manifest`は署名済み更新案内、`/apk/:cod
 
 ## 文書の更新
 
+## 自動保全・復旧
+
+`GET /admin/recovery` は管理者だけが、保全の最終成功・失敗・進捗・設定値と上書き値・最新100件の復旧点概要を取得できます。作品名や鍵は応答に含めません。
+
+`PATCH /admin/recovery/settings` はcurrentPasswordとvaluesを受け付け、次回の実行から反映します。キーと範囲は[設定一覧](reference/configuration.md#自動保全)を参照してください。
+
+`POST /admin/recovery` はcurrentPassword、scope（database/full）、acknowledgePauseを受け付け、202で背景処理を開始します。全体はacknowledgePause=trueが必要です。別の保全が実行中なら409です。全体の保守中もGETの状況確認は利用できます。
+
+`POST /admin/recovery/:id/verify` はcurrentPasswordで再認証し、202で検証を開始します。結果はGETのlastVerifiedまたはlastErrorで確認します。復元API、任意パスへの書き込みAPI、自動保全鍵を返すAPIはありません。復元は[停止中のツール](operations/recovery.md)で空の保存先に行います。
+
+## 文書生成
+
 ルート追加後は`node scripts/generate-api-inventory.mjs`で一覧を再生成し、認可・本文・応答・失敗の意味を追記します。`--check`で生成差分を確認できます。静的抽出の対象外へ登録方式を変えた場合は生成器も更新してください。
 
 ## ローカルAI

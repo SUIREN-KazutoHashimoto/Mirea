@@ -6,18 +6,19 @@ import {mountAdminReset} from './admin-reset-ui.js';
 import {mountAdminDiagnostics} from './admin-diagnostics.js';
 import {mountServerSettings} from './admin-server-settings.js';
 import {mountAiAdmin} from './ai-admin.js';
+import {mountRecovery} from './admin-recovery.js';
 
 const states={queued:'待機中',running:'実行中',processing:'処理中',uploading:'受信中',complete:'完了',failed:'失敗',cancelled:'取消',rolled_back:'旧版へ復旧'};
 export async function openAdmin({dialog,api,esc,bytes,onStatistics,onReset}){
   const actor=getSession(),actorRevision=sessionRevision();
   const sameActor=()=>sessionRevision()===actorRevision&&getSession()?.user.id===actor?.user.id&&getSession()?.token===actor?.token;
   const access=await api('/admin/access');if(!access.isServerAdmin||!sameActor())throw new Error('サーバー管理者のみ利用できます。');
-  const tabs=[['overview','概要'],['jobs','ジョブ管理'],['processing','処理の設定'],['ai','AI機能'],['server-settings','サーバーの設定'],['cleanup','ファイル整理'],['users','アカウント'],['shelves','本棚の権限'],['statistics','統計'],['backups','バックアップ'],['updates','サーバー更新'],['reports','エラー報告'],['audit','管理操作の記録'],['reset','データのリセット']];
-  const groups={overview:'運用',users:'アカウント・本棚',backups:'保守'};
+  const tabs=[['overview','概要'],['jobs','ジョブ管理'],['processing','処理の設定'],['ai','AI機能'],['server-settings','サーバーの設定'],['cleanup','ファイル整理'],['users','アカウント'],['shelves','本棚の権限'],['statistics','統計'],['recovery','自動保全・復旧'],['backups','バックアップ'],['updates','サーバー更新'],['reports','エラー報告'],['audit','管理操作の記録'],['reset','データのリセット']];
+  const groups={overview:'運用',users:'アカウント・本棚',recovery:'保守'};
   const node=dialog('サーバー管理',`<div class="admin-layout manager-layout"><nav class="admin-nav manager-nav" aria-label="サーバー管理">${tabs.map(([id,label])=>`${groups[id]?`<span class="manager-nav-group">${groups[id]}</span>`:''}<button type="button" data-admin-tab="${id}" aria-current="false">${label}</button>`).join('')}</nav><label class="manager-mobile-nav admin-mobile-nav">管理項目<select class="admin-section-select">${tabs.map(([id,label])=>`<option value="${id}">${label}</option>`).join('')}</select></label><section class="admin-panel manager-panel" aria-busy="false"></section></div>`,'admin-modal');
-  const panel=node.querySelector('.admin-panel');let active='',revision=0,disposed=false,poll,disposeAi;
+  const panel=node.querySelector('.admin-panel');let active='',revision=0,disposed=false,poll,disposeAi,disposeRecovery;
   const current=()=>!disposed&&sameActor();
-  node.addEventListener('close',()=>{disposed=true;revision++;clearInterval(poll);disposeAi?.();},{once:true});
+  node.addEventListener('close',()=>{disposed=true;revision++;clearInterval(poll);disposeAi?.();disposeRecovery?.();},{once:true});
   const status=error=>{if(current()){let box=panel.querySelector('.admin-status');if(!box){box=document.createElement('p');box.className='admin-status';box.setAttribute('role','status');panel.append(box);}box.textContent=error.message??error;}};
   function confirm(title,description,fields,submit,{password=true}={}){
     const modal=dialog(title,`<form class="modal-body admin-confirm"><p>${esc(description)}</p>${fields}${password?'<label>現在の管理者パスワード<input name="currentPassword" type="password" autocomplete="current-password" maxlength="128" required></label>':''}<label class="confirm-row"><input name="confirmed" type="checkbox" required>操作内容を確認しました</label><p class="form-error" role="alert" hidden></p><button class="button primary" type="submit">実行する</button></form>`);
@@ -28,7 +29,7 @@ export async function openAdmin({dialog,api,esc,bytes,onStatistics,onReset}){
   }
   const action=(button,work)=>{button.onclick=async()=>{button.disabled=true;try{await work();}catch(error){status(error);}finally{if(current())button.disabled=false;}};};
   async function select(tab){
-    if(!current()||!tabs.some(([id])=>id===tab))return;active=tab;const generation=++revision;clearInterval(poll);disposeAi?.();disposeAi=null;panel.innerHTML='<p class="admin-loading" role="status">読み込んでいます…</p>';panel.setAttribute('aria-busy','true');panel.scrollTop=0;node.querySelector('.admin-section-select').value=tab;
+    if(!current()||!tabs.some(([id])=>id===tab))return;active=tab;const generation=++revision;clearInterval(poll);disposeAi?.();disposeAi=null;disposeRecovery?.();disposeRecovery=null;panel.innerHTML='<p class="admin-loading" role="status">読み込んでいます…</p>';panel.setAttribute('aria-busy','true');panel.scrollTop=0;node.querySelector('.admin-section-select').value=tab;
     node.querySelectorAll('[data-admin-tab]').forEach(b=>b.setAttribute('aria-current',String(b.dataset.adminTab===tab)));
     const valid=()=>current()&&generation===revision;
     try{
@@ -74,6 +75,8 @@ export async function openAdmin({dialog,api,esc,bytes,onStatistics,onReset}){
       }else if(tab==='statistics'){
         panel.innerHTML='<h3>匿名の閲覧統計</h3><p>5人以上の閲覧がある集計だけを表示します。件数は5件単位、時間は10秒単位に丸め、当日（UTC）を除きます。個人の識別情報・詳細履歴は表示しません。</p><button class="button primary open-statistics">全体の匿名集計を開く</button>';
         panel.querySelector('button').onclick=onStatistics;
+      }else if(tab==='recovery'){
+        const dispose=await mountRecovery({panel,api,valid,esc,bytes,status,confirm});if(valid())disposeRecovery=dispose;else dispose?.();
       }else if(tab==='backups'){
         panel.innerHTML='<h3>暗号化バックアップ</h3><p class="admin-warning">アカウントのパスワードハッシュ・個人の詳細ログ・ダウンロード暗号鍵を含む機密データです。バックアップ専用パスワードを忘れると復号できません。作成中は整合性のためAPI操作を一時停止します。生成ファイルはサーバー上で24時間保持します。</p><p class="muted">対象はMireaの設定・DB・暗号鍵、および全体モードではメディアと派生ファイルです。OS・外部TLS/CA鍵・APK署名鍵・更新ヘルパー設定は含みません。復元は停止中に管理者が行います。</p><form class="backup-create"><label>範囲<select name="mode"><option value="metadata">設定・アカウント等のメタデータのみ</option><option value="full">メディア含むMireaデータ全体</option></select></label><label>バックアップ専用パスワード<input name="backupPassword" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></label><label>専用パスワード（確認）<input name="confirmation" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></label><label>現在の管理者パスワード<input name="currentPassword" type="password" maxlength="128" autocomplete="current-password" required></label><label class="confirm-row"><input name="acknowledgeSensitive" type="checkbox" required>機密データを含むことを理解し、専用パスワードを安全に保管します</label><button class="button primary">暗号化してバックアップを作成</button></form><p class="admin-status" role="status"></p><div class="backup-list"></div><p class="muted">PC版Chrome / Edgeではファイルへ直接保存します。その他の環境は8MiBずつ分割取得します。分割ファイルは同梱の復号ツールで結合・復号してください。</p>';
         const offsets=new Map(),saving=new Set();const load=async()=>{const data=await api('/admin/backups');if(!valid())return;const list=panel.querySelector('.backup-list');list.innerHTML=data.backups.map(row=>`<article class="admin-card"><strong>${row.mode==='full'?'全体':'メタデータ'} · ${esc(states[row.state])}</strong><small>${esc(row.id)} · ${bytes(row.size)}</small>${row.error?`<p>${esc(row.error)}</p>`:''}${row.state==='complete'?`<div class="admin-actions"><button class="button secondary" data-save-backup="${esc(row.id)}" ${saving.has(row.id)?'disabled':''}>${offsets.get(row.id)?'続きの分割ファイルを取得':'ダウンロード'}</button><button class="button danger" data-delete-backup="${esc(row.id)}">サーバーから削除</button></div>`:''}</article>`).join('');list.querySelectorAll('[data-save-backup]').forEach(b=>action(b,async()=>{const row=data.backups.find(r=>r.id===b.dataset.saveBackup);saving.add(row.id);let saved;try{saved=await saveBackup(row,(done,total)=>status(`${bytes(done)} / ${bytes(total)} を受信`),offsets.get(row.id)??0,valid);}finally{saving.delete(row.id);}offsets.set(row.id,saved.complete?0:saved.offset);status(saved.complete?'バックアップを取得しました。専用パスワードは別に保管してください。':'この分割ファイルを取得しました。続きも同じボタンから取得してください。');b.textContent=saved.complete?'もう一度ダウンロード':'続きの分割ファイルを取得';}));list.querySelectorAll('[data-delete-backup]').forEach(b=>b.onclick=()=>confirm('サーバー上のバックアップを削除','端末へ取得したファイルは残ります。','',values=>api('/admin/backups/'+b.dataset.deleteBackup,{method:'DELETE',body:{currentPassword:values.currentPassword}})));};

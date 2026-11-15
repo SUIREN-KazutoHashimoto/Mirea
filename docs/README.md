@@ -2,7 +2,7 @@
 
 最初から全部を読む必要はありません。サーバーを作る人は「導入」、作品を利用する人は「利用」、コードを改修する人は「開発と設計」から進んでください。
 
-この資料はMirea 1.0.0に対応します。[対象版と検証範囲](status.md)を確認してください。過去の版名が付いたページは変更記録または現行ガイドへの案内であり、その版の挙動を調べる場合は対応するGitタグの資料を使います。
+この資料の対象版は以下のリンクで確認してください。[対象版と検証範囲](status.md)を確認してください。過去の版名が付いたページは変更記録または現行ガイドへの案内であり、その版の挙動を調べる場合は対応するGitタグの資料を使います。
 
 ## 導入
 
@@ -30,6 +30,7 @@
 - [ローカルAIの準備](operations/ai.md) / [AIの実装設計](design/ai-implementation.md)
 - [管理画面の設定](operations/settings.md) / [設定値の一覧](reference/configuration.md)
 - [バックアップと復元](operations/backup-restore.md)
+- [自動保全・更新前の復旧点・障害復旧](operations/recovery.md)
 - [更新と切り戻し](operations/updates.md)
 - [サーバーの問題解決](operations/troubleshooting.md)
 - [保存先の分離](storage.md)

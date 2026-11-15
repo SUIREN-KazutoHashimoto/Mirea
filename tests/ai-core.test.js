@@ -14,7 +14,7 @@ function fixture(t){
 }
 test('AI schema preserves existing library and validates FTS and foreign keys',t=>{
   const {db}=fixture(t);
-  assert.equal(db.prepare('SELECT version FROM schema_version').get().version,26);
+  assert.equal(db.prepare('SELECT version FROM schema_version').get().version,27);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM items').get().n,1);
   assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
 });

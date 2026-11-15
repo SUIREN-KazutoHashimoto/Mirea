@@ -93,6 +93,20 @@ APP_UPDATES_DIR未指定でも、通常起動はサーバーと同じ版の公�
 
 healthcheckはコンテナ内の `127.0.0.1` へ接続し、TLSを使う場合も検証を省きません。設定を変えた後はhealthcheckと端末からのHTTPS接続の両方を確認します。
 
+## 自動保全
+
+サーバー管理の「自動保全・復旧」で保存間隔等を変更できます。変更は次の実行から適用し、環境変数がある項目は上書き値を表示します。完全な復旧手順は[自動保全と復旧](../operations/recovery.md)を参照してください。
+
+| 環境変数 | 画面/APIキー | 初期値・範囲 |
+| --- | --- | --- |
+| RECOVERY_DIR | 起動設定のみ | DATA_DIR/recovery。指定先は既存の読み書き可能なフォルダーが必要 |
+| RECOVERY_INTERVAL_MINUTES | intervalMinutes | 5分。1〜1440 |
+| RECOVERY_FULL_INTERVAL_HOURS | fullIntervalHours | 24時間。1〜720 |
+| RECOVERY_RETENTION_DAYS | retentionDays | 30日。7〜365 |
+| RECOVERY_RESERVE_MIB | reserveMiB | 512MiB。64〜1048576 |
+
+DBと全体の最終成功時刻は別です。通信・背景処理があると全体保全は延期します。保持期間は容量上限ではなく、手動・更新前の復旧点と最新2件は自動削除しません。自動保全は平文の機密データを含みます。
+
 ## 定義と検証
 
 正本は [runtime.js](../../server/runtime.js)、[operational-settings.js](../../server/operational-settings.js)、[processing-settings.js](../../server/processing-settings.js)、[admin-access.js](../../server/admin-access.js)、[healthcheck.mjs](../../server/healthcheck.mjs) です。[設定回帰テスト](../../tests/server-settings-0230.test.js)は保存値・環境変数・適用値の区別を検証します。

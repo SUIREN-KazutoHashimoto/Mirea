@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import {registerAi} from './ai.js';
 import {createErrorDiagnostic} from './error-diagnostics.js';
+import {prepareRecovery,registerRecovery} from './recovery.js';
 import {registerLibraryCatalog} from './library-catalog.js';
 import {registerPlaylists} from './playlists.js';
 import {registerCustomThumbnails} from './custom-thumbnails.js';
@@ -85,6 +86,7 @@ export async function createApp(options = {}) {
   const storage=storagePaths(dataDir,selectedMedia===undefined?undefined:resolve(PROJECT_ROOT,selectedMedia));
   await initializeStorage(storage);
   const {mediaDir,uploadDir,stagingDir,booksDir,thumbnailDir,videoDir,originalDir,previewDir}=storage;
+  const preparedRecovery=await prepareRecovery({storage,version:packageInfo.version,options});
   const db = openDatabase(join(dataDir, 'mirea.sqlite'));
   if(options.bootstrapAdmin)await initializeDefaultAdmin(db);
   const operationalSettings=createOperationalSettings(db);
@@ -298,6 +300,7 @@ export async function createApp(options = {}) {
   await registerAdminCleanup(app,{db,dataDir,mediaDir,adminAccess,maintenance,options});
   registerAdminReset(app,{db,storage,adminAccess,maintenance,reset,options});
   await registerAdminBackups(app,{db,dataDir,mediaDir,adminAccess,maintenance,options,operationalSettings});
+  await registerRecovery(app,{db,prepared:preparedRecovery,version:packageInfo.version,adminAccess,maintenance,options});
   await registerServerUpdates(app,{adminAccess,maintenance,options:{...options,storageSeparated:storage.separate}});
   // onClose runs in reverse order: stop encoders before waiting for either
   // upload or admin queues, so running jobs can persist a resumable state.
@@ -503,5 +506,6 @@ export async function createApp(options = {}) {
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
+  try{await preparedRecovery.commit();}catch(error){await app.close();throw error;}
   return app;
 }

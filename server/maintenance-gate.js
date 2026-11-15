@@ -22,7 +22,7 @@ export function createMaintenanceGate(app) {
   });
   // Recovery is password protected and must remain reachable if a committed
   // reset cannot finish removing a storage directory. It never starts a reset.
-  const excluded=req=>/^\/api\/v1\/admin\/backups(?:\/|$)/.test(req.url.split('?')[0]) || req.method==='POST'&&req.url.split('?')[0]==='/api/v1/admin/reset/recover' || req.method==='GET' && /^\/api\/v1\/(?:admin\/(?:access|reset|jobs|updates\/status)|auth\/me)$/.test(req.url.split('?')[0]);
+  const excluded=req=>/^\/api\/v1\/admin\/backups(?:\/|$)/.test(req.url.split('?')[0]) || req.method==='POST'&&req.url.split('?')[0]==='/api/v1/admin/reset/recover' || req.method==='GET' && /^\/api\/v1\/(?:admin\/(?:access|reset|jobs|recovery|updates\/status)|auth\/me)$/.test(req.url.split('?')[0]);
   app.addHook('onRequest',async(req,reply)=>{
     const path=req.url.split('?')[0];
     if(!path.startsWith('/api/') || path==='/api/health' || excluded(req))return;

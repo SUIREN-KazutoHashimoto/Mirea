@@ -2,7 +2,7 @@
 
 [設計書の入口](overview.md) · [データ設計](data-model.md)
 
-この参照表は server/database.js を空のインメモリDBへ適用して生成します。既存のデータ領域・利用者レコードは読みません。現在のスキーマ番号は **26**、アプリケーションテーブルは **63個**です。FTS仮想表を含み、FTSのshadow表、移行途中の置換表、SQLite内部表は含みません。
+この参照表は server/database.js を空のインメモリDBへ適用して生成します。既存のデータ領域・利用者レコードは読みません。現在のスキーマ番号は **27**、アプリケーションテーブルは **63個**です。FTS仮想表を含み、FTSのshadow表、移行途中の置換表、SQLite内部表は含みません。
 
 再生成: リポジトリ直下で node scripts/generate-schema-docs.mjs。差分確認のみ: node scripts/generate-schema-docs.mjs --check。この資料は作業ツリーの定義を示します。配布版を調べる場合は対応するGitタグの資料を参照してください。
 
