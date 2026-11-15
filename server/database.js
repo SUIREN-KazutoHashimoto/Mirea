@@ -1,13 +1,24 @@
 import { DatabaseSync } from 'node:sqlite';
 import {initializeAiSchema} from './ai-schema.js';
 import {orderSeriesItems} from './series-order.js';
+export const DATABASE_SCHEMA_VERSION=27;
 
 export function openDatabase(filename) {
   const db = new DatabaseSync(filename);
+  try {
+  // Refuse a newer schema before any DDL or journal changes can touch it.
+  let storedVersion;
+  if(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_version'").get()){
+    const existing=db.prepare('SELECT version FROM schema_version').all();
+    if(existing.length!==1||!Number.isInteger(existing[0].version)||existing[0].version<1||existing[0].version>27)throw new Error('Unsupported database schema; restore a matching recovery point before downgrading');
+    storedVersion=existing[0].version;
+  }
+  db.exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;');
+  if(storedVersion===27){if(db.prepare('PRAGMA foreign_key_check').all().length)throw new Error('Database foreign key validation failed');return db;}
+  // All schema steps commit as one unit. Savepoints below allow each historical
+  // migration to keep its own rollback boundary without exposing a partial schema.
+  db.exec('PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE;');
   db.exec(`
-    PRAGMA foreign_keys = ON;
-    PRAGMA journal_mode = WAL;
-    PRAGMA busy_timeout = 5000;
     CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
     INSERT INTO schema_version SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema_version);
     CREATE TABLE IF NOT EXISTS users (
@@ -483,19 +494,23 @@ export function openDatabase(filename) {
     queue_id TEXT NOT NULL UNIQUE REFERENCES upload_queue(id) ON DELETE CASCADE,
     requested_at INTEGER NOT NULL,expires_at INTEGER NOT NULL);
     UPDATE schema_version SET version=25;`);
-  transaction(db,()=>{ initializeAiSchema(db); db.exec('UPDATE schema_version SET version=26'); });
+  transaction(db,()=>{ initializeAiSchema(db); db.exec('UPDATE schema_version SET version=27'); });
   if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Database foreign key validation failed');
+  db.exec('COMMIT; PRAGMA foreign_keys=ON;');
   return db;
+  }catch(error){try{if(db.isTransaction)db.exec('ROLLBACK');}finally{db.close();}throw error;}
 }
 
+let savepointSequence=0;
 export function transaction(db, work) {
-  db.exec('BEGIN IMMEDIATE');
+  const nested=db.isTransaction,savepoint='mirea_'+(++savepointSequence);
+  db.exec(nested?'SAVEPOINT '+savepoint:'BEGIN IMMEDIATE');
   try {
     const value = work();
-    db.exec('COMMIT');
+    db.exec(nested?'RELEASE '+savepoint:'COMMIT');
     return value;
   } catch (error) {
-    db.exec('ROLLBACK');
+    if(nested)db.exec('ROLLBACK TO '+savepoint+'; RELEASE '+savepoint);else db.exec('ROLLBACK');
     throw error;
   }
 }

@@ -1,6 +1,6 @@
 # API登録一覧（自動生成）
 
-現行のサーバーソースから抽出した **198件のメソッド／パス** です。GETとHEADは別に数えます。
+現行のサーバーソースから抽出した **202件のメソッド／パス** です。GETとHEADは別に数えます。
 本文・応答・認可・競合処理は[APIガイド](../api.md)と各リンク先のschema／handlerを参照してください。
 これは完全なOpenAPI定義ではありません。静的な登録式を抽出するため、登録方法を変えた場合は生成器も更新してください。
 
@@ -9,7 +9,7 @@
 
 |メソッド|絶対パス|登録元（行番号は生成時点）|
 |---|---|---|
-|GET|`/api/health`|[app.js:189](../../server/app.js#L189)|
+|GET|`/api/health`|[app.js:191](../../server/app.js#L191)|
 |DELETE|`/api/v1/account`|[accounts.js:46](../../server/accounts.js#L46)|
 |GET|`/api/v1/account`|[accounts.js:26](../../server/accounts.js#L26)|
 |PATCH|`/api/v1/account`|[accounts.js:29](../../server/accounts.js#L29)|
@@ -46,6 +46,10 @@
 |GET|`/api/v1/admin/overview`|[admin.js:18](../../server/admin.js#L18)|
 |GET|`/api/v1/admin/processing-settings`|[processing-settings.js:4](../../server/processing-settings.js#L4)|
 |PATCH|`/api/v1/admin/processing-settings`|[processing-settings.js:7](../../server/processing-settings.js#L7)|
+|GET|`/api/v1/admin/recovery`|[recovery.js:90](../../server/recovery.js#L90)|
+|POST|`/api/v1/admin/recovery`|[recovery.js:92](../../server/recovery.js#L92)|
+|POST|`/api/v1/admin/recovery/:id/verify`|[recovery.js:97](../../server/recovery.js#L97)|
+|PATCH|`/api/v1/admin/recovery/settings`|[recovery.js:91](../../server/recovery.js#L91)|
 |GET|`/api/v1/admin/reset`|[admin-reset.js:95](../../server/admin-reset.js#L95)|
 |POST|`/api/v1/admin/reset/apply`|[admin-reset.js:108](../../server/admin-reset.js#L108)|
 |POST|`/api/v1/admin/reset/preview`|[admin-reset.js:96](../../server/admin-reset.js#L96)|
@@ -93,21 +97,21 @@
 |HEAD|`/api/v1/app-updates/android/latest.apk`|[app-updates.js:85](../../server/app-updates.js#L85)|
 |GET|`/api/v1/app-updates/android/manifest`|[app-updates.js:59](../../server/app-updates.js#L59)|
 |HEAD|`/api/v1/app-updates/android/manifest`|[app-updates.js:59](../../server/app-updates.js#L59)|
-|POST|`/api/v1/auth/login`|[app.js:210](../../server/app.js#L210)|
-|POST|`/api/v1/auth/logout`|[app.js:222](../../server/app.js#L222)|
-|GET|`/api/v1/auth/me`|[app.js:216](../../server/app.js#L216)|
-|POST|`/api/v1/auth/register`|[app.js:195](../../server/app.js#L195)|
+|POST|`/api/v1/auth/login`|[app.js:212](../../server/app.js#L212)|
+|POST|`/api/v1/auth/logout`|[app.js:224](../../server/app.js#L224)|
+|GET|`/api/v1/auth/me`|[app.js:218](../../server/app.js#L218)|
+|POST|`/api/v1/auth/register`|[app.js:197](../../server/app.js#L197)|
 |DELETE|`/api/v1/auth/remember`|[remember-session.js:28](../../server/remember-session.js#L28)|
 |GET|`/api/v1/auth/remember`|[remember-session.js:17](../../server/remember-session.js#L17)|
 |POST|`/api/v1/auth/remember`|[remember-session.js:25](../../server/remember-session.js#L25)|
-|GET|`/api/v1/config`|[app.js:193](../../server/app.js#L193)|
+|GET|`/api/v1/config`|[app.js:195](../../server/app.js#L195)|
 |POST|`/api/v1/diagnostics/batches`|[diagnostic-reports.js:4](../../server/diagnostic-reports.js#L4)|
 |GET|`/api/v1/downloads/:id/files/:file/parts/:part`|[downloads.js:115](../../server/downloads.js#L115)|
 |POST|`/api/v1/downloads/:id/open`|[downloads.js:106](../../server/downloads.js#L106)|
 |DELETE|`/api/v1/history`|[history.js:4](../../server/history.js#L4)|
-|GET|`/api/v1/history`|[app.js:217](../../server/app.js#L217)|
+|GET|`/api/v1/history`|[app.js:219](../../server/app.js#L219)|
 |DELETE|`/api/v1/history/:id`|[history.js:8](../../server/history.js#L8)|
-|DELETE|`/api/v1/items/:id`|[app.js:406](../../server/app.js#L406)|
+|DELETE|`/api/v1/items/:id`|[app.js:409](../../server/app.js#L409)|
 |PATCH|`/api/v1/items/:id`|[name-integrity.js:54](../../server/name-integrity.js#L54)|
 |GET|`/api/v1/items/:id/ai`|[ai.js:139](../../server/ai.js#L139)|
 |GET|`/api/v1/items/:id/ai/:feature`|[ai.js:140](../../server/ai.js#L140)|
@@ -121,23 +125,23 @@
 |GET|`/api/v1/items/:id/ai/related`|[ai.js:257](../../server/ai.js#L257)|
 |PUT|`/api/v1/items/:id/ai/tags`|[ai.js:143](../../server/ai.js#L143)|
 |GET|`/api/v1/items/:id/ai/timeline`|[ai.js:231](../../server/ai.js#L231)|
-|GET|`/api/v1/items/:id/content`|[app.js:469](../../server/app.js#L469)|
-|HEAD|`/api/v1/items/:id/content`|[app.js:469](../../server/app.js#L469)|
+|GET|`/api/v1/items/:id/content`|[app.js:472](../../server/app.js#L472)|
+|HEAD|`/api/v1/items/:id/content`|[app.js:472](../../server/app.js#L472)|
 |POST|`/api/v1/items/:id/download`|[downloads.js:105](../../server/downloads.js#L105)|
-|GET|`/api/v1/items/:id/epub`|[app.js:432](../../server/app.js#L432)|
-|HEAD|`/api/v1/items/:id/epub`|[app.js:432](../../server/app.js#L432)|
+|GET|`/api/v1/items/:id/epub`|[app.js:435](../../server/app.js#L435)|
+|HEAD|`/api/v1/items/:id/epub`|[app.js:435](../../server/app.js#L435)|
 |GET|`/api/v1/items/:id/hls/:file`|[video-stream.js:46](../../server/video-stream.js#L46)|
 |HEAD|`/api/v1/items/:id/hls/:file`|[video-stream.js:46](../../server/video-stream.js#L46)|
 |GET|`/api/v1/items/:id/navigation`|[video-navigation.js:70](../../server/video-navigation.js#L70)|
 |PUT|`/api/v1/items/:id/navigation`|[video-navigation.js:81](../../server/video-navigation.js#L81)|
 |POST|`/api/v1/items/:id/navigation/prepare`|[video-navigation.js:71](../../server/video-navigation.js#L71)|
 |GET|`/api/v1/items/:id/navigation/storyboard`|[video-navigation.js:80](../../server/video-navigation.js#L80)|
-|GET|`/api/v1/items/:id/pages`|[app.js:424](../../server/app.js#L424)|
-|GET|`/api/v1/items/:id/pages/:number/content`|[app.js:442](../../server/app.js#L442)|
-|HEAD|`/api/v1/items/:id/pages/:number/content`|[app.js:442](../../server/app.js#L442)|
+|GET|`/api/v1/items/:id/pages`|[app.js:427](../../server/app.js#L427)|
+|GET|`/api/v1/items/:id/pages/:number/content`|[app.js:445](../../server/app.js#L445)|
+|HEAD|`/api/v1/items/:id/pages/:number/content`|[app.js:445](../../server/app.js#L445)|
 |GET|`/api/v1/items/:id/pages/:number/display`|[page-display.js:19](../../server/page-display.js#L19)|
 |HEAD|`/api/v1/items/:id/pages/:number/display`|[page-display.js:19](../../server/page-display.js#L19)|
-|POST|`/api/v1/items/:id/playback-ticket`|[app.js:451](../../server/app.js#L451)|
+|POST|`/api/v1/items/:id/playback-ticket`|[app.js:454](../../server/app.js#L454)|
 |GET|`/api/v1/items/:id/preview`|[video-previews.js:73](../../server/video-previews.js#L73)|
 |POST|`/api/v1/items/:id/preview`|[video-previews.js:65](../../server/video-previews.js#L65)|
 |GET|`/api/v1/items/:id/preview/content`|[video-previews.js:79](../../server/video-previews.js#L79)|
@@ -148,8 +152,8 @@
 |HEAD|`/api/v1/items/:id/renditions/:quality/content`|[video-stream.js:35](../../server/video-stream.js#L35)|
 |GET|`/api/v1/items/:id/replay-heatmap`|[analytics.js:37](../../server/analytics.js#L37)|
 |GET|`/api/v1/items/:id/series`|[series.js:82](../../server/series.js#L82)|
-|GET|`/api/v1/items/:id/thumbnail`|[app.js:415](../../server/app.js#L415)|
-|HEAD|`/api/v1/items/:id/thumbnail`|[app.js:415](../../server/app.js#L415)|
+|GET|`/api/v1/items/:id/thumbnail`|[app.js:418](../../server/app.js#L418)|
+|HEAD|`/api/v1/items/:id/thumbnail`|[app.js:418](../../server/app.js#L418)|
 |GET|`/api/v1/items/:id/thumbnail-job`|[admin-jobs.js:172](../../server/admin-jobs.js#L172)|
 |POST|`/api/v1/items/:id/thumbnail-job`|[admin-jobs.js:177](../../server/admin-jobs.js#L177)|
 |GET|`/api/v1/items/:id/video`|[video-stream.js:28](../../server/video-stream.js#L28)|
@@ -166,8 +170,8 @@
 |GET|`/api/v1/series/:id/delete-preview`|[series-actions.js:26](../../server/series-actions.js#L26)|
 |POST|`/api/v1/series/bulk`|[series-actions.js:59](../../server/series-actions.js#L59)|
 |POST|`/api/v1/series/bulk/preview`|[series-actions.js:27](../../server/series-actions.js#L27)|
-|GET|`/api/v1/shelves`|[app.js:228](../../server/app.js#L228)|
-|POST|`/api/v1/shelves`|[app.js:233](../../server/app.js#L233)|
+|GET|`/api/v1/shelves`|[app.js:230](../../server/app.js#L230)|
+|POST|`/api/v1/shelves`|[app.js:235](../../server/app.js#L235)|
 |DELETE|`/api/v1/shelves/:id`|[shelf-management.js:12](../../server/shelf-management.js#L12)|
 |PATCH|`/api/v1/shelves/:id`|[shelf-management.js:6](../../server/shelf-management.js#L6)|
 |GET|`/api/v1/shelves/:id/ai`|[ai.js:117](../../server/ai.js#L117)|
@@ -177,12 +181,12 @@
 |POST|`/api/v1/shelves/:id/biometric/challenge`|[private-shelves.js:20](../../server/private-shelves.js#L20)|
 |POST|`/api/v1/shelves/:id/biometric/enroll`|[private-shelves.js:13](../../server/private-shelves.js#L13)|
 |POST|`/api/v1/shelves/:id/biometric/unlock`|[private-shelves.js:24](../../server/private-shelves.js#L24)|
-|GET|`/api/v1/shelves/:id/items`|[app.js:270](../../server/app.js#L270)|
-|POST|`/api/v1/shelves/:id/items`|[app.js:312](../../server/app.js#L312)|
-|GET|`/api/v1/shelves/:id/members`|[app.js:243](../../server/app.js#L243)|
-|POST|`/api/v1/shelves/:id/members`|[app.js:248](../../server/app.js#L248)|
-|DELETE|`/api/v1/shelves/:id/members/:userId`|[app.js:264](../../server/app.js#L264)|
-|PATCH|`/api/v1/shelves/:id/members/:userId`|[app.js:258](../../server/app.js#L258)|
+|GET|`/api/v1/shelves/:id/items`|[app.js:272](../../server/app.js#L272)|
+|POST|`/api/v1/shelves/:id/items`|[app.js:315](../../server/app.js#L315)|
+|GET|`/api/v1/shelves/:id/members`|[app.js:245](../../server/app.js#L245)|
+|POST|`/api/v1/shelves/:id/members`|[app.js:250](../../server/app.js#L250)|
+|DELETE|`/api/v1/shelves/:id/members/:userId`|[app.js:266](../../server/app.js#L266)|
+|PATCH|`/api/v1/shelves/:id/members/:userId`|[app.js:260](../../server/app.js#L260)|
 |PUT|`/api/v1/shelves/:id/owner`|[accounts.js:65](../../server/accounts.js#L65)|
 |GET|`/api/v1/shelves/:id/series`|[series.js:57](../../server/series.js#L57)|
 |POST|`/api/v1/shelves/:id/series`|[series.js:60](../../server/series.js#L60)|

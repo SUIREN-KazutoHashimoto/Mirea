@@ -26,23 +26,23 @@ function paxMtime(nanoseconds){
   while(length!==Buffer.byteLength(body)+String(length).length)length=Buffer.byteLength(body)+String(length).length;
   return Buffer.from(String(length)+body);
 }
-export async function encryptBackup({files,destination,password,authorize=()=>{},progress=()=>{}}){
-  const salt=randomBytes(16),iv=randomBytes(12),key=await derive(password,salt,32,parameters);
-  const metadata=Buffer.from(JSON.stringify({version:1,cipher:'aes-256-gcm',kdf:'scrypt',N:parameters.N,r:8,p:1,salt:salt.toString('base64'),iv:iv.toString('base64'),archive:'tar.gz'}));
-  const length=Buffer.alloc(4);length.writeUInt32BE(metadata.length);const prefix=Buffer.concat([MAGIC,length,metadata]);
-  const cipher=createCipheriv('aes-256-gcm',key,iv);cipher.setAAD(prefix);
+function paxPath(path){
+  if(!path||path.startsWith('/')||/[\\\0\r\n]/.test(path)||path.split('/').some(p=>p==='..'||p==='.')||Buffer.byteLength(path)>16384)throw new Error('Unsafe archive path');
+  const body=` path=${path}\n`;let length=Buffer.byteLength(body)+1;while(length!==Buffer.byteLength(body)+String(length).length)length=Buffer.byteLength(body)+String(length).length;return Buffer.from(String(length)+body);
+}
+export function tarBackupStream(files,{authorize=()=>{},progress=()=>{}}={}){
   let completed=0,total=files.reduce((n,f)=>n+f.size,0);
-  const source=Readable.from((async function*(){
+  return Readable.from((async function*(){
     for(const [index,file] of files.entries()){
       authorize();
       // USTAR only records whole seconds. Download registrations identify a
       // source by its exact filesystem mtime, so preserve nanoseconds in the
       // standard PAX record that applies to the following file header.
       const mtime=file.mtime??Date.now(),nanoseconds=file.mtimeNs!==undefined?BigInt(file.mtimeNs):file.path?(await stat(file.path,{bigint:true})).mtimeNs:BigInt(Math.trunc(mtime))*1000000n;
-      const extended=paxMtime(nanoseconds);
+      const extended=Buffer.concat([paxMtime(nanoseconds),paxPath(file.name)]);
       yield tarHeader('PaxHeaders/'+index,extended.length,mtime,120);yield extended;
       if(extended.length%512)yield Buffer.alloc(512-extended.length%512);
-      yield tarHeader(file.name,file.size,mtime);
+      let header;try{header=tarHeader(file.name,file.size,mtime);}catch(error){if(!['Unsafe archive path','Archive name exceeds ustar limits'].includes(error.message))throw error;header=tarHeader('ArchiveFiles/'+index,file.size,mtime);}yield header;
       let read=0;
       for await(const chunk of file.bytes?[file.bytes]:createReadStream(file.path,{highWaterMark:256*1024})){
         authorize();read+=chunk.length;completed+=chunk.length;if(read>file.size)throw new Error('Source changed during backup');yield chunk;progress({completed,total});
@@ -51,6 +51,13 @@ export async function encryptBackup({files,destination,password,authorize=()=>{}
       if(file.size%512)yield Buffer.alloc(512-file.size%512);
     }yield Buffer.alloc(1024);
   })());
+}
+export async function encryptBackup({files,destination,password,authorize=()=>{},progress=()=>{}}){
+  const salt=randomBytes(16),iv=randomBytes(12),key=await derive(password,salt,32,parameters);
+  const metadata=Buffer.from(JSON.stringify({version:1,cipher:'aes-256-gcm',kdf:'scrypt',N:parameters.N,r:8,p:1,salt:salt.toString('base64'),iv:iv.toString('base64'),archive:'tar.gz'}));
+  const length=Buffer.alloc(4);length.writeUInt32BE(metadata.length);const prefix=Buffer.concat([MAGIC,length,metadata]);
+  const cipher=createCipheriv('aes-256-gcm',key,iv);cipher.setAAD(prefix);
+  const source=tarBackupStream(files,{authorize,progress});
   let started=false;
   const envelope=new Transform({transform(chunk,_encoding,done){if(!started){this.push(prefix);started=true;}done(null,chunk);},flush(done){if(!started)this.push(prefix);this.push(cipher.getAuthTag());done();}});
   try{await pipeline(source,createGzip({level:1}),cipher,envelope,createWriteStream(destination,{flags:'wx',mode:0o600}));}
