@@ -76,6 +76,8 @@ jobs:
       - run: curl --fail http://localhost:3000/
       - name: Verify local inference code and outbound network denial without models
         run: docker compose run --rm --no-deps -T mirea /usr/local/bin/node --input-type=module < scripts/check-ai-runtime.mjs
+      - name: Verify recovery checksums and database workers inside the unprivileged sandbox
+        run: docker compose run --rm --no-deps -T mirea /usr/local/bin/node --input-type=module < scripts/check-recovery-runtime.mjs
       - name: Compare CPU music attention with an independent numerical reference
         run: docker compose run --rm --no-deps -T mirea /app/ai/bin/mirea-ai-exec /app/ai/bin/music/venv/bin/python - < tests/ai-neighborhood.py
       - name: Verify video and audio conversion inside the read-only container
