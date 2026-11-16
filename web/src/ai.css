@@ -82,3 +82,6 @@
 .owned-jobs-modal .admin-panel{min-width:0;padding:0}
 .owned-job-status:empty{display:none}
 .ai-job-summary{padding:14px;border:1px solid var(--border);border-radius:10px;line-height:1.8;font-weight:600}
+
+.admin-panel .job-summary{grid-template-columns:repeat(5,minmax(0,1fr))}
+@media(max-width:680px){.admin-panel .job-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.admin-panel .job-summary>div:first-child{grid-column:1/-1}.admin-panel .job-summary>div{min-width:0;border-bottom:1px solid var(--border)}}
