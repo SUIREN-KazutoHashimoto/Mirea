@@ -37,7 +37,7 @@ import { openProgress,bindVideoProgress,progressNativeState,flushProgress,clearA
 import { downloadToDevice,listDownloads,removeDownload,openDownloaded,closeDownloads,clearAccountDownloads,downloadsNativeState,syncDownloads,ensureDownloadWorker,downloadedThumbnail,syncNativeDownloads,refreshDownloadedAnalysis } from './downloads.js';
 import {openSeriesBulk} from './series-bulk.js';
 import { openSeriesManager,mountSeriesNavigation,seriesNativeState } from './series-ui.js';
-import {syncAppearance} from './native-appearance.js';
+import {syncAppearance,syncDrawerGesture} from './native-appearance.js';
 import { createTheme } from './theme.js';
 import { openSettings } from './settings.js';
 import { createViewerScreen } from './viewer-shell.js';
@@ -110,7 +110,7 @@ const finishAppLaunch=showAppLaunch({native});
 const pwa=createPwaInstall({native,ensureWorker:ensureDownloadWorker});
 if(!native&&!import.meta.env.DEV)void pwa.prepare();
 let disposeAuthPwa;
-const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v2.3.0beta/mirea-2.3.0beta-android.apk';
+const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v2.4.0beta/mirea-2.4.0beta-android.apk';
 const currentApkUrl=()=>config.androidApkUrl?.startsWith('/api/v1/app-updates/')?absoluteUrl(config.androidApkUrl):config.androidApkUrl||defaultApkUrl;
 
 const root = document.querySelector('#app');
@@ -188,8 +188,9 @@ if (native) {
   App.addListener('appStateChange', ({ isActive }) => {
     nativeStateRevision++;
     nativeAppActive = isActive;
+    if(!isActive)appDrawer?.cancelGesture();
     if(isActive)for(const viewer of document.querySelectorAll('.viewer-screen'))viewer.resumeReading?.();
-    if (isActive) {refreshNativeTransfers().catch(()=>{});syncNativeDownloads().then(()=>{if(offlineLibrary)renderOfflineLibrary();}).catch(()=>{});syncAppearance(document.documentElement.dataset.theme);refreshAppUpdates();refreshNativePlayback().catch(()=>{});synchronizeConnection();}
+    if (isActive) {appDrawer?.refreshGestures();refreshNativeTransfers().catch(()=>{});syncNativeDownloads().then(()=>{if(offlineLibrary)renderOfflineLibrary();}).catch(()=>{});syncAppearance(document.documentElement.dataset.theme);refreshAppUpdates();refreshNativePlayback().catch(()=>{});synchronizeConnection();}
     analyticsNativeState(isActive);
     progressNativeState(isActive);
     downloadsNativeState(isActive);
@@ -390,7 +391,7 @@ function renderShell() {
   document.querySelector('#sort').onchange = e => { sort = sortPreferences.save(e.target.value); renderItems(true); };
   document.querySelectorAll('[data-filter]').forEach(button => { button.onclick = () => { filter = button.dataset.filter; renderItems(true); }; });
   collectionView=mountCollectionView({container:root.querySelector('.collection-view-controls'),grid:root.querySelector('#items'),context:()=>`${getEndpoint()||location.origin}|${getSession()?.user.id}|${activeShelf??'all'}|${activeSeries||''}|${activePlaylist||''}`});
-  appDrawer=mountLibraryDrawer({layout:root.querySelector('.app-layout'),panel:root.querySelector('.sidebar'),main:root.querySelector('.main-content'),opener:root.querySelector('#open-drawer'),closer:root.querySelector('.drawer-close'),backdrop:root.querySelector('.drawer-backdrop'),actions:[root.querySelector('#open-upload'),root.querySelector('#add-series')],actionHome:root.querySelector('.topbar-actions'),native});
+  appDrawer=mountLibraryDrawer({layout:root.querySelector('.app-layout'),panel:root.querySelector('.sidebar'),main:root.querySelector('.main-content'),opener:root.querySelector('#open-drawer'),closer:root.querySelector('.drawer-close'),backdrop:root.querySelector('.drawer-backdrop'),actions:[root.querySelector('#open-upload'),root.querySelector('#add-series')],actionHome:root.querySelector('.topbar-actions'),native,onGestureAvailability:syncDrawerGesture});
   pullRefresh=mountLibraryRefresh({main:root.querySelector('.main-content'),button:root.querySelector('#refresh-library'),onRefresh:refreshManually,
     blocked:()=>refreshBusy||!getSession()||appDrawer?.isOpen()||Boolean(document.querySelector('dialog[open],.viewer-screen:not([style*="display: none"])'))});
   libraryPoll=pollLibrary(()=>refresh({background:true}),{allowed:()=>!document.hidden&&!refreshBusy&&!pullRefresh?.active&&Boolean(getSession())&&!isOfflineSession()});

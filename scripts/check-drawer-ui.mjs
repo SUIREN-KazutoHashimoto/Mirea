@@ -1,0 +1,49 @@
+// The real library UI with synthetic media. The fixture sets only the drawer's
+// native-mode flag; API/session handling stays web-based, without a device bridge.
+import assert from 'node:assert/strict';
+import {mkdtemp,mkdir,rm,writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join,resolve,sep} from 'node:path';
+import {randomUUID} from 'node:crypto';
+import {DatabaseSync} from 'node:sqlite';
+import {chromium} from 'playwright';
+import {createServer,mergeConfig} from 'vite';
+import sharp from 'sharp';
+import {createApp} from '../server/app.js';
+import {makePdf} from '../tests/fixtures.js';
+import baseConfig from '../vite.config.js';
+const folder=await mkdtemp(join(tmpdir(),'mirea-drawer-ui-')),output=resolve('.local/drawer-ui-checks');let app,vite,browser,page;const errors=[];
+try{
+ await mkdir(output,{recursive:true});app=await createApp({dataDir:folder,rateLimit:false});
+ const user=(await app.inject({method:'POST',url:'/api/v1/auth/register',payload:{name:'Drawer QA',email:'drawer@example.invalid',password:'synthetic-drawer-password'}})).json(),headers={authorization:'Bearer '+user.token};
+ const shelf=(await app.inject({method:'POST',url:'/api/v1/shelves',headers,payload:{name:'合成ライブラリ'}})).json().id;
+ const cover=await sharp({create:{width:200,height:300,channels:3,background:'#7774c6'}}).webp().toBuffer(),db=new DatabaseSync(join(folder,'mirea.sqlite'));
+ try{for(let n=0;n<30;n++){const id=randomUUID(),pdf=makePdf();await Promise.all([writeFile(join(folder,'uploads',id),pdf),writeFile(join(folder,'thumbnails',id+'.webp'),cover)]);db.prepare("INSERT INTO items(id,shelf_id,title,filename,mime_type,size,uploaded_by,created_at,page_count,thumbnail_ready) VALUES(?,?,?,'fixture.pdf','application/pdf',?,?,?,1,1)").run(id,shelf,'合成作品 '+(n+1),pdf.length,user.user.id,Date.now()-n);}}finally{db.close();}
+ await app.listen({host:'127.0.0.1',port:0});const apiOrigin='http://127.0.0.1:'+app.server.address().port;
+ const nativeFlag="(native||new URL(location.href).searchParams.has('qa-native-drawer'))";
+ vite=await createServer(mergeConfig(baseConfig,{configFile:false,server:{host:'127.0.0.1',port:0,watch:null,hmr:false,proxy:{'/api':apiOrigin}},plugins:[{name:'synthetic-native-drawer',enforce:'pre',transform(code,id){if(!id.replaceAll('\\','/').endsWith('/web/src/main.js'))return;const needle='native,onGestureAvailability:syncDrawerGesture';assert(code.includes(needle));return code.replace(needle,'native:'+nativeFlag+',onGestureAvailability:syncDrawerGesture').replace("classList.toggle('native-app',native)","classList.toggle('native-app',"+nativeFlag+")");}}]}));await vite.listen();const origin='http://127.0.0.1:'+vite.httpServer.address().port;
+ browser=await chromium.launch({headless:true,chromiumSandbox:true,...process.env.MIREA_UI_BROWSER?{executablePath:process.env.MIREA_UI_BROWSER}:{}});
+ const context=await browser.newContext({viewport:{width:390,height:844},deviceScaleFactor:2,isMobile:true,hasTouch:true,colorScheme:'dark',serviceWorkers:'block'});await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort('blockedbyclient'));await context.addInitScript(user=>sessionStorage.setItem('mirea.session:web',JSON.stringify({origin:'',remember:false,session:user})),user);
+ page=await context.newPage();page.setDefaultTimeout(15000);page.on('pageerror',e=>errors.push(e.message));await page.goto(origin+'/?qa-native-drawer=1',{waitUntil:'domcontentloaded'});await page.locator('.media-card').first().waitFor();await page.locator('.app-launch').waitFor({state:'detached'});
+ const cdp=await context.newCDPSession(page),send=(type,x=0,y=0)=>cdp.send('Input.dispatchTouchEvent',{type,touchPoints:type==='touchEnd'||type==='touchCancel'?[]:[{x,y,id:1}],modifiers:0});
+ const pause=ms=>new Promise(y=>setTimeout(y,ms));
+ const swipe=async(from,to,y=430,hold=180)=>{await send('touchStart',from,y);for(let n=1;n<=6;n++){await pause(20);await send('touchMove',from+(to-from)*n/6,y);}await pause(hold);await send('touchEnd');await pause(280);};
+ const closed=async()=>{await page.waitForFunction(()=>!document.querySelector('.app-layout').classList.contains('drawer-open')&&!document.querySelector('.app-layout').classList.contains('drawer-dragging'));assert.equal(await page.locator('.main-content').evaluate(n=>n.inert),false);assert.equal(await page.locator('.sidebar').evaluate(n=>n.inert),true);assert.equal(await page.locator('body').evaluate(n=>n.style.overflow),'');};
+ // A partial drag is visible before release and does not reflow the collection.
+ const before=await page.locator('#items').boundingBox();await send('touchStart',12,430);await pause(20);await send('touchMove',110,430);await pause(40);assert(await page.locator('.app-layout').evaluate(n=>n.classList.contains('drawer-dragging')));const partial=await page.locator('.sidebar').boundingBox();assert(partial.x<0&&partial.x+partial.width>60&&partial.x+partial.width<150);assert.equal(await page.locator('.main-content').evaluate(n=>n.inert),true);await page.screenshot({path:join(output,'native-drag-partial.png')});await pause(180);await send('touchEnd');await pause(280);await closed();assert.deepEqual(await page.locator('#items').boundingBox(),before);assert.equal(await page.locator('.viewer-screen,dialog[open]').count(),0);
+ await swipe(12,290);await page.waitForFunction(()=>document.querySelector('#open-drawer').getAttribute('aria-expanded')==='true');assert.equal(await page.locator('.sidebar').evaluate(n=>n.inert),false);await page.screenshot({path:join(output,'native-drawer-open.png')});
+ // Closing from a navigation button must not activate it when the finger lifts.
+ const nav=await page.locator('#recent-history').boundingBox();await swipe(nav.x+nav.width-25,nav.x+15,nav.y+nav.height/2);await closed();assert.equal(await page.locator('#recent-history').evaluate(n=>n.classList.contains('active')),false);assert.equal(await page.locator('.viewer-screen,dialog[open]').count(),0);
+ // A new intentional tap still works after a swipe.
+ await page.locator('#open-drawer').tap();await page.locator('.drawer-close').tap();await closed();
+ // Vertical scrolling near the left edge and the pull-to-refresh interaction stay available.
+ await page.evaluate(()=>window.scrollTo(0,400));await send('touchStart',12,650);await send('touchMove',14,500);await send('touchMove',15,340);await send('touchEnd');await pause(300);await closed();assert(await page.evaluate(()=>window.scrollY>400));await page.evaluate(()=>window.scrollTo(0,0));
+ // Cancellation and resize release scroll locks, styles and pending animation.
+ await send('touchStart',12,430);await send('touchMove',130,430);await send('touchCancel');await pause(260);await closed();assert.equal(await page.locator('.app-layout').evaluate(n=>n.style.getPropertyValue('--drawer-reveal')),'');
+ await send('touchStart',12,430);await send('touchMove',140,430);await page.setViewportSize({width:430,height:844});await send('touchCancel');await pause(260);await closed();await page.setViewportSize({width:390,height:844});
+ await page.locator('.library-display-toggle').tap();await swipe(12,290);assert.equal(await page.locator('.library-display-toggle').getAttribute('aria-expanded'),'false');assert.equal(await page.locator('.app-layout').evaluate(n=>n.classList.contains('drawer-open')),false);await page.keyboard.press('Escape');
+ await page.locator('#search').tap();await swipe(12,290);assert.equal(await page.locator('.app-layout').evaluate(n=>n.classList.contains('drawer-open')),false);await page.locator('#search').fill('');await page.locator('#search').evaluate(n=>n.blur());
+ await page.emulateMedia({reducedMotion:'reduce'});await swipe(12,290);assert.equal(await page.locator('#open-drawer').getAttribute('aria-expanded'),'true');await page.screenshot({path:join(output,'native-reduced-motion.png')});await page.keyboard.press('Escape');await closed();
+ // A fresh web/PWA page at the same width retains button-only navigation.
+ await page.goto(origin,{waitUntil:'domcontentloaded'});await page.locator('.media-card').first().waitFor();await page.locator('.app-launch').waitFor({state:'detached'});assert.equal(await page.locator('html').evaluate(n=>n.classList.contains('native-app')),false);const consumed=await page.evaluate(()=>{const target=document.querySelector('.main-content'),point=x=>new Touch({identifier:3,target,clientX:x,clientY:430});const start=new TouchEvent('touchstart',{bubbles:true,cancelable:true,touches:[point(12)],changedTouches:[point(12)]});target.dispatchEvent(start);const move=new TouchEvent('touchmove',{bubbles:true,cancelable:true,touches:[point(290)],changedTouches:[point(290)]});target.dispatchEvent(move);target.dispatchEvent(new TouchEvent('touchend',{bubbles:true,cancelable:true,touches:[],changedTouches:[point(290)]}));return move.defaultPrevented;});assert.equal(consumed,false,'Web/PWA keeps browser gesture behavior');await closed();await page.locator('#open-drawer').tap();assert.equal(await page.locator('#open-drawer').getAttribute('aria-expanded'),'true');await page.keyboard.press('Escape');await closed();assert.deepEqual(errors,[]);await context.close();console.log('Verified native-mode touch tracking, cancellation, scroll/form/popup protection, reduced motion and button-only Web/PWA. Android system gestures require device verification.');
+}catch(error){if(page)console.error('Synthetic drawer failure URL:',page.url(),await page.locator('body').innerText().catch(()=>''));if(page)await page.screenshot({path:join(output,'failure.png')}).catch(()=>{});throw error;}finally{await browser?.close();await vite?.close();await app?.close();assert(resolve(folder).startsWith(resolve(tmpdir())+sep+'mirea-drawer-ui-'));await rm(folder,{recursive:true,force:true});}
