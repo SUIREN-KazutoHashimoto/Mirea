@@ -18,7 +18,9 @@ export const AI_MODEL_CATALOG = [
     capabilities:['transcript'],license:'mit',files:['ggml-large-v3.bin']},
   {key:'speech-small',name:'Whisper small 省メモリー',repo:'ggerganov/whisper.cpp',engine:'whisper',
     capabilities:['transcript'],license:'mit',files:['ggml-small.bin']},
-  {key:'music-stems',name:'HTDemucs 音楽解析の前処理',repo:'facebookresearch/demucs',engine:'demucs',capabilities:[],license:'mit',revision:'8726e21a993978c7ba086d3872e7608d7d5bfca646',downloadBase:'https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/',files:['955717e8-8726e21a.th'],pinnedFiles:[{name:'955717e8-8726e21a.th',size:84141911,sha256:'8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4'}]},
+  // The pinned binary revision is the first 40 digits of its immutable weight hash.
+  // Downloads still verify all 64 digits of SHA-256; this is not a source Git ref.
+  {key:'music-stems',name:'HTDemucs 音楽解析の前処理',repo:'facebookresearch/demucs',engine:'demucs',capabilities:[],license:'mit',revision:'8726e21a993978c7ba086d3872e7608d7d5bfca6',downloadBase:'https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/',files:['955717e8-8726e21a.th'],pinnedFiles:[{name:'955717e8-8726e21a.th',size:84141911,sha256:'8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4'}]},
   {key:'music',name:'All-In-One harmonix ensemble',repo:'taejunkim/allinone',engine:'allinone',
     capabilities:['structure'],license:'mit',
     files:['harmonix-fold0-0vra4ys2.pth','harmonix-fold1-3ozjhtsj.pth','harmonix-fold2-gmgo0nsy.pth',

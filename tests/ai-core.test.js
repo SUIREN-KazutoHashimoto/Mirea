@@ -5,7 +5,7 @@ import {openDatabase} from '../server/database.js';
 import {createAiStore} from '../server/ai-store.js';
 import {validateAiResult,validateAiTags,applyAiEdits} from '../server/ai-validation.js';
 import {validateAiSettings,createAiSettings} from '../server/ai-settings.js';
-import {validateModelManifest,safeModelFetch} from '../server/ai-models.js';
+import {AI_MODEL_CATALOG,previewAiModel,validateModelManifest,safeModelFetch} from '../server/ai-models.js';
 
 function fixture(t){
   const db=openDatabase(':memory:');t.after(()=>db.close());
@@ -69,6 +69,19 @@ test('model manifests pin file names, revision and checksums; download redirects
   let calls=0;
   await assert.rejects(safeModelFetch('https://huggingface.co/example',{},async()=>{calls++;return new Response(null,{status:302,headers:{location:'http://localhost/private'}});}),{statusCode:422});
   assert.equal(calls,1);
+});
+
+test('bundled pinned-model catalog previews preserve full weight checksums without fetching metadata',async()=>{
+  for(const entry of AI_MODEL_CATALOG.filter(model=>model.pinnedFiles)){
+    const preview=await previewAiModel(entry.key,{fetcher:()=>{throw Error('Pinned metadata must not be fetched');}});
+    assert.match(preview.manifest.revision,/^[0-9a-f]{40}$/);
+    assert.equal(preview.manifest.revision,entry.pinnedFiles[0].sha256.slice(0,40));
+    assert.deepEqual(preview.manifest.files,entry.pinnedFiles);
+    assert.equal(preview.totalBytes,entry.pinnedFiles.reduce((bytes,file)=>bytes+file.size,0));
+    assert.match(preview.acceptanceHash,/^[0-9a-f]{64}$/);
+    assert.equal(validateModelManifest(preview.manifest).id,preview.manifest.id);
+    assert.throws(()=>validateModelManifest({...preview.manifest,files:preview.manifest.files.map(file=>({...file,sha256:'0'.repeat(64)}))}),{statusCode:422});
+  }
 });
 
 test('manual adoption survives regeneration and repeated document edits keep the FTS index consistent',t=>{
