@@ -6,10 +6,10 @@ import {httpError} from './security.js';
 const requestFor=(batch,id)=>{const h=aiHash({batch,id});return h.slice(0,8)+'-'+h.slice(8,12)+'-4'+h.slice(13,16)+'-a'+h.slice(17,20)+'-'+h.slice(20,32);};
 export function createAiBatches({db,enqueue,enabledUser,available=()=>true}){
   let closing=false,task;
-  const list=(user,shelfId)=>db.prepare(`SELECT b.id,b.state,b.created_at createdAt,COUNT(a.asset_id) total,
+  const list=(user,shelfId,unlocked=[])=>db.prepare(`SELECT b.id,b.state,b.created_at createdAt,b.user_id=? canControl,COUNT(a.asset_id) total,
     SUM(a.state='queued') waiting,SUM(a.state='failed') failed FROM ai_batches b JOIN ai_batch_assets a ON a.batch_id=b.id
-    JOIN items i ON i.id=a.asset_id JOIN shelves s ON s.id=i.shelf_id JOIN memberships m ON m.shelf_id=i.shelf_id AND m.user_id=b.user_id
-    WHERE b.user_id=? AND (? IS NULL AND s.private=0 OR i.shelf_id=?) GROUP BY b.id ORDER BY b.created_at DESC LIMIT 100`).all(user,shelfId??null,shelfId??null);
+    JOIN items i ON i.id=a.asset_id JOIN shelves s ON s.id=i.shelf_id JOIN memberships m ON m.shelf_id=i.shelf_id AND m.user_id=?
+    WHERE (b.user_id=? OR m.role='owner' OR i.uploaded_by=?) AND (s.private=0 OR s.id IN(SELECT value FROM json_each(?))) AND (? IS NULL OR i.shelf_id=?) GROUP BY b.id ORDER BY b.created_at DESC LIMIT 100`).all(user,user,user,user,JSON.stringify(unlocked),shelfId??null,shelfId??null);
   function create(userId,{requestId,features,regenerate=false,shelfId,seriesId,assetIds}){
     if(!/^[0-9a-f-]{36}$/i.test(requestId??'')||!Array.isArray(features)||!features.length||features.some(f=>!AI_FEATURES.includes(f)))throw httpError(422,'解析する内容と依頼番号を確認してください。');
     if(!shelfId&&(!Array.isArray(assetIds)||assetIds.length>1000||assetIds.some(id=>typeof id!=='string')))throw httpError(422,'選択した作品を確認してください。');

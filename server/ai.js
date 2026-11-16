@@ -14,6 +14,7 @@ import {registerAiTags} from './ai-tags.js';
 import {exportAi} from './ai-export.js';
 import {createAiSelfTest} from './ai-self-test.js';
 import {registerAiNotices} from './ai-notices.js';
+import {publicAiJob,jobAccessContext,redactJob} from './job-visibility.js';
 
 const DAY=86400000;
 export async function registerAi(app,context) {
@@ -36,12 +37,7 @@ export async function registerAi(app,context) {
   function canEdit(item,userId) {return ['owner','editor'].includes(membership(item.shelf_id,userId));}
   function canAnalyze(item,userId) {return canEdit(item,userId)||item.uploaded_by===userId;}
   function shelf(req,id,roles) {membership(id,req.user.id,roles);requireShelfUnlock(req,id);return db.prepare('SELECT * FROM shelves WHERE id=?').get(id);}
-  function publicJob(row) {
-    if(!row)return null;
-    return {id:row.id,assetId:row.asset_id,feature:row.feature,state:row.state,
-      checkpoint:row.checkpoint,totalUnits:row.total_units,errorCode:row.error_code,
-      createdAt:row.created_at,startedAt:row.started_at,updatedAt:row.updated_at,finishedAt:row.finished_at,elapsedMs:row.started_at?Math.max(0,(row.finished_at??Date.now())-row.started_at):0,estimatedAt:row.state==='running'&&row.checkpoint>0&&row.total_units>row.checkpoint?Date.now()+Math.max(0,row.updated_at-row.started_at)*(row.total_units-row.checkpoint)/row.checkpoint:null};
-  }
+  const publicJob=publicAiJob;
   function info(item,userId,readOptions={limit:1}) {
     const features={};
     for(const feature of readOptions.feature?[readOptions.feature]:AI_FEATURES) {
@@ -168,26 +164,28 @@ export async function registerAi(app,context) {
       {requestId:req.body?.requestId,regenerate:req.body?.regenerate===true});
     authenticate(req);asset(req);return reply.code(202).send(result);
   });
-  app.post('/api/v1/ai/analyze',auth,async(req,reply)=>{
+  app.post('/api/v1/ai/analyze',{...auth,bodyLimit:65536},async(req,reply)=>{
     ensureAvailable();const body=req.body??{};
     if(!settings.value.enabled)throw httpError(409,'管理者がAI機能を準備すると利用できます。');
     if(body.shelfId){shelf(req,body.shelfId,['owner']);if(body.seriesId&&!db.prepare('SELECT 1 FROM series WHERE id=? AND shelf_id=?').get(body.seriesId,body.shelfId))throw httpError(404,'シリーズが見つかりません。');return reply.code(202).send(batches.create(req.user.id,body));}
-    if(Array.isArray(body.assetIds)){for(const id of body.assetIds){const item=asset(req,id);if(!canAnalyze(item,req.user.id))throw httpError(403,'解析対象を確認してください。');}return reply.code(202).send(batches.create(req.user.id,body));}
+    if(Array.isArray(body.assetIds)){if(body.assetIds.length>1000||body.assetIds.some(id=>typeof id!=='string'||!/^[0-9a-f-]{36}$/i.test(id)))throw httpError(422,'一度に依頼できる作品は1000件までです。');for(const id of body.assetIds){const item=asset(req,id);if(!canAnalyze(item,req.user.id))throw httpError(403,'解析対象を確認してください。');}return reply.code(202).send(batches.create(req.user.id,body));}
     throw httpError(422,'解析する本棚・シリーズ・作品を選んでください。');
   });
 
   async function listJobs(req,adminView=false) {
-    const limit=Number(req.query?.limit??50),offset=Number(req.query?.offset??0);if(!Number.isSafeInteger(limit)||limit<1||limit>100||!Number.isSafeInteger(offset)||offset<0||offset>100000)throw httpError(422,'ジョブの取得位置を確認してください。');
-    const where=["m.user_id=?","s.private=0"],values=[req.user.id];
-    if(req.query?.shelfId){shelf(req,req.query.shelfId);where[1]='i.shelf_id=?';values.push(req.query.shelfId);}
-    if(!adminView){where.push('j.requester_id=?');values.push(req.user.id);}
+    const limit=Number(req.query?.limit??50),offset=Number(req.query?.offset??0);if(!Number.isSafeInteger(limit)||limit<1||limit>100||!Number.isSafeInteger(offset)||offset<0||offset>100000000)throw httpError(422,'ジョブの取得位置を確認してください。');
+    const access=jobAccessContext(db,req,requireShelfUnlock),where=[],values=[req.user.id];
+    if(req.query?.shelfId){shelf(req,req.query.shelfId);where.push('i.shelf_id=?');values.push(req.query.shelfId);}
+    if(!adminView){where.push("m.user_id IS NOT NULL AND (j.requester_id=? OR m.role='owner' OR i.uploaded_by=?) AND (s.private=0 OR s.id IN (SELECT value FROM json_each(?)))");values.push(req.user.id,req.user.id,JSON.stringify(access.unlockedShelfIds));}
+    const from=` FROM ai_jobs j JOIN items i ON i.id=j.asset_id JOIN shelves s ON s.id=i.shelf_id LEFT JOIN memberships m ON m.shelf_id=i.shelf_id AND m.user_id=?`;
+    const scope=where.length?where.join(' AND '):'1';
+    const summary=db.prepare('SELECT j.state,COUNT(*) count'+from+' WHERE '+scope+' GROUP BY j.state').all(...values);
     if(req.query?.state==='active')where.push("j.state IN ('queued','running','paused','resource-wait','dependency-wait')");else if(req.query?.state==='attention')where.push("j.state IN ('failed','partial')");else if(req.query?.state){if(!['complete','partial','failed','cancelled','queued','running','paused','resource-wait','dependency-wait'].includes(req.query.state))throw httpError(422,'ジョブの状態を選んでください。');where.push('j.state=?');values.push(req.query.state);}
-    const rows=db.prepare(`SELECT j.*,i.title,i.shelf_id FROM ai_jobs j JOIN items i ON i.id=j.asset_id
-      JOIN shelves s ON s.id=i.shelf_id JOIN memberships m ON m.shelf_id=i.shelf_id
-      WHERE ${where.join(' AND ')} ORDER BY j.created_at DESC LIMIT ? OFFSET ?`).all(...values,limit+1,offset);
-    return {jobs:rows.slice(0,limit).map(row=>({...publicJob(row),title:row.title,shelfId:row.shelf_id})),hasMore:rows.length>limit};
+    const filter=where.length?where.join(' AND '):'1',total=db.prepare('SELECT COUNT(*) n'+from+' WHERE '+filter).get(...values).n,start=total?Math.min(offset,Math.floor((total-1)/limit)*limit):0;
+    const rows=db.prepare('SELECT j.*,i.title,i.shelf_id,i.uploaded_by,s.name shelf,s.private,m.role'+from+' WHERE '+filter+' ORDER BY j.created_at DESC,j.id LIMIT ? OFFSET ?').all(...values,limit,start);
+    return {jobs:rows.map(row=>{const owned=Boolean(row.role&&(row.role==='owner'||row.uploaded_by===req.user.id)),unlocked=!row.private||access.unlockedShelfIds.includes(row.shelf_id);return {...redactJob({...publicJob(row),title:row.title,shelf:row.shelf},{owned,reveal:owned&&unlocked}),shelfId:owned&&unlocked?row.shelf_id:null,canControl:unlocked&&Boolean(row.role&&(row.requester_id===req.user.id||['owner','editor'].includes(row.role)))};}),summary:Object.fromEntries(summary.map(row=>[row.state,row.count])),total,offset:start,hasMore:start+limit<total};
   }
-  app.get('/api/v1/ai/batches',auth,async req=>{if(req.query.shelfId)shelf(req,req.query.shelfId);return {batches:batches.list(req.user.id,req.query.shelfId)};});
+  app.get('/api/v1/ai/batches',auth,async req=>{if(req.query.shelfId)shelf(req,req.query.shelfId);return {batches:batches.list(req.user.id,req.query.shelfId,jobAccessContext(db,req,requireShelfUnlock).unlockedShelfIds)};});
   app.post('/api/v1/ai/batches/:id/:action',auth,async req=>batches.control(req.user.id,req.params.id,req.params.action));
   app.get('/api/v1/ai/jobs',auth,req=>listJobs(req));
   app.get('/api/v1/admin/ai/jobs',admin,req=>listJobs(req,true));

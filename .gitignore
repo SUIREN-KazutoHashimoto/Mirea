@@ -15,3 +15,6 @@ test-results/
 .local/
 releases/
 .codex-remote-attachments/
+
+# Private chat attachments
+.codex-attachments/

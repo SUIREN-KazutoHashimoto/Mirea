@@ -294,7 +294,7 @@ export async function createApp(options = {}) {
     videoPreviews.remove(item.id),removeItemDirectory(videoDir,item.id),unlink(join(originalDir,item.id))
   ]);}
   registerShelfManagement(app,{db,authenticate,membership,maintenance,removeFiles:removeAssetFiles,cleanupUploads:uploads.cleanupUploads,adminAccess,rateLimit:options.rateLimit});
-  const adminJobs=await registerAdminJobs(app,{db,authenticate,findItem,adminAccess,media,videoTranscoder,uploadDir,booksDir,thumbnailDir,previewDir,videoDir,originalDir,dataDir,uploads,maintenance,videoPreviews,ensureThumbnail,jobPool,mediaPipeline,navigation,rateLimit:options.rateLimit});
+  const adminJobs=await registerAdminJobs(app,{db,authenticate,findItem,adminAccess,media,videoTranscoder,uploadDir,booksDir,thumbnailDir,previewDir,videoDir,originalDir,dataDir,uploads,maintenance,videoPreviews,ensureThumbnail,jobPool,mediaPipeline,navigation,requireShelfUnlock,rateLimit:options.rateLimit});
   registerAdmin(app,{db,adminAccess,uploads,rateLimit:options.rateLimit,dataDir,mediaDir});
   maintenance.setBusy(()=>uploads.busy||mediaPipeline.busy||adminJobs.busy||videoPreviews.busy||navigation.busy||media.busy||ai.busy);
   await registerAdminCleanup(app,{db,dataDir,mediaDir,adminAccess,maintenance,options});

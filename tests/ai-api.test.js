@@ -116,3 +116,39 @@ test('bulk tags, dictionary rename, full paginated export and saved search revis
  assert.equal((await c.request('GET','/ai/jobs?offset=0.5',c.owner)).statusCode,422);
  assert.equal((await c.request('PATCH','/items/'+first+'/ai/ocr',c.owner,{requestId:randomUUID(),revision:0,resultRevision:1,patch:{blocks:{b0:{hidden:true,text:{invalid:true}}}}})).statusCode,422);
 });
+
+const seedJob=(c,assetId,requesterId,state='paused')=>{const id=randomUUID();c.db.prepare("INSERT INTO ai_jobs(id,asset_id,requester_id,feature,model_id,input_stamp,profile_hash,state,created_at,updated_at) VALUES(?,?,?,'ocr','fixture',?,? ,?,1,1)").run(id,assetId,requesterId,id,id,state);return id;};
+test('owners see automatic and other-requester jobs; administrators see every queue with names and search redacted',async t=>{
+ const c=await fixture(t),id=c.asset('Owner secret title'),job=seedJob(c,id,c.other.user.id);// synthetic persistent work only
+ c.db.prepare("INSERT INTO user_access VALUES(?,'admin',0) ON CONFLICT(user_id) DO UPDATE SET server_role='admin'").run(c.other.user.id);
+ let r=await c.request('GET','/ai/jobs',c.owner);assert.equal(r.statusCode,200,r.body);assert.equal(r.json().jobs[0].id,job);assert.equal(r.json().jobs[0].title,'Owner secret title');assert.equal(r.json().summary.paused,1);
+ r=await c.request('GET','/jobs/list',c.owner);assert.equal(r.statusCode,200,r.body);assert.equal(r.json().rows[0].source,'ai');assert.equal(r.json().summary.paused,1);assert.equal(r.json().rows[0].title,'Owner secret title');
+ assert.equal((await c.request('GET','/jobs/list',c.other)).json().total,0);
+ r=await c.request('GET','/admin/jobs/list',c.other);assert.equal(r.statusCode,200,r.body);assert.equal(r.json().total,1);assert.equal(r.json().rows[0].title,'他の利用者のアセット');assert.equal(r.json().rows[0].canControl,false);assert(!r.body.includes('Owner secret title'));assert(!r.body.includes('Synthetic collection'));
+ r=await c.request('GET','/admin/jobs/list?q=Owner%20secret%20title',c.other);assert.equal(r.json().total,0);
+ r=await c.request('GET','/admin/ai/jobs',c.other);assert.equal(r.json().jobs.length,1);assert.equal(r.json().jobs[0].redacted,true);assert(!r.body.includes('Owner secret title'));
+ assert.equal((await c.request('GET','/admin/assets?q=Owner%20secret%20title',c.other)).json().assets.length,0);
+ r=await c.request('GET','/admin/assets',c.other);assert(!r.body.includes('Owner secret title'));assert.equal(r.json().assets[0].redacted,true);
+ const mediaId=randomUUID();c.db.prepare("INSERT INTO media_tasks(id,asset_id,kind,state,progress_json,error,created_at,updated_at) VALUES(?,?,'transcode','failed',?,?,1,1)").run(mediaId,id,JSON.stringify({percent:20,stage:'Owner secret title'}),'Owner secret title /private/source');
+ for(const path of ['/admin/jobs/list?view=history','/admin/jobs']){r=await c.request('GET',path,c.other);assert.equal(r.statusCode,200,r.body);assert(!r.body.includes('Owner secret title'),path+' leaked a hidden filename');assert(!r.body.includes('/private/source'));}
+ assert.equal((await c.request('GET','/jobs/list?userId='+c.owner.user.id,c.other)).json().total,0,'query cannot override the authenticated owner');
+});
+test('private owner job names require the existing shelf unlock, and revocation removes owner visibility',async t=>{
+ const c=await fixture(t),id=c.asset('Private title');seedJob(c,id,c.owner.user.id);c.db.prepare('UPDATE shelves SET private=1 WHERE id=?').run(c.shelf);
+ assert.equal((await c.request('GET','/jobs/list',c.owner)).json().total,0);
+ const hidden=await c.request('GET','/admin/jobs/list',c.owner);assert.equal(hidden.json().rows[0].title,'プライベート本棚のアセット');assert(!hidden.body.includes('Private title'));
+ const unlock=(await c.request('POST','/shelves/'+c.shelf+'/unlock',c.owner,{password:'synthetic-passphrase'})).json(),headers={'X-Mirea-Shelf-Unlock':unlock.token};
+ assert.equal((await c.request('GET','/jobs/list',c.owner,null,headers)).json().rows[0].title,'Private title');
+ assert.equal((await c.request('GET','/admin/ai/jobs',c.owner,null,headers)).json().jobs[0].title,'Private title');
+ c.db.prepare('DELETE FROM memberships WHERE shelf_id=? AND user_id=?').run(c.shelf,c.owner.user.id);
+ assert.equal((await c.request('GET','/jobs/list',c.owner)).json().total,0);
+});
+test('one thousand UUID bulk targets fit the route body budget and idempotent retries; larger counts remain bounded',async t=>{
+ const c=await fixture(t);c.db.exec('BEGIN');const ids=Array.from({length:1000},(_,n)=>c.asset('Synthetic '+n));c.db.exec('COMMIT');
+ const config=await c.request('PATCH','/admin/ai/settings',c.owner,{currentPassword:'synthetic-passphrase',enabled:true});assert.equal(config.statusCode,200,config.body);
+ const body={assetIds:ids,features:['ocr'],requestId:randomUUID()};assert(Buffer.byteLength(JSON.stringify(body))>16384);
+ const first=await c.request('POST','/ai/analyze',c.owner,body);assert.equal(first.statusCode,202,first.body);assert.equal(first.json().total,1000);
+ const again=await c.request('POST','/ai/analyze',c.owner,body);assert.equal(again.statusCode,202,again.body);assert.equal(again.json().batchId,first.json().batchId);assert.equal(c.db.prepare('SELECT COUNT(*) n FROM ai_batch_assets').get().n,1000);
+ const large=await c.request('POST','/ai/analyze',c.owner,{...body,assetIds:[...ids,randomUUID()],requestId:randomUUID()});assert.equal(large.statusCode,422,large.body);
+ const oversized=await c.request('POST','/ai/analyze',c.owner,{...body,padding:'x'.repeat(65536)});assert.equal(oversized.statusCode,413);
+});
