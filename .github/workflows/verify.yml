@@ -58,6 +58,7 @@ jobs:
             .local/workspace-ui-checks
             .local/ai-ui-checks
             .local/library-ui-checks
+            .local/drawer-ui-checks
           retention-days: 7
   container:
     if: github.event_name == 'push' || github.event_name == 'pull_request'

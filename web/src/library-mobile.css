@@ -12,3 +12,10 @@
 
 .compact-library{overflow-x:clip}
 @media(prefers-reduced-motion:no-preference){.compact-library .sidebar{transition:transform .2s ease,visibility .2s}}
+
+/* Only the Android library mounts the swipe controller. No gesture surface
+   is added over the collection: vertical and nested scrolling remain native. */
+.compact-library.drawer-dragging .sidebar{visibility:visible;transform:translateX(calc(-100% + var(--drawer-reveal,0px)));transition:none!important;will-change:transform}
+.compact-library.drawer-dragging .drawer-backdrop:not([hidden]){opacity:var(--drawer-opacity,0);transition:none!important}
+
+html.native-app,.native-app body{overscroll-behavior-x:none}

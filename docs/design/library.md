@@ -8,6 +8,14 @@ Web・PWA・Android内のライブラリは同じ `web/src/main.js` を使いま
 
 表示パネル内のselectは既存の `collection-view.js` を使い、一覧の再取得を必要としません。自動更新で内容が同じ場合のDOM維持は既存のカタログ処理を継続します。
 
+## Androidのメニュースワイプ
+
+`drawer-swipe.js` がタッチの意図判定と移動量を担当し、`mountLibraryDrawer` が開閉・フォーカス・スクロールロックを管理します。Web/PWAにはスワイプリスナーを登録しません。閉じた状態では左端から72 CSS px以内を起点にし、10px以上かつ縦移動の1.3倍以上の横移動で開始します。縦スクロール、入力欄、スライダー、横スクロール領域、選択中の文字、操作パネル、プレイヤーは取得しません。外側タップで別パネルを閉じた同じ接触も起点にしません。
+
+移動量をメニュー幅で制限し、requestAnimationFrameでtransformと背景の濃さに反映します。解放時は半分の位置、または直近100msの速度と24px以上の移動で開閉を確定します。取得後のクリックと長押しを抑止し、作品やメニュー項目の誤選択を防ぎます。タッチ中断・複数指・非表示・フォーカス喪失・画面サイズ変更・起点DOMの削除は開始前の状態へ戻します。Androidの戻る操作は移動途中もメニューを閉じます。
+
+`MireaAppearance.setLibraryDrawerGesture` はbooleanだけを受け取り、ネイティブの `LibraryDrawerGesture` へ利用可能状態を渡します。Android API29以降のシステムジェスチャー除外領域はWebView左端24dp・中央最大200dpに限定し、入力中・他画面・バックグラウンド・破棄時は解除します。右端と残る左端のシステム操作を保持します。[Android公式のジェスチャーナビゲーション指針](https://developer.android.com/develop/ui/views/touch-and-input/gestures/gesturenav)に従い、画面全体を除外しません。追加権限は不要です。動きを減らす設定では自動遷移のアニメーションを抑えます。
+
 ## 並び順の保存
 
 `collection-sort.js` が許可した値だけを保存します。保存先はブラウザープロフィール／アプリ導入先のlocalStorageで、サーバー同期はありません。キーは `mirea.library-sort.v2|` に、接続先・ユーザーID・一覧の種類とIDのJSON配列を続けます。単純な区切り文字の連結は使いません。
@@ -24,3 +32,5 @@ Web・PWA・Android内のライブラリは同じ `web/src/main.js` を使いま
 ## 検証
 
 `tests/collection-sort-context.test.js` でアカウント・接続先・端末・親子・本棚・プレイリストの分離と保存失敗を検査します。`scripts/check-library-controls-ui.mjs` は合成アカウントと一時サービスで、再読み込み、実際のアカウント切替、別ブラウザーコンテキスト、320/390px、パネルの重なりと位置、キーボード操作を確認します。これはAndroid実端末の成功を意味しません。
+
+`tests/drawer-swipe.test.js` は距離・速度・逆方向・中断・誤タップ抑止を検査します。`scripts/check-drawer-ui.mjs` は一時サービスと合成作品を使い、実ブラウザーのタッチ操作で途中表示、開閉、縦スクロール、入力・別パネル、画面幅変更、動きを減らす設定、Web/PWAのボタン限定を確認します。ネイティブ判定の差し替えは試験用Vite変換だけにあり、配布コードへ試験スイッチを含めません。`LibraryDrawerGestureTest` は対応最小API29とAPI35のViewで範囲・ライフサイクル・キーボード表示を検査します。OSが端からの操作を実際に配送する挙動は実端末の確認が別途必要です。
