@@ -1,6 +1,6 @@
 {
   "name": "mirea",
-  "version": "2.1.2-beta",
+  "version": "2.2.0-beta",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.25.0",
@@ -22,7 +22,7 @@
     "test:package": "node --test tests/package.test.js",
     "android:sync": "vite build && cap sync android",
     "android:open": "cap open android",
-    "test:ui": "node scripts/check-management-ui.mjs && node scripts/check-player-ui.mjs && node scripts/check-workspace-ui.mjs && node scripts/check-manual-transfer-ui.mjs && node scripts/check-ai-ui.mjs",
+    "test:ui": "node scripts/check-management-ui.mjs && node scripts/check-player-ui.mjs && node scripts/check-workspace-ui.mjs && node scripts/check-manual-transfer-ui.mjs && node scripts/check-ai-ui.mjs && node scripts/check-job-visibility-ui.mjs",
     "test:docs": "node scripts/check-docs.mjs && node scripts/generate-schema-docs.mjs --check && node scripts/generate-api-inventory.mjs --check",
     "test:recovery": "node --test --test-concurrency=1 tests/recovery.test.js"
   },

@@ -1,8 +1,8 @@
-const active=new Set(['queued','running','processing','uploading']);
+const active=new Set(['queued','running','processing','uploading','paused','resource-wait','dependency-wait']);
 export function partitionJobs(rows){return {current:rows.filter(row=>!row.state||active.has(row.state)),history:rows.filter(row=>row.state&&!active.has(row.state))};}
 export function jobStateClass(state){return state==='complete'?'job-complete':state==='failed'?'job-failed':state==='cancelled'?'job-cancelled':'job-active';}
-export const JOB_STATES={queued:'待機中',running:'実行中',processing:'処理中',uploading:'受信中',complete:'完了',failed:'失敗',cancelled:'中止'};
-export const JOB_KINDS={repair:'未完了の修復',thumbnail:'表紙',owner_thumbnail:'表紙（所有者）',preview:'動画プレビュー',transcode:'トランスコード',navigation:'チャプター・字幕',upload:'アップロード',processor:'メディア処理','validate-image':'画像検証',backup_metadata:'メタデータバックアップ',backup_full:'全体バックアップ'};
+export const JOB_STATES={queued:'待機中',running:'実行中',processing:'処理中',uploading:'受信中',complete:'完了',failed:'失敗',cancelled:'中止',paused:'一時停止','resource-wait':'リソース待ち','dependency-wait':'先行解析待ち',partial:'一部未解析'};
+export const JOB_KINDS={repair:'未完了の修復',thumbnail:'表紙',owner_thumbnail:'表紙（所有者）',preview:'動画プレビュー',transcode:'トランスコード',navigation:'チャプター・字幕',upload:'アップロード',processor:'メディア処理','validate-image':'画像検証',backup_metadata:'メタデータバックアップ',backup_full:'全体バックアップ',ai_tags:'AI · タグ付け',ai_ocr:'AI · 本文・セリフ',ai_transcript:'AI · 文字起こし',ai_structure:'AI · 曲の構成',ai_chapters:'AI · 動画の章',ai_embedding:'AI · 意味検索の索引'};
 export function jobLabel(row){return row.title||JOB_KINDS[row.kind]||'メディア処理';}
 export function jobKind(row){return row.upload?'アップロード':JOB_KINDS[row.kind]||'メディア処理';}
 export function filterJobRows(rows,{query='',state='all',sort='newest'}={}){

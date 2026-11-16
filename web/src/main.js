@@ -92,7 +92,8 @@ import './ai.css';
 import {openAiAsset} from './ai-ui.js';
 import {mountAiPlayer} from './ai-player.js';
 import {mountAiReader} from './ai-reader.js';
-import {openAiBatch} from './ai-jobs-ui.js';
+import {openAiBatch,openAiJobs} from './ai-jobs-ui.js';
+import {openOwnedJobs} from './owned-jobs-ui.js';
 import {openAiTagBulk,openAiTagDictionary} from './ai-tag-ui.js';
 import {mountAiLibrary,openShelfAi} from './ai-library.js';
 let aiLibrary;
@@ -107,7 +108,7 @@ const finishAppLaunch=showAppLaunch({native});
 const pwa=createPwaInstall({native,ensureWorker:ensureDownloadWorker});
 if(!native&&!import.meta.env.DEV)void pwa.prepare();
 let disposeAuthPwa;
-const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v2.1.2beta/mirea-2.1.2beta-android.apk';
+const defaultApkUrl = 'https://github.com/SUIREN-KazutoHashimoto/Mirea/releases/download/v2.2.0beta/mirea-2.2.0beta-android.apk';
 const currentApkUrl=()=>config.androidApkUrl?.startsWith('/api/v1/app-updates/')?absoluteUrl(config.androidApkUrl):config.androidApkUrl||defaultApkUrl;
 
 const root = document.querySelector('#app');
@@ -331,7 +332,7 @@ function renderShell() {
     <div class="sidebar-heading"><span>本棚</span><button id="add-shelf" class="icon-button" aria-label="本棚を作成">${icon('plus')}</button></div><div id="shelf-nav"></div></nav>
     <div class="drawer-actions"></div><button id="drawer-upload-jobs" class="nav-item drawer-upload-jobs">${icon('upload')}<span>アップロード処理</span><span class="nav-count" id="drawer-upload-count">0</span></button><small class="drawer-status" id="drawer-delivery" role="status"></small>
     <div class="sidebar-hint">${icon('users')}<strong>好きなものを、共有しよう。</strong><p>本棚にメンバーを追加して、<br>動画・本・音楽を一緒に楽しめます。</p></div>
-    <button id="transfer-center" class="nav-item">${icon('upload')}<span>転送状況</span><span class="transfer-count"></span></button><button id="nav-settings" class="nav-item settings-nav">${icon('settings')}<span>設定</span></button><a class="nav-item apk-nav" href="${esc(currentApkUrl())}" target="_blank" rel="noopener noreferrer">${icon('download')}<span>Androidアプリ</span></a>
+    <button id="nav-owned-jobs" class="nav-item">${icon('settings')}<span>自分のジョブ</span></button><button id="transfer-center" class="nav-item">${icon('upload')}<span>転送状況</span><span class="transfer-count"></span></button><button id="nav-settings" class="nav-item settings-nav">${icon('settings')}<span>設定</span></button><a class="nav-item apk-nav" href="${esc(currentApkUrl())}" target="_blank" rel="noopener noreferrer">${icon('download')}<span>Androidアプリ</span></a>
     <div class="profile"><span class="avatar">${esc(user.name.slice(0, 1))}</span><div><strong>${esc(user.name)}</strong><small>${esc(user.email)}</small></div><button id="logout" class="icon-button" aria-label="ログアウト">${icon('logout')}</button></div></aside>
     <div class="drawer-backdrop" hidden></div><main class="main-content"><header class="topbar"><button id="open-drawer" class="icon-button menu-opener" aria-label="ライブラリメニューを開く" aria-controls="library-drawer" aria-expanded="false">${icon('menu')}</button><div class="breadcrumb"><span class="workspace-prefix">ワークスペース</span> <span>/</span> <strong id="breadcrumb-title">ライブラリ</strong></div><div class="topbar-actions"><button class="button primary" id="open-upload">${icon('plus')}コンテンツを追加</button><button class="button secondary" id="add-series">${icon('plus')}シリーズを追加</button></div><button id="mobile-settings" class="icon-button mobile-settings" aria-label="設定">${icon('settings')}</button><button id="mobile-logout" class="icon-button mobile-logout" aria-label="ログアウト">${icon('logout')}</button></header>
     <div class="content-wrap"><section id="name-integrity" class="name-integrity" aria-label="データ不整合の通知" role="status" hidden></section>
@@ -352,6 +353,8 @@ function renderShell() {
   document.querySelector('#bulk-download').onclick=()=>openBulkDownload(displayedItems);
   document.querySelector('#bulk-thumbnail').onclick=()=>editThumbnails({items:displayedItems});
   const tagsButton=document.createElement('button');tagsButton.type='button';tagsButton.className='button secondary bulk-ai-tags';tagsButton.textContent='タグを編集';tagsButton.onclick=()=>openAiTagBulk({items:displayedItems,api,dialog,esc});document.querySelector('#bulk-download').before(tagsButton);const analyzeButton=document.createElement('button');analyzeButton.type='button';analyzeButton.className='button secondary bulk-ai-analyze';analyzeButton.textContent='解析を依頼';analyzeButton.onclick=()=>openAiBatch({items:displayedItems,api,dialog}).catch(report);tagsButton.after(analyzeButton);
+  const analysisStatus=document.createElement('button');analysisStatus.type='button';analysisStatus.className='button secondary bulk-ai-status';analysisStatus.textContent='解析の状況';analysisStatus.onclick=()=>openAiJobs({api,dialog,shelfId:activeShelf||undefined});analyzeButton.after(analysisStatus);
+  document.querySelector('#nav-owned-jobs').onclick=()=>openOwnedJobs({api,dialog,esc,bytes});
   document.querySelector('#nav-settings').onclick = document.querySelector('#mobile-settings').onclick = showSettings;
   const seriesContext=document.createElement('div');seriesContext.className='series-context';seriesContext.hidden=true;document.querySelector('.collection-caption').before(seriesContext);
   document.querySelector('#add-series').onclick=()=>manageSeries(true);
