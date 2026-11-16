@@ -16,10 +16,10 @@ function docker(args,{input,success=true}={}) {
   return result;
 }
 try {
-  for(const dir of ['data','media'])await mkdir(join(fixture,dir));
+  for(const dir of ['data','media','backup'])await mkdir(join(fixture,dir));
   await symlink('/var/tmp/mirea-sandbox-owned',join(fixture,'data/outside-link'));
   // Test setup is root only inside this throwaway container and exact temp mount.
-  docker(['run','--rm','--user','0:0','--entrypoint','/usr/local/bin/node','-v',fixture+':/fixtures',image,'-e',`const fs=require('node:fs');for(const p of ['/fixtures/data','/fixtures/media'])fs.chownSync(p,9033,3036);`]);
+  docker(['run','--rm','--user','0:0','--entrypoint','/usr/local/bin/node','-v',fixture+':/fixtures',image,'-e',`const fs=require('node:fs');for(const p of ['/fixtures/data','/fixtures/media','/fixtures/backup'])fs.chownSync(p,9033,3036);fs.chmodSync('/fixtures/backup',0o700);`]);
   // Even a conflicting GUI variable must not redirect SQLite outside its
   // existing writable scratch root; the launcher pins it before Node starts.
   const base=['run','--rm','--user','9033:3036','-e','DATA_DIR=/data','-e','MEDIA_DIR=/media','-e','SQLITE_TMPDIR=/var/tmp','-v',fixture+'/data:/data','-v',fixture+'/media:/media'];
@@ -28,6 +28,14 @@ try {
   const audit=await readFile(new URL('./check-sandbox-runtime.mjs',import.meta.url),'utf8');
   const result=docker([...base,'-i','--entrypoint','/bin/sh',image,'-c',`printf '%s' 'must remain' > /var/tmp/mirea-sandbox-owned; exec /usr/local/bin/mirea-launch /usr/local/bin/node --input-type=module`],{input:audit});
   assert.match(result.stdout,/"sandbox":true/);
+  const recovery=['-e','RECOVERY_DIR=/recovery','-v',fixture+'/backup:/recovery'];
+  const separate=docker([...base,...recovery,'-i','--entrypoint','/bin/sh',image,'-c',`printf '%s' 'must remain' > /var/tmp/mirea-sandbox-owned; exec /usr/local/bin/mirea-launch /usr/local/bin/node --input-type=module`],{input:audit});assert.match(separate.stdout,/"sandbox":true/);
+  const recoveryAudit=await readFile(new URL('./check-recovery-runtime.mjs',import.meta.url),'utf8');
+  const metadata=docker([...base,...recovery,'-i',image,'/usr/local/bin/node','--input-type=module'],{input:recoveryAudit});assert.match(metadata.stdout,/"separateRecoveryDirectory":true/);
+  for(const extra of [['-e','RECOVERY_DIR=/elsewhere'],['-e','RECOVERY_DIR=/recovery'],['-e','RECOVERY_DIR=/recovery','--tmpfs','/recovery:uid=9033,gid=3036,mode=0700']]){
+    const rejected=docker([...base,...extra,image],{success:false});assert.equal(rejected.status,78,rejected.stderr);assert.match(rejected.stderr,/Refusing startup/);
+  }
+  const wrongOwner=docker([...base,...recovery,'--user','9034:3036',image],{success:false});assert.equal(wrongOwner.status,78,wrongOwner.stderr);assert.match(wrongOwner.stderr,/private directory owned by the service user/);
   for(const args of [['--user','0:0'],['-e','DATA_DIR=/elsewhere'],['--security-opt','seccomp=unconfined']]) {
     const rejected=docker([...base,...args,image],{success:false});assert.equal(rejected.status,78,rejected.stderr);assert.match(rejected.stderr,/Refusing startup/);
   }
@@ -39,6 +47,6 @@ try {
   console.log(result.stdout.trim());console.log(JSON.stringify({guiDefaultSecurityVerified:true,rootRejected:true,unconfinedRejected:true,unsupportedKernelRejected:true,inheritedDescriptorsClosed:true}));
 }finally {
   // Restore only the fixture's ownership so the runner can remove its temp tree.
-  docker(['run','--rm','--user','0:0','--entrypoint','/usr/local/bin/node','-v',fixture+':/fixtures',image,'-e',`const fs=require('node:fs');for(const p of ['/fixtures/data','/fixtures/media'])fs.chownSync(p,${process.getuid()},${process.getgid()});`]);
+  docker(['run','--rm','--user','0:0','--entrypoint','/usr/local/bin/node','-v',fixture+':/fixtures',image,'-e',`const fs=require('node:fs');for(const p of ['/fixtures/data','/fixtures/media','/fixtures/backup'])fs.chownSync(p,${process.getuid()},${process.getgid()});`]);
   await rm(fixture,{recursive:true,force:true});
 }

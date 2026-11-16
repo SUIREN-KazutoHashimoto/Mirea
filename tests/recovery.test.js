@@ -65,7 +65,8 @@ test('identical media is deduplicated independently from the mutable live file',
 });
 test('pre-upgrade checkpoint happens before migration and interrupted upgrades fail closed',async t=>{
  const f=await fixture(t);await writeFile(join(f.dataDir,'recovery-runtime.json'),JSON.stringify({format:1,version:'2.0.0-beta'}));
- const prepared=await prepareRecovery({storage:f.storage,version:'2.1.0-beta'});assert.equal(prepared.checkpoint.scope,'full');assert.equal(prepared.checkpoint.previousVersion,'2.0.0-beta');
+ const prepared=await prepareRecovery({storage:f.storage,version:'2.1.0-beta'});assert.equal(prepared.checkpoint.scope,'database');assert.equal(prepared.checkpoint.previousVersion,'2.0.0-beta');
+ assert(!prepared.checkpoint.files.some(file=>file.name.includes('/uploads/')));
  await assert.rejects(prepareRecovery({storage:f.storage,version:'2.1.0-beta'}),{code:'RECOVERY_STARTUP_INCOMPLETE'});
  await prepared.commit();await assert.rejects(prepareRecovery({storage:f.storage,version:'2.0.0-beta'}),{code:'RECOVERY_DOWNGRADE_BLOCKED'});
 });
@@ -97,14 +98,49 @@ test('recovery mounts, settings overrides and invalid manifests fail safely',asy
 test('capacity failure preserves older recovery points and does not poison the next attempt',async t=>{
  const f=await fixture(t),first=await f.store.capture({db:f.db,version:'2.1.0-beta',reserveMiB:0});await assert.rejects(f.store.capture({db:f.db,version:'2.1.0-beta',reserveMiB:Number.MAX_SAFE_INTEGER}),{code:'RECOVERY_SPACE_LOW'});assert.equal((await f.store.list())[0].id,first.id);await f.store.verify(first.id);await f.store.capture({db:f.db,version:'2.1.0-beta',reserveMiB:0});
 });
-test('busy media work postpones only the full checkpoint and database protection continues',async t=>{
- const f=await fixture(t),app=Fastify(),gate=createMaintenanceGate(app);gate.setBusy(()=>true);const recovery=await registerRecovery(app,{db:f.db,prepared:{store:f.store,configuration:()=>[]},version:'2.1.0-beta',adminAccess:{requireAdmin(){},reauthenticate(){},audit(){}},maintenance:gate});t.after(()=>app.close());recovery.state.lastDatabaseAt=Date.now()-10*60000;recovery.state.lastFullAt=Date.now()-48*3600000;const previousFull=recovery.state.lastFullAt;await recovery.tick();assert(recovery.state.lastDatabaseAt>0);assert(recovery.state.fullDeferredAt>0);assert.equal(recovery.state.lastFullAt,previousFull);assert.equal(recovery.state.lastError,null);assert.equal(gate.locked,false);assert((await f.store.list()).every(s=>s.scope==='database'));
+test('busy media work does not freeze metadata protection or start a full media copy',async t=>{
+ const f=await fixture(t),app=Fastify(),gate=createMaintenanceGate(app);gate.setBusy(()=>true);const recovery=await registerRecovery(app,{db:f.db,prepared:{store:f.store,configuration:()=>[]},version:'2.1.0-beta',adminAccess:{requireAdmin(){},reauthenticate(){},audit(){}},maintenance:gate});t.after(()=>app.close());recovery.state.lastDatabaseAt=Date.now()-10*60000;recovery.state.lastFullAt=Date.now()-48*3600000;const previousFull=recovery.state.lastFullAt;await recovery.tick();assert(recovery.state.lastDatabaseAt>0);assert.equal(recovery.state.fullDeferredAt,undefined);assert.equal(recovery.state.lastFullAt,previousFull);assert.equal(recovery.state.lastError,null);assert.equal(gate.locked,false);assert((await f.store.list()).every(s=>s.scope==='database'));
+ await assert.rejects(recovery.execute({scope:'full'}),{statusCode:409});
+});
+
+for(const separate of [false,true])test('metadata checkpoint keeps storage and TLS identities without copying media or model weights '+separate,async t=>{
+ const f=await fixture(t,{separate});
+ const receipt=JSON.stringify({version:2,installationId:'synthetic-installation'});await writeFile(join(f.dataDir,'.truenas-mirea-bootstrap.json'),receipt);
+ await mkdir(join(f.dataDir,'thumbnails'),{recursive:true});await writeFile(join(f.dataDir,'thumbnails','synthetic.webp'),'not metadata');
+ await mkdir(join(f.dataDir,'ai','models'),{recursive:true});await writeFile(join(f.dataDir,'ai','models','synthetic.gguf'),'not metadata');
+ await mkdir(join(f.dataDir,'keys','tls'));await writeFile(join(f.dataDir,'keys','tls','server-key.pem'),'synthetic non-key fixture');
+ const snapshot=await f.store.capture({db:f.db,scope:'database',reason:'pre-upgrade',version:'2.1.0-beta',reserveMiB:0});await f.store.verify(snapshot.id);
+ const names=snapshot.files.map(f=>f.name);
+ assert(names.includes('data/.truenas-mirea-bootstrap.json'));assert(names.includes('data/storage-layout.json'));if(separate)assert(names.includes('media/.mirea-media.json'));assert(names.includes('data/keys/tls/server-key.pem'));
+ assert(!names.some(n=>/\/(uploads|thumbnails|ai)\//.test(n)));
+ const destination=join(f.directory,'metadata-restore');await restoreRecoveryPoint({directory:f.store.directory,id:snapshot.id,destination,metadataOnly:true});
+ assert.equal(await readFile(join(destination,'data','.truenas-mirea-bootstrap.json'),'utf8'),receipt);
+ assert.deepEqual(await readFile(join(destination,'data','storage-layout.json')),await readFile(join(f.dataDir,'storage-layout.json')));
+ if(separate)assert.deepEqual(await readFile(join(destination,'media','.mirea-media.json')),await readFile(join(f.mediaDir,'.mirea-media.json')));
+ assert.deepEqual(await readFile(join(destination,'data','keys','download-master.key')),f.key);
+});
+
+test('pre-upgrade metadata protection can use a separate backup directory',async t=>{
+ const f=await fixture(t,{separate:true}),directory=join(f.directory,'backup');await mkdir(directory);
+ const prepared=await prepareRecovery({storage:f.storage,version:'2.1.0-beta',options:{recoveryDirectory:directory}});
+ assert.equal(prepared.store.directory,directory);assert.equal(prepared.checkpoint.scope,'database');await prepared.store.verify(prepared.checkpoint.id);
+ assert(!(await f.store.list()).length);await prepared.commit();
+});
+
+test('old full-copy interval settings are explicitly ignored without enabling media copies',async t=>{
+ const f=await fixture(t);f.db.prepare("INSERT INTO server_settings(key,value) VALUES('recovery',?)").run(JSON.stringify({intervalMinutes:5,fullIntervalHours:24}));
+ const settings=recoverySettings(f.db,{RECOVERY_FULL_INTERVAL_HOURS:'12',RECOVERY_INTERVAL_MINUTES:'10'});
+ assert.equal(settings.value.intervalMinutes,10);assert.equal(settings.value.fullIntervalHours,undefined);
+ assert.deepEqual(settings.metadata.ignored,[{setting:'fullIntervalHours',value:24},{variable:'RECOVERY_FULL_INTERVAL_HOURS',value:'12'}]);
+ assert.throws(()=>settings.update({fullIntervalHours:1}));settings.update({retentionDays:40});assert.equal(settings.value.retentionDays,40);
 });
 test('only server administrators can create and inspect recovery points',async t=>{
  const directory=await mkdtemp(join(tmpdir(),'mirea-recovery-api-')),admins=[];const app=await createApp({dataDir:join(directory,'data'),serverAdminUserIds:admins,rateLimit:false});t.after(async()=>{await app.close();await rm(directory,{recursive:true,force:true});});
  const registration=await app.inject({method:'POST',url:'/api/v1/auth/register',payload:{name:'Synthetic admin',email:'recovery@example.test',password:'synthetic-password'}}),account=registration.json(),headers={authorization:'Bearer '+account.token};
  assert.equal((await app.inject({method:'GET',url:'/api/v1/admin/recovery',headers})).statusCode,403);admins.push(account.user.id);
  assert.equal((await app.inject({method:'POST',url:'/api/v1/admin/recovery',headers,payload:{currentPassword:'wrong',scope:'database',acknowledgePause:false}})).statusCode,403);
+ assert.equal((await app.inject({method:'POST',url:'/api/v1/admin/recovery',headers,payload:{currentPassword:'synthetic-password',scope:'full',acknowledgePause:true}})).statusCode,409);
+ const initial=(await app.inject({method:'GET',url:'/api/v1/admin/recovery',headers})).json();assert.equal(initial.backupScope,'database');assert.equal(initial.mediaIncluded,false);
  const started=await app.inject({method:'POST',url:'/api/v1/admin/recovery',headers,payload:{currentPassword:'synthetic-password',scope:'database',acknowledgePause:false}});assert.equal(started.statusCode,202,started.body);
  const deadline=Date.now()+30000;while(Date.now()<deadline){const status=(await app.inject({method:'GET',url:'/api/v1/admin/recovery',headers})).json();if(status.lastError)assert.fail(JSON.stringify(status.lastError));if(!status.active&&status.snapshots.length){assert.equal(status.snapshots[0].scope,'database');return;}await new Promise(r=>setTimeout(r,100));}assert.fail('Recovery snapshot did not finish');
 });

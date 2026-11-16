@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <linux/landlock.h>
 #include <linux/capability.h>
+#include <mntent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -80,6 +81,27 @@ static void optional_ai_gpu(int ruleset) {
     rule(ruleset, path, LANDLOCK_ACCESS_FS_WRITE_FILE, 0);
 }
 
+static void optional_recovery(int ruleset, unsigned long long rights) {
+    const char *path = getenv("RECOVERY_DIR");
+    if (!path || !strcmp(path, "/data/recovery")) return;
+    if (strcmp(path, "/recovery")) fail("container RECOVERY_DIR must be /recovery or /data/recovery");
+    struct stat info;
+    if (lstat(path, &info) || !S_ISDIR(info.st_mode) || info.st_uid != getuid() || (info.st_mode & 0077))
+        fail("/recovery must be a private directory owned by the service user (mode 0700)");
+    FILE *mounts = setmntent("/proc/self/mounts", "r");
+    if (!mounts) fail("cannot inspect recovery mount");
+    struct mntent *entry; int mounted = 0;
+    while ((entry = getmntent(mounts))) {
+        if (strcmp(entry->mnt_dir, path)) continue;
+        if (!hasmntopt(entry, "rw") || !strcmp(entry->mnt_type, "tmpfs") ||
+            !strcmp(entry->mnt_type, "ramfs") || !strcmp(entry->mnt_type, "overlay"))
+            fail("/recovery must be a persistent writable mount");
+        mounted = 1;
+    }
+    if (!endmntent(mounts) || !mounted) fail("an explicit persistent /recovery mount is required");
+    rule(ruleset, path, rights, 1);
+}
+
 int main(int argc, char **argv) {
     if (argc < 2 || argv[1][0] != '/') fail("absolute executable required");
     identity();
@@ -109,6 +131,7 @@ int main(int argc, char **argv) {
     if (fd < 0) fail("cannot create filesystem ruleset");
     rule(fd, "/data", write_rights, 1);
     if (getenv("MEDIA_DIR")) rule(fd, "/media", write_rights, 1);
+    optional_recovery(fd, write_rights);
     rule(fd, "/tmp", write_rights, 1);
     /* Node's ignored stdio opens /dev/null; no other device write is allowed. */
     rule(fd, "/dev/null", LANDLOCK_ACCESS_FS_WRITE_FILE, 0);

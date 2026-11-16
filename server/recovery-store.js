@@ -116,7 +116,8 @@ export async function openRecoveryStore({dataDir,mediaDir=dataDir,directory,stor
     }
     if(mediaDir!==dataDir)for(const name of (await readdir(mediaDir)).sort())await walk(join(mediaDir,name),'media/'+name);
    }else{
-    for(const name of ['keys','storage-layout.json','recovery-runtime.json'])if(await exists(join(dataDir,name)))await walk(join(dataDir,name),'data/'+name);
+    for(const name of ['keys','storage-layout.json','.truenas-mirea-bootstrap.json','recovery-runtime.json'])if(await exists(join(dataDir,name)))await walk(join(dataDir,name),'data/'+name);
+    if(await exists(join(mediaDir,'.mirea-media.json')))await add(join(mediaDir,'.mirea-media.json'),(mediaDir===dataDir?'data':'media')+'/.mirea-media.json');
    }
    for(const entry of configuration)if(entry.bytes!==undefined){const file=join(work,randomUUID());await writeFile(file,entry.bytes,{mode:0o600,flag:'wx'});await add(file,'configuration/'+entry.name);}else if(await exists(entry.path))await add(entry.path,'configuration/'+entry.name);
    // Metadata snapshots must not publish a key set that changed while SQLite was copied.
