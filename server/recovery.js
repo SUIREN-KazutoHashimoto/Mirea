@@ -35,7 +35,7 @@ export async function prepareRecovery({storage,version,options={}}){
   if(currentDatabase.schema>DATABASE_SCHEMA_VERSION)throw reject('RECOVERY_DOWNGRADE_BLOCKED','Database schema is newer than this application. Restore a matching recovery point before downgrading.');
   if(!runtime||compareVersions(version,runtime.version)!==0||currentDatabase.schema!==DATABASE_SCHEMA_VERSION){
    const source=new DatabaseSync(filename,{readOnly:true});
-   try{const hasSettings=source.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='server_settings'").get();const reserveMiB=hasSettings?recoverySettings(source).value.reserveMiB:Number(process.env.RECOVERY_RESERVE_MIB??RECOVERY_DEFAULTS.reserveMiB);if(!Number.isSafeInteger(reserveMiB)||reserveMiB<64||reserveMiB>1048576)throw reject('RECOVERY_CONFIGURATION_INVALID','Invalid recovery space reserve');checkpoint=await store.capture({db:source,scope:'full',reason:'pre-upgrade',version,previousVersion:runtime?.version??null,configuration:configuration(),reserveMiB});}finally{source.close();}
+   try{const hasSettings=source.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='server_settings'").get();const reserveMiB=hasSettings?recoverySettings(source).value.reserveMiB:Number(process.env.RECOVERY_RESERVE_MIB??RECOVERY_DEFAULTS.reserveMiB);if(!Number.isSafeInteger(reserveMiB)||reserveMiB<64||reserveMiB>1048576)throw reject('RECOVERY_CONFIGURATION_INVALID','Invalid recovery space reserve');checkpoint=await store.capture({db:source,scope:'database',reason:'pre-upgrade',version,previousVersion:runtime?.version??null,configuration:configuration(),reserveMiB});}finally{source.close();}
    await durableJson(transitionFile,{format:1,version,previousVersion:runtime?.version??null,snapshot:checkpoint.id,createdAt:Date.now()});
   }
  }
@@ -46,51 +46,46 @@ export async function registerRecovery(app,{db,prepared,version,adminAccess:a,ma
  const {store,configuration}=prepared,settings=recoverySettings(db),statusFile=join(store.directory,'status.json');
  let state,active=null,closing=false;const serviceStartedAt=Date.now();
  try{state=JSON.parse(await optional(statusFile)??'{}');if(!state||typeof state!=='object'||Array.isArray(state))throw Error();}catch{state={lastError:{code:'RECOVERY_STATUS_INVALID',at:Date.now()}};}
+ if(state.lastError?.scope==='full'){state.previousFullCopyError=state.lastError;state.lastError=null;}
  for(const key of ['lastPruneAt','lastCollectionAt','lastFullAttemptAt','fullDeferredAt'])if(state[key]!==undefined&&(!Number.isSafeInteger(state[key])||state[key]<0||state[key]>Date.now()+300000))delete state[key];
  // A process interruption is visible after restart, never reported as a successful backup.
  if(state.active){state={...state,active:null,lastError:{code:'RECOVERY_INTERRUPTED',at:Date.now()}};await durableJson(statusFile,state);}
  const persist=()=>durableJson(statusFile,state);
  async function execute({scope='database',reason='scheduled',verifyId}={}){
+  if(!verifyId&&scope!=='database')throw httpError(409,'自動保全はDB・鍵・設定のみが対象です。作品本体はホスト側のバックアップで保管してください。');
   if(closing||active)throw httpError(409,'別の保全処理を実行中か、サーバーを停止中です。');
-  let release;const startedAt=Date.now();state={...state,active:{scope:verifyId?'verify':scope,startedAt},progress:null};
+  const startedAt=Date.now();state={...state,active:{scope:verifyId?'verify':scope,startedAt},progress:null};
   const task=(async()=>{try{
    await persist();
    if(verifyId){await store.verify(verifyId);state.lastVerified={id:verifyId,at:Date.now()};if(state.lastError?.scope==='verify')state.lastError=null;}
    else{
-    // Database snapshots use SQLite's online backup API and do not freeze ordinary usage.
-    // Full snapshots require the existing maintenance gate, including idle background jobs.
-    if(scope==='full'){state.lastFullAttemptAt=Date.now();release=await maintenance.acquire();}
+    // Only metadata is copied. Media snapshots/replication remain host managed.
     const snapshot=await store.capture({db,scope,reason,version,configuration:configuration(),reserveMiB:settings.value.reserveMiB,onProgress:progress=>{state.progress=progress;}});
     state.lastDatabaseAt=snapshot.createdAt;
-    if(scope==='full'){state.lastFullAt=snapshot.createdAt;state.fullDeferredAt=null;}
     state.lastSnapshot=snapshot.id;if(!state.lastError?.scope||state.lastError.scope===scope)state.lastError=null;
     // Expiry and object collection happen only after a new verified recovery point exists.
     if(Date.now()-(state.lastPruneAt??0)>=3600000){const collectObjects=Date.now()-(state.lastCollectionAt??0)>=86400000;await store.prune({retentionDays:settings.value.retentionDays,collectObjects});state.lastPruneAt=Date.now();if(collectObjects)state.lastCollectionAt=Date.now();}
    }
   }catch(error){
-   const deferred=reason==='scheduled'&&scope==='full'&&error.statusCode===409;
-   if(deferred)state.fullDeferredAt=Date.now();
-   else{state.lastError={code:/^RECOVERY_[A-Z_]+$/.test(error.code??'')?error.code:'RECOVERY_FAILED',scope:verifyId?'verify':scope,at:Date.now()};app.log.error({code:state.lastError.code},'Recovery operation failed; existing data and recovery points were retained');}
+   state.lastError={code:/^RECOVERY_[A-Z_]+$/.test(error.code??'')?error.code:'RECOVERY_FAILED',scope:verifyId?'verify':scope,at:Date.now()};app.log.error({code:state.lastError.code},'Recovery operation failed; existing data and recovery points were retained');
    throw error;
-  }finally{release?.();state.active=null;state.progress=null;await persist();}})();
+  }finally{state.active=null;state.progress=null;await persist();}})();
   active=task;try{return await task;}finally{active=null;}
  }
  // Set initial dates from durable manifests too, including the checkpoint made before migration.
  const existing=(await store.list()).filter(s=>!s.invalid);
  state.lastDatabaseAt=Math.max(...existing.map(s=>s.createdAt),0);
- state.lastFullAt=Math.max(...existing.filter(s=>s.scope==='full').map(s=>s.createdAt),0);
  async function tick(){if(closing||active||maintenance.locked)return;const now=Date.now(),values=settings.value;
   if(now-(state.lastDatabaseAt||serviceStartedAt)>=values.intervalMinutes*60000)await execute({scope:'database'}).catch(()=>{});
-  if(!closing&&!active&&now-(state.lastFullAt||serviceStartedAt)>=values.fullIntervalHours*3600000&&now-Math.max(state.fullDeferredAt??0,state.lastFullAttemptAt??0)>=600000)await execute({scope:'full'}).catch(()=>{});
  }
  const timer=setInterval(()=>tick().catch(()=>{}),Math.min(60000,options.recoveryTickMs??60000));timer.unref();
  app.addHook('onClose',async()=>{closing=true;clearInterval(timer);await active?.catch(()=>{});});
  const auth={onRequest:async req=>a.requireAdmin(req)},writeAuth={...auth,config:{rateLimit:options.rateLimit===false?false:{max:6,timeWindow:'1 minute'}}};
  const snapshots=async()=> (await store.list()).slice(0,100).map(s=>s.invalid?{id:s.id,invalid:true}:{id:s.id,createdAt:s.createdAt,scope:s.scope,reason:s.reason,version:s.version,previousVersion:s.previousVersion,files:s.fileCount,bytes:s.bytes,database:s.database});
- app.get('/api/v1/admin/recovery',auth,async()=>({...state,settings:settings.metadata,directory:store.directory,snapshots:await snapshots(),databaseOverdue:Date.now()-(state.lastDatabaseAt??0)>settings.value.intervalMinutes*3*60000,fullOverdue:Date.now()-(state.lastFullAt??0)>settings.value.fullIntervalHours*2*3600000,restoration:'offline-empty-destination',mediaBackupIsSeparate:true}));
+ app.get('/api/v1/admin/recovery',auth,async()=>({...state,settings:settings.metadata,directory:store.directory,snapshots:await snapshots(),backupScope:'database',mediaIncluded:false,databaseOverdue:Date.now()-(state.lastDatabaseAt??0)>settings.value.intervalMinutes*3*60000,restoration:'offline-empty-destination',mediaBackupIsSeparate:true}));
  app.patch('/api/v1/admin/recovery/settings',{...writeAuth,schema:{body:adminBody({values:{type:'object',additionalProperties:false,properties:Object.fromEntries(Object.entries(RECOVERY_LIMITS).map(([key,[minimum,maximum]])=>[key,{type:'integer',minimum,maximum}]))}})}},async req=>{await a.reauthenticate(req);const value=settings.update(req.body.values);a.audit(req,'recovery.settings');return value;});
  app.post('/api/v1/admin/recovery',{...writeAuth,schema:{body:adminBody({scope:{enum:['database','full']},acknowledgePause:{type:'boolean'}})}},async(req,reply)=>{
-  await a.reauthenticate(req);if(req.body.scope==='full'&&!req.body.acknowledgePause)throw httpError(400,'全体保全中は操作を一時制限することを確認してください。');
+  await a.reauthenticate(req);if(req.body.scope==='full')throw httpError(409,'自動保全はDB・鍵・設定のみが対象です。作品本体はホスト側のバックアップで保管してください。');
   if(active||closing)throw httpError(409,'別の保全処理を実行中です。');
   a.audit(req,'recovery.create',null,{scope:req.body.scope});execute({scope:req.body.scope,reason:'manual'}).catch(()=>{});return reply.code(202).send({started:true});
  });

@@ -99,13 +99,14 @@ healthcheckはコンテナ内の `127.0.0.1` へ接続し、TLSを使う場合�
 
 | 環境変数 | 画面/APIキー | 初期値・範囲 |
 | --- | --- | --- |
-| RECOVERY_DIR | 起動設定のみ | DATA_DIR/recovery。指定先は既存の読み書き可能なフォルダーが必要 |
+| RECOVERY_DIR | 起動設定のみ | DATA_DIR/recovery。コンテナで分離する場合は、専用の永続領域を /recovery へマウントし、この値を /recovery にする。所有者はサービスUID、モード0700 |
 | RECOVERY_INTERVAL_MINUTES | intervalMinutes | 5分。1〜1440 |
-| RECOVERY_FULL_INTERVAL_HOURS | fullIntervalHours | 24時間。1〜720 |
 | RECOVERY_RETENTION_DAYS | retentionDays | 30日。7〜365 |
 | RECOVERY_RESERVE_MIB | reserveMiB | 512MiB。64〜1048576 |
 
-DBと全体の最終成功時刻は別です。通信・背景処理があると全体保全は延期します。保持期間は容量上限ではなく、手動・更新前の復旧点と最新2件は自動削除しません。自動保全は平文の機密データを含みます。
+自動保全はDB・鍵・設定・保存先の識別情報だけを保存します。作品本体・表紙・プレビュー・モデルの重みはコピーせず、ホスト側のバックアップと組み合わせます。保持期間は容量上限ではなく、手動・更新前の復旧点と最新2件は自動削除しません。自動保全は平文の機密データを含みます。
+
+旧版の `RECOVERY_FULL_INTERVAL_HOURS` と `fullIntervalHours` は新しい全体コピーを開始しません。管理画面に使用されない旧設定として表示します。旧版が作成した全体復旧点の検証・復元は維持します。
 
 ## 定義と検証
 

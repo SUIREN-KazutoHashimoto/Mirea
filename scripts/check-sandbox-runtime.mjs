@@ -16,7 +16,7 @@ await assert.rejects(truncate('/var/tmp/mirea-sandbox-owned',0),denied);
 await assert.rejects(rename('/var/tmp/mirea-sandbox-owned','/var/tmp/mirea-sandbox-renamed'),denied);
 await assert.rejects(link('/var/tmp/mirea-sandbox-owned','/var/tmp/mirea-sandbox-hardlink'),denied);
 assert.equal(await readFile('/var/tmp/mirea-sandbox-owned','utf8'),'must remain');
-for(const path of ['/data','/media','/tmp']) {
+for(const path of ['/data','/media','/tmp',...(process.env.RECOVERY_DIR==='/recovery'?['/recovery']:[])]) {
   const folder=path+'/sandbox-fixture';await mkdir(folder);
   await writeFile(folder+'/file','allowed');await truncate(folder+'/file',3);
   await rename(folder+'/file',folder+'/renamed');assert.equal(await readFile(folder+'/renamed','utf8'),'all');
@@ -24,6 +24,10 @@ for(const path of ['/data','/media','/tmp']) {
 }
 await copyFile('/bin/true','/tmp/mirea-untrusted-executable');await chmod('/tmp/mirea-untrusted-executable',0o700);
 assert.equal(spawnSync('/tmp/mirea-untrusted-executable').error.code,'EACCES');
+if(process.env.RECOVERY_DIR==='/recovery'){
+ await copyFile('/bin/true','/recovery/untrusted-executable');await chmod('/recovery/untrusted-executable',0o700);
+ assert.equal(spawnSync('/recovery/untrusted-executable').error.code,'EACCES');await rm('/recovery/untrusted-executable');
+}
 const code=`const fs=require('node:fs');const s=fs.readFileSync('/proc/self/status','utf8');if(!/NoNewPrivs:\\s+1/.test(s))throw Error('NNP not inherited');try{fs.writeFileSync('/var/tmp/mirea-sandbox-child','bad');throw Error('escaped')}catch(e){if(e.code!=='EACCES')throw e;}`;
 const child=spawnSync(process.execPath,['-e',code],{encoding:'utf8'});assert.equal(child.status,0,child.stderr);
 await new Promise((resolve,reject)=>{const worker=new Worker(code,{eval:true,execArgv:[]});worker.once('error',reject);worker.once('exit',code=>code===0?resolve():reject(Error('worker escaped sandbox')));});

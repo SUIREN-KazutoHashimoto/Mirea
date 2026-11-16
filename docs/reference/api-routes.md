@@ -46,10 +46,10 @@
 |GET|`/api/v1/admin/overview`|[admin.js:18](../../server/admin.js#L18)|
 |GET|`/api/v1/admin/processing-settings`|[processing-settings.js:4](../../server/processing-settings.js#L4)|
 |PATCH|`/api/v1/admin/processing-settings`|[processing-settings.js:7](../../server/processing-settings.js#L7)|
-|GET|`/api/v1/admin/recovery`|[recovery.js:90](../../server/recovery.js#L90)|
-|POST|`/api/v1/admin/recovery`|[recovery.js:92](../../server/recovery.js#L92)|
-|POST|`/api/v1/admin/recovery/:id/verify`|[recovery.js:97](../../server/recovery.js#L97)|
-|PATCH|`/api/v1/admin/recovery/settings`|[recovery.js:91](../../server/recovery.js#L91)|
+|GET|`/api/v1/admin/recovery`|[recovery.js:85](../../server/recovery.js#L85)|
+|POST|`/api/v1/admin/recovery`|[recovery.js:87](../../server/recovery.js#L87)|
+|POST|`/api/v1/admin/recovery/:id/verify`|[recovery.js:92](../../server/recovery.js#L92)|
+|PATCH|`/api/v1/admin/recovery/settings`|[recovery.js:86](../../server/recovery.js#L86)|
 |GET|`/api/v1/admin/reset`|[admin-reset.js:95](../../server/admin-reset.js#L95)|
 |POST|`/api/v1/admin/reset/apply`|[admin-reset.js:108](../../server/admin-reset.js#L108)|
 |POST|`/api/v1/admin/reset/preview`|[admin-reset.js:96](../../server/admin-reset.js#L96)|
