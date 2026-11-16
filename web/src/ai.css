@@ -85,3 +85,5 @@
 
 .admin-panel .job-summary{grid-template-columns:repeat(5,minmax(0,1fr))}
 @media(max-width:680px){.admin-panel .job-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.admin-panel .job-summary>div:first-child{grid-column:1/-1}.admin-panel .job-summary>div{min-width:0;border-bottom:1px solid var(--border)}}
+
+.ai-batch-summary:empty{display:none}.ai-batch-summary{line-height:1.7;color:var(--muted)}
