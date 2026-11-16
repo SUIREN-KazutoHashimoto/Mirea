@@ -389,7 +389,7 @@ function renderShell() {
   document.querySelector('#sort').innerHTML=SORTS.map(([id,label])=>`<option value="${id}">${label}</option>`).join('');
   document.querySelector('#sort').onchange = e => { sort = sortPreferences.save(e.target.value); renderItems(true); };
   document.querySelectorAll('[data-filter]').forEach(button => { button.onclick = () => { filter = button.dataset.filter; renderItems(true); }; });
-  collectionView=mountCollectionView({container:root.querySelector('.collection-view-controls'),grid:root.querySelector('#items'),context:()=>collectionSortKey(sortContext())??''});
+  collectionView=mountCollectionView({container:root.querySelector('.collection-view-controls'),grid:root.querySelector('#items'),context:()=>`${getEndpoint()||location.origin}|${getSession()?.user.id}|${activeShelf??'all'}|${activeSeries||''}|${activePlaylist||''}`});
   appDrawer=mountLibraryDrawer({layout:root.querySelector('.app-layout'),panel:root.querySelector('.sidebar'),main:root.querySelector('.main-content'),opener:root.querySelector('#open-drawer'),closer:root.querySelector('.drawer-close'),backdrop:root.querySelector('.drawer-backdrop'),actions:[root.querySelector('#open-upload'),root.querySelector('#add-series')],actionHome:root.querySelector('.topbar-actions'),native});
   pullRefresh=mountLibraryRefresh({main:root.querySelector('.main-content'),button:root.querySelector('#refresh-library'),onRefresh:refreshManually,
     blocked:()=>refreshBusy||!getSession()||appDrawer?.isOpen()||Boolean(document.querySelector('dialog[open],.viewer-screen:not([style*="display: none"])'))});
@@ -561,9 +561,9 @@ function renderNav() {
 function renderItems(animate=false) {
   const node = document.querySelector('#items');
   if (!node) return;
-  libraryPanels?.close();refreshCollectionSort();
+  refreshCollectionSort();
   aiLibrary?.contextChanged();const tagBulk=document.querySelector('.bulk-ai-tags');if(tagBulk)tagBulk.disabled=offlineLibrary;const analyzeBulk=document.querySelector('.bulk-ai-analyze');if(analyzeBulk)analyzeBulk.disabled=offlineLibrary;
-  collectionView?.refreshContext();const scope=collectionKey();if(scope!==collectionScope){collectionScope=scope;collectionLimit=collectionLocations.get(scope)?.limit??100;}
+  collectionView?.refreshContext();const scope=collectionKey();if(scope!==collectionScope){libraryPanels?.close();collectionScope=scope;collectionLimit=collectionLocations.get(scope)?.limit??100;}
   document.querySelector('.collection-history-actions').hidden=!historyMode;
   document.querySelector('.collection-organize-actions').hidden=historyMode||activePlaylist==='index';
   document.querySelector('.collection-series-actions').hidden=historyMode||Boolean(activePlaylist)||!series.some(s=>s.role!=='viewer');
@@ -590,7 +590,8 @@ function renderItems(animate=false) {
   document.querySelector('.collection').classList.toggle('in-series',Boolean(selectedSeries));
   const parentName=historyMode?'閲覧履歴':activePlaylist?selectedPlaylist?'プレイリスト / '+selectedPlaylist.title:'プレイリスト':shelves.find(s=>s.id===activeShelf)?.name??'ライブラリ';
   document.querySelector('#breadcrumb-title').textContent=selectedSeries?parentName+' / '+seriesPath(series,activeSeries).map(s=>s.title).join(' / '):parentName;
-  context.innerHTML=selectedSeries?`<button class="button secondary clear-series" aria-label="コンテンツ一覧へ戻る">← <span>${selectedSeries.parentId?'親シリーズへ':'一覧へ戻る'}</span></button><div class="series-folder-name"><small>シリーズ · ${source.filter(i=>isInSeries(series,i.series?.id,activeSeries)).length}作品${selectedSeries.childCount?' · 子シリーズ '+selectedSeries.childCount:''}</small><h2 tabindex="-1">${esc(selectedSeries.title)}</h2></div>${selectedSeries.role!=='viewer'?'<button type="button" class="button secondary series-actions-toggle" data-library-panel="library-series-panel" aria-controls="library-series-panel" aria-expanded="false">シリーズの操作 ⋯</button><div id="library-series-panel" class="library-popover library-series-panel" role="region" aria-label="シリーズの操作" hidden><h3>シリーズの操作</h3><button class="button secondary edit-series">シリーズを編集</button><button class="button secondary series-thumbnail">シリーズの表紙を変更</button></div>':''}`:'';
+  const contextMarkup=selectedSeries?`<button class="button secondary clear-series" aria-label="コンテンツ一覧へ戻る">← <span>${selectedSeries.parentId?'親シリーズへ':'一覧へ戻る'}</span></button><div class="series-folder-name"><small>シリーズ · ${source.filter(i=>isInSeries(series,i.series?.id,activeSeries)).length}作品${selectedSeries.childCount?' · 子シリーズ '+selectedSeries.childCount:''}</small><h2 tabindex="-1">${esc(selectedSeries.title)}</h2></div>${selectedSeries.role!=='viewer'?'<button type="button" class="button secondary series-actions-toggle" data-library-panel="library-series-panel" aria-controls="library-series-panel" aria-expanded="false">シリーズの操作 ⋯</button><div id="library-series-panel" class="library-popover library-series-panel" role="region" aria-label="シリーズの操作" hidden><h3>シリーズの操作</h3><button class="button secondary edit-series">シリーズを編集</button><button class="button secondary series-thumbnail">シリーズの表紙を変更</button></div>':''}`:'';
+  if(context.rendered!==contextMarkup){libraryPanels?.closeWithin(context);context.innerHTML=contextMarkup;context.rendered=contextMarkup;}
   if(selectedSeries){if(context.querySelector('.series-thumbnail'))context.querySelector('.series-thumbnail').onclick=()=>editThumbnails({seriesId:selectedSeries.id,seriesTitle:selectedSeries.title});context.querySelector('.clear-series').onclick=leaveLibrarySeries;if(context.querySelector('.edit-series'))context.querySelector('.edit-series').onclick=()=>manageSeries();}
   const sortSelect=document.querySelector('#sort');sortSelect.disabled=historyMode;
   const orderOption=sortSelect.querySelector('[value="series"]');if(orderOption)orderOption.disabled=!selectedSeries&&!selectedPlaylist;
