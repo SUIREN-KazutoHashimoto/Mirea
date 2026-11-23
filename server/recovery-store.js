@@ -1,7 +1,7 @@
 import {DatabaseSync,backup} from 'node:sqlite';
 import {createHash,randomUUID} from 'node:crypto';
 import {createReadStream,constants} from 'node:fs';
-import {mkdir,lstat,readdir,readFile,writeFile,open,rename,unlink,link,copyFile,statfs} from 'node:fs/promises';
+import {mkdir,lstat,readdir,readFile,writeFile,open,rename,unlink,link,copyFile,statfs,opendir,rmdir} from 'node:fs/promises';
 import {join,resolve,relative,sep,isAbsolute,dirname} from 'node:path';
 import {spawn} from 'node:child_process';
 import {pipeline} from 'node:stream/promises';
@@ -9,6 +9,9 @@ import {tarBackupStream} from './backup-archive.js';
 import {Worker} from 'node:worker_threads';
 
 export const RECOVERY_FORMAT=1;
+const MiB=1048576, snapshotLimit=1024, objectLimit=16384;
+const oversize=()=>fail('RECOVERY_SNAPSHOT_TOO_LARGE','One automatic recovery snapshot exceeds its storage budget');
+const budgetError=()=>fail('RECOVERY_BUDGET_EXCEEDED','Automatic recovery storage budget reached');
 const UUID=/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 const SHA=/^[a-f0-9]{64}$/;
 export const within=(parent,child)=>{const r=relative(resolve(parent),resolve(child));return r===''||r!=='..'&&!r.startsWith('..'+sep)&&!isAbsolute(r);};
@@ -83,13 +86,32 @@ export async function openRecoveryStore({dataDir,mediaDir=dataDir,directory,stor
   summaryCache=result.sort((a,b)=>(b.createdAt??0)-(a.createdAt??0));summaryAt=Date.now();return [...summaryCache];
  }
  const verify=(id,options)=>verifyRecoveryPoint(directory,id,options);
- async function capture({db,scope='database',reason='scheduled',version,previousVersion=null,configuration=[],reserveMiB=512,now=Date.now(),onProgress=()=>{}}){
+ async function capture({db,scope='database',reason='scheduled',version,previousVersion=null,configuration=[],reserveMiB=512,now=Date.now(),onProgress=()=>{},automaticBudgetMiB}){
   if(busy)throw fail('RECOVERY_BUSY','Another recovery operation is running');busy=true;
-  const id=randomUUID(),work=join(directory,'work',id);
+  const id=randomUUID(),work=join(directory,'work',id),createdObjects=[];let durable=false;
   try{
+   const limited=reason==='scheduled'&&scope==='database'&&automaticBudgetMiB!==undefined;
+   const maximum=automaticBudgetMiB*MiB;
+   let committed=0,objectCount=0;
+   if(limited){
+     if(!Number.isSafeInteger(maximum)||maximum<MiB)throw budgetError();
+     let directories=0;
+     for await(const entry of await opendir(join(directory,'snapshots')))
+       if(++directories>=snapshotLimit)throw budgetError();
+     let scanned=0;
+     for await(const entry of await opendir(join(directory,'objects'))){
+       if(++scanned>objectLimit)throw budgetError();
+       if(!SHA.test(entry.name))continue;
+       const info=await lstat(objectPath(entry.name));
+       if(!info.isFile()||info.isSymbolicLink())throw fail('RECOVERY_PATH_INVALID','Invalid recovery object');
+       committed+=info.size;objectCount++;
+       if(committed>maximum)throw budgetError();
+     }
+   }
    await mkdir(work,{mode:0o700});
    const space=await statfs(directory),estimate=Number(db.prepare('PRAGMA page_count').get().page_count)*Number(db.prepare('PRAGMA page_size').get().page_size);
-   if(Number(space.bavail)*Number(space.bsize)<estimate+reserveMiB*1048576)throw fail('RECOVERY_SPACE_LOW','Insufficient recovery space');
+   if(limited&&estimate>maximum)throw oversize();
+   if(Number(space.bavail)*Number(space.bsize)<estimate*(limited?2:1)+reserveMiB*MiB)throw fail('RECOVERY_SPACE_LOW','Insufficient recovery space');
    const files=[],verified=new Set();let bytes=0;
    async function add(source,name){
     if(!safeName(name))throw fail('RECOVERY_PATH_INVALID','Unsafe recovery filename');
@@ -97,10 +119,12 @@ export async function openRecoveryStore({dataDir,mediaDir=dataDir,directory,stor
     const sha256=await fileHash(source),target=objectPath(sha256),stored=await exists(target);
     if(stored){if(!stored.isFile()||stored.isSymbolicLink()||stored.size!==before.size||!verified.has(sha256)&&await fileHash(target)!==sha256)throw fail('RECOVERY_CHECKSUM_MISMATCH','Existing recovery object is damaged');}
     else{
+     if(limited&&before.size>maximum)throw oversize();
+     if(limited&&(objectCount>=objectLimit||committed+before.size>maximum))throw budgetError();
      const free=await statfs(directory);if(Number(free.bavail)*Number(free.bsize)<before.size+reserveMiB*1048576)throw fail('RECOVERY_SPACE_LOW','Insufficient recovery space');
      const temp=join(work,randomUUID());await copyFile(source,temp,constants.COPYFILE_FICLONE);if(await fileHash(temp)!==sha256)throw fail('RECOVERY_SOURCE_CHANGED','Backup source changed');
      const handle=await open(temp,'r+');try{await handle.sync();}finally{await handle.close();}
-     await link(temp,target);await unlink(temp);
+     await link(temp,target);createdObjects.push(target);await unlink(temp);committed+=before.size;objectCount++;
     }
     const after=await lstat(source);if(before.size!==after.size||before.mtimeMs!==after.mtimeMs||before.ino!==after.ino)throw fail('RECOVERY_SOURCE_CHANGED','Backup source changed');
     const precise=await lstat(source,{bigint:true});
@@ -126,31 +150,70 @@ export async function openRecoveryStore({dataDir,mediaDir=dataDir,directory,stor
    const envelope={manifest,sha256:createHash('sha256').update(JSON.stringify(manifest)).digest('hex')};
    validateManifest(envelope);
    await durableJson(join(work,'manifest.json'),envelope);await syncDirectory(join(directory,'objects'));
-   const published=join(directory,'snapshots',id);await mkdir(published,{mode:0o700});await rename(join(work,'manifest.json'),join(published,'manifest.json'));
+   const published=join(directory,'snapshots',id);await mkdir(published,{mode:0o700});await rename(join(work,'manifest.json'),join(published,'manifest.json'));durable=true;
    const summary=summarize(manifest);await durableJson(join(published,'summary.json'),{summary,sha256:createHash('sha256').update(JSON.stringify(summary)).digest('hex')});await syncDirectory(published);await syncDirectory(join(directory,'snapshots'));summaryCache=null;
    return manifest;
   }finally{
    // Only our flat, UUID-named scratch files are removable; never traverse a live tree.
-   try{if(await exists(work)){for(const name of await readdir(work)){const file=join(work,name),info=await lstat(file);if(info.isFile()&&!info.isSymbolicLink())await unlink(file);}const {rmdir}=await import('node:fs/promises');await rmdir(work);}}finally{busy=false;}
+   try{if(!durable)for(const path of createdObjects)await unlink(path).catch(()=>{});if(await exists(work)){for(const name of await readdir(work)){const file=join(work,name),info=await lstat(file);if(info.isFile()&&!info.isSymbolicLink())await unlink(file);}const {rmdir}=await import('node:fs/promises');await rmdir(work);}}finally{busy=false;}
   }
  }
- async function prune({now=Date.now(),retentionDays=30,collectObjects=false}={}){
-  if(busy)return;const snapshots=await list();if(snapshots.some(s=>s.invalid))return;
-  const keep=new Set(),buckets=new Set();
-  for(const snapshot of snapshots){
-   // Upgrade and explicit manual checkpoints are never expired automatically.
-   if(snapshot.reason==='pre-upgrade'||snapshot.reason==='manual'){keep.add(snapshot.id);continue;}
-   const age=now-snapshot.createdAt;
-   const bucket=age<86400000?'recent:'+snapshot.id:age<7*86400000?'hour:'+Math.floor(snapshot.createdAt/3600000):'day:'+Math.floor(snapshot.createdAt/86400000);
-   if(age<retentionDays*86400000&&!buckets.has(snapshot.scope+bucket)){buckets.add(snapshot.scope+bucket);keep.add(snapshot.id);}
-  }
-  // Always retain at least the latest two points of each scope, even after prolonged downtime.
-  for(const scope of ['database','full'])snapshots.filter(s=>s.scope===scope).slice(0,2).forEach(s=>keep.add(s.id));
-  for(const snapshot of snapshots)if(!keep.has(snapshot.id)){await unlink(join(directory,'snapshots',snapshot.id,'manifest.json'));await unlink(join(directory,'snapshots',snapshot.id,'summary.json')).catch(error=>{if(error.code!=='ENOENT')throw error;});const {rmdir}=await import('node:fs/promises');await rmdir(join(directory,'snapshots',snapshot.id));}summaryCache=null;
-  if(!collectObjects)return;
-  const references=new Set();for(const snapshot of snapshots)if(keep.has(snapshot.id))for(const file of (await readManifest(directory,snapshot.id)).files)references.add(file.sha256);
-  for(const name of await readdir(join(directory,'objects'))){if(!SHA.test(name)||references.has(name))continue;const file=objectPath(name),info=await lstat(file);if(info.isFile()&&!info.isSymbolicLink()&&info.mtimeMs<now-86400000)await unlink(file);}
+ async function prune({now=Date.now(),retentionDays=30,collectObjects=false,pressure=false}={}){
+  if(busy)return 0;
+  busy=true;
+  try{
+   const snapshots=await list();if(snapshots.some(s=>s.invalid))return 0;
+   const keep=new Set(),buckets=new Set(), ordinary=s=>s.scope==='database'&&s.reason==='scheduled';
+   for(const snapshot of snapshots){
+    // Never expire explicit checkpoints or legacy full backups implicitly.
+    if(!ordinary(snapshot)){keep.add(snapshot.id);continue;}
+    const age=now-snapshot.createdAt;
+    const bucket=age<86400000?'recent:'+snapshot.id:age<7*86400000?'hour:'+Math.floor(snapshot.createdAt/3600000):'day:'+Math.floor(snapshot.createdAt/86400000);
+    if(!pressure&&age<retentionDays*86400000&&!buckets.has(bucket)){buckets.add(bucket);keep.add(snapshot.id);}
+   }
+   const anchors=snapshots.filter(s=>s.scope==='database').slice(0,2);
+   anchors.forEach(s=>keep.add(s.id));
+   snapshots.filter(ordinary).slice(0,2).forEach(s=>keep.add(s.id));
+   let retired=snapshots.filter(s=>!keep.has(s.id));
+   // Trim a bounded number of oldest ordinary points on one pressure pass.
+   if(pressure){
+    if(anchors.length<2)return 0;
+    retired=retired.slice(-24);
+   }
+   if(retired.length){
+    if(anchors.length<2)return 0;
+    for(const point of anchors)await verify(point.id);
+    // Never remove a manifest from an unexpectedly populated directory.
+    for(const snapshot of retired){
+     const names=await readdir(join(directory,'snapshots',snapshot.id));
+     if(names.some(name=>!['manifest.json','summary.json'].includes(name)))return 0;
+    }
+   }
+   const remove=new Set(retired.map(s=>s.id)),references=new Set(),retiredReferences=new Set();
+   // Resolve all manifests before making any removals. Invalid legacy/damaged
+   // metadata aborts the entire pass, including object collection.
+   if(retired.length||collectObjects)for(const snapshot of snapshots){
+    const manifest=await readManifest(directory,snapshot.id);
+    const target=remove.has(snapshot.id)?retiredReferences:references;
+    for(const file of manifest.files)target.add(file.sha256);
+   }
+   for(const snapshot of retired){
+    const folder=join(directory,'snapshots',snapshot.id);
+    // A previously valid manifest becomes obsolete before its objects; a crash
+    // leaves excess blobs, not a manifest that references missing content.
+    await unlink(join(folder,'manifest.json'));
+    await unlink(join(folder,'summary.json')).catch(error=>{if(error.code!=='ENOENT')throw error;});
+    await rmdir(folder);summaryCache=null;
+   }
+   if(collectObjects)for await(const entry of await opendir(join(directory,'objects'))){
+    if(!SHA.test(entry.name)||references.has(entry.name))continue;
+    const file=objectPath(entry.name),info=await lstat(file);
+    if(info.isFile()&&!info.isSymbolicLink()&&(info.mtimeMs<now-86400000||pressure&&retiredReferences.has(entry.name)))await unlink(file);
+   }
+   return retired.length;
+  }finally{busy=false;}
  }
+
  return {directory,list,capture,verify,prune,objectPath};
 }
 

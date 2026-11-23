@@ -10,7 +10,13 @@ import {shelfUnlockValue} from './private-shelves.js';
 import {rememberPlayback,forgetPlayback,clearPlaybackPresentation} from './playback-resume.js';
 import {playlistContext} from './playlist-context.js';
 
+import {interruptLiveMedia} from './media-session.js';
+
 let release,dock,dockIdentity,refreshEpoch=0;
+export async function pauseNativeForRadio(){
+  if(!nativePlayerAvailable())return;
+  if((await NativePlayer.status())?.playing)await NativePlayer.pause();
+}
 export async function refreshNativePlayback(eventState){
   if(!nativePlayerAvailable())return;
   const epoch=++refreshEpoch,actor=getSession(),origin=getEndpoint(),generation=nativePlaybackGeneration(),identity=origin+'|'+actor?.user.id;
@@ -18,6 +24,7 @@ export async function refreshNativePlayback(eventState){
   await nativePlaybackStopped();
   const current=()=>epoch===refreshEpoch&&getSession()?.token===actor?.token&&getEndpoint()===origin&&nativePlaybackGeneration()===generation;
   const status=typeof eventState?.active==='boolean'?eventState:await NativePlayer.status();if(!current())return;
+  if(status.active&&status.playing)interruptLiveMedia();
   if(status.active&&!release)release=beginUpdateActivity();else if(!status.active&&release){release();release=null;}
   if(!status.active||!actor){dock?.dispose();dock=null;return;}
   rememberPlayback({id:status.item?.id,kind:status.video?'video':'audio',positionMs:status.positionMs,durationMs:status.durationMs});

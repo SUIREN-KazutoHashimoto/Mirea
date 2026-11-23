@@ -145,11 +145,11 @@ export async function api(path, options = {}) {
   let result;try{result=response.status===204?null:await response.json();}finally{assertRequestContext(context,origin);options.signal?.throwIfAborted();}if(native&&path==='/config'){compatibleEndpoint=endpoint;compatibility=compareVersions(packageInfo.version,result?.version);window.dispatchEvent(new CustomEvent('mirea:server-version',{detail:{...compatibility,version:result?.version}}));}return result;
 }
 
-export async function authenticatedBlob(path, signal) {
+export async function authenticatedBlob(path, signal, headers) {
   checkCompatibility(path);
   const token = session?.token,context=authRevision,origin=endpoint;
   if(session?.offline&&!token)throw new Error('オフラインです。');
-  let response;try{response = await fetch(absoluteUrl(path), { headers: authHeaders(), signal, cache: 'no-store' });}catch(error){assertRequestContext(context,origin);signal?.throwIfAborted();throw error;}
+  let response;try{response = await fetch(absoluteUrl(path), { headers: {...authHeaders(),...headers}, signal, cache: 'no-store' });}catch(error){assertRequestContext(context,origin);signal?.throwIfAborted();throw error;}
   assertRequestContext(context,origin);signal?.throwIfAborted();
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));

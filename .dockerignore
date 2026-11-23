@@ -16,6 +16,8 @@
 !server/**
 !scripts/
 !scripts/prepare-media-storage.mjs
+!scripts/render-radio-dynamic.py
+!scripts/radio_voicevox_capi.py
 !scripts/pwa-icons.mjs
 !scripts/third-party-notices.mjs
 !scripts/build-ai-engines.mjs

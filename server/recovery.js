@@ -20,7 +20,7 @@ export async function prepareRecovery({storage,version,options={}}){
  if(await optional(transitionFile)!==null)throw reject('RECOVERY_STARTUP_INCOMPLETE','Previous upgrade did not finish. Preserve these data and restore the pre-upgrade recovery point before retrying.');
  const identity=JSON.parse(await readFile(join(dataDir,'storage-layout.json'),'utf8'));
  const store=await openRecoveryStore({dataDir,mediaDir,directory:options.recoveryDirectory??process.env.RECOVERY_DIR,storageId:identity.id});
- const selectedEnvironment=['HOST','PORT','DATA_DIR','MEDIA_DIR','HTTPS_KEY_FILE','HTTPS_CERT_FILE','CORS_ORIGINS','SERVER_ADMIN_USER_IDS','ALLOW_REGISTRATION','ANALYTICS_ENABLED','MAX_UPLOAD_BYTES','UPLOAD_CHUNK_BYTES','APP_UPDATES_DIR','APP_UPDATES_SOURCE','WINDOWS_MAINTENANCE_DIR','RECOVERY_DIR','RECOVERY_INTERVAL_MINUTES','RECOVERY_FULL_INTERVAL_HOURS','RECOVERY_RETENTION_DAYS','RECOVERY_RESERVE_MIB'];
+ const selectedEnvironment=['HOST','PORT','DATA_DIR','MEDIA_DIR','HTTPS_KEY_FILE','HTTPS_CERT_FILE','CORS_ORIGINS','SERVER_ADMIN_USER_IDS','ALLOW_REGISTRATION','ANALYTICS_ENABLED','MAX_UPLOAD_BYTES','UPLOAD_CHUNK_BYTES','APP_UPDATES_DIR','APP_UPDATES_SOURCE','WINDOWS_MAINTENANCE_DIR','RECOVERY_DIR','RECOVERY_INTERVAL_MINUTES','RECOVERY_FULL_INTERVAL_HOURS','RECOVERY_RETENTION_DAYS','RECOVERY_RESERVE_MIB','RECOVERY_AUTOMATIC_BUDGET_MIB'];
  selectedEnvironment.push('FFMPEG_PATH','FFPROBE_PATH','MAX_CONCURRENT_UPLOADS','MAX_CONCURRENT_JOBS','MAX_CONCURRENT_THUMBNAILS','MAX_CONCURRENT_PREVIEWS','MAX_CONCURRENT_INGEST','MAX_UPLOAD_ASSETS','AI_ENABLED','AI_BACKEND','AI_THREADS','AI_MEMORY_MIB','AI_CONCURRENT_JOBS','AI_RUNTIME_DIR','AI_MUSIC_PYTHON','AI_EXECUTOR','AI_VULKAN_RENDER_NODE','HEALTHCHECK_CA_FILE','HEALTHCHECK_TLS_SERVER_NAME','MIREA_TRUENAS_PREFLIGHT','MIREA_INSTALL_ID','MIREA_STORAGE_GROUP_ID','MIREA_TLS_IP','MIREA_TLS_ROOT_SHA256','MIREA_TLS_LEAF_SHA256','MIREA_TLS_SPKI_SHA256');
  const configuration=()=>[
   {name:'runtime.json',bytes:JSON.stringify({version,storage:{dataDir,mediaDir},environment:Object.fromEntries(selectedEnvironment.filter(key=>process.env[key]!==undefined).map(key=>[key,process.env[key]]))})},
@@ -48,6 +48,8 @@ export async function registerRecovery(app,{db,prepared,version,adminAccess:a,ma
  try{state=JSON.parse(await optional(statusFile)??'{}');if(!state||typeof state!=='object'||Array.isArray(state))throw Error();}catch{state={lastError:{code:'RECOVERY_STATUS_INVALID',at:Date.now()}};}
  if(state.lastError?.scope==='full'){state.previousFullCopyError=state.lastError;state.lastError=null;}
  for(const key of ['lastPruneAt','lastCollectionAt','lastFullAttemptAt','fullDeferredAt'])if(state[key]!==undefined&&(!Number.isSafeInteger(state[key])||state[key]<0||state[key]>Date.now()+300000))delete state[key];
+ if(!Number.isSafeInteger(state.nextScheduledAttemptAt)||state.nextScheduledAttemptAt<0||state.nextScheduledAttemptAt>Date.now()+3600000)
+  delete state.nextScheduledAttemptAt;
  // A process interruption is visible after restart, never reported as a successful backup.
  if(state.active){state={...state,active:null,lastError:{code:'RECOVERY_INTERRUPTED',at:Date.now()}};await durableJson(statusFile,state);}
  const persist=()=>durableJson(statusFile,state);
@@ -60,14 +62,28 @@ export async function registerRecovery(app,{db,prepared,version,adminAccess:a,ma
    if(verifyId){await store.verify(verifyId);state.lastVerified={id:verifyId,at:Date.now()};if(state.lastError?.scope==='verify')state.lastError=null;}
    else{
     // Only metadata is copied. Media snapshots/replication remain host managed.
-    const snapshot=await store.capture({db,scope,reason,version,configuration:configuration(),reserveMiB:settings.value.reserveMiB,onProgress:progress=>{state.progress=progress;}});
+    const scheduled=reason==='scheduled', values=settings.value;
+    const capture=()=>store.capture({db,scope,reason,version,configuration:configuration(),reserveMiB:values.reserveMiB,
+      ...(scheduled?{automaticBudgetMiB:values.automaticBudgetMiB}:{}),onProgress:progress=>{state.progress=progress;}});
+    let snapshot;
+    try{snapshot=await capture();}catch(error){
+      if(!scheduled||!['RECOVERY_BUDGET_EXCEEDED','RECOVERY_SPACE_LOW'].includes(error.code))throw error;
+      // Free only eligible automatic points after verifying the retained anchors.
+      // A blocked collector must not create more backups indefinitely, or loop.
+      const retired=await store.prune({retentionDays:values.retentionDays,collectObjects:true,pressure:true});
+      state.lastPressureTrim={retired,at:Date.now()};
+      state.lastPruneAt=Date.now();state.lastCollectionAt=state.lastPruneAt;
+      snapshot=await capture();
+    }
+    if(scheduled)delete state.nextScheduledAttemptAt;
     state.lastDatabaseAt=snapshot.createdAt;
-    state.lastSnapshot=snapshot.id;if(!state.lastError?.scope||state.lastError.scope===scope)state.lastError=null;
+    state.lastSnapshot=snapshot.id;if(!state.lastError?.scope||state.lastError.scope===scope&&(scheduled||state.lastError.reason!=='scheduled'))state.lastError=null;
     // Expiry and object collection happen only after a new verified recovery point exists.
     if(Date.now()-(state.lastPruneAt??0)>=3600000){const collectObjects=Date.now()-(state.lastCollectionAt??0)>=86400000;await store.prune({retentionDays:settings.value.retentionDays,collectObjects});state.lastPruneAt=Date.now();if(collectObjects)state.lastCollectionAt=Date.now();}
    }
   }catch(error){
-   state.lastError={code:/^RECOVERY_[A-Z_]+$/.test(error.code??'')?error.code:'RECOVERY_FAILED',scope:verifyId?'verify':scope,at:Date.now()};app.log.error({code:state.lastError.code},'Recovery operation failed; existing data and recovery points were retained');
+   if(reason==='scheduled'&&!verifyId)state.nextScheduledAttemptAt=Date.now()+(['RECOVERY_BUDGET_EXCEEDED','RECOVERY_SPACE_LOW','RECOVERY_SNAPSHOT_TOO_LARGE'].includes(error.code)?3600000:15*60000);
+   state.lastError={code:/^RECOVERY_[A-Z_]+$/.test(error.code??'')?error.code:'RECOVERY_FAILED',scope:verifyId?'verify':scope,reason,at:Date.now()};app.log.error({code:state.lastError.code},'Recovery operation failed; protected recovery points were retained');
    throw error;
   }finally{state.active=null;state.progress=null;await persist();}})();
   active=task;try{return await task;}finally{active=null;}
@@ -76,7 +92,7 @@ export async function registerRecovery(app,{db,prepared,version,adminAccess:a,ma
  const existing=(await store.list()).filter(s=>!s.invalid);
  state.lastDatabaseAt=Math.max(...existing.map(s=>s.createdAt),0);
  async function tick(){if(closing||active||maintenance.locked)return;const now=Date.now(),values=settings.value;
-  if(now-(state.lastDatabaseAt||serviceStartedAt)>=values.intervalMinutes*60000)await execute({scope:'database'}).catch(()=>{});
+  if(now>=(state.nextScheduledAttemptAt??0)&&now-(state.lastDatabaseAt||serviceStartedAt)>=values.intervalMinutes*60000)await execute({scope:'database'}).catch(()=>{});
  }
  const timer=setInterval(()=>tick().catch(()=>{}),Math.min(60000,options.recoveryTickMs??60000));timer.unref();
  app.addHook('onClose',async()=>{closing=true;clearInterval(timer);await active?.catch(()=>{});});

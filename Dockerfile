@@ -45,7 +45,7 @@ RUN gcc -std=c11 -O2 -Wall -Wextra -Werror -D_FORTIFY_SOURCE=2 -fstack-protector
 
 FROM node:24.19.0-bookworm-slim AS runtime
 ARG VCS_REF=unknown
-ARG VERSION=2.4.1-beta
+ARG VERSION=3.0.0-beta
 LABEL org.opencontainers.image.title="Mirea" \
       org.opencontainers.image.description="Shared video, audio and book library" \
       org.opencontainers.image.source="https://github.com/SUIREN-KazutoHashimoto/Mirea" \
@@ -66,7 +66,7 @@ COPY ai/music.py ai/neighborhood.py ./ai/
 COPY server ./server
 COPY package.json LICENSE ./
 COPY third-party ./third-party
-COPY scripts/prepare-media-storage.mjs ./scripts/prepare-media-storage.mjs
+COPY scripts/prepare-media-storage.mjs scripts/render-radio-dynamic.py scripts/radio_voicevox_capi.py ./scripts/
 RUN chmod -R go-w /app /usr/local/bin/mirea-launch && mkdir -p /data /media && chown node:node /data /media
 USER 1000:1000
 VOLUME ["/data"]

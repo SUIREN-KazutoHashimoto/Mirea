@@ -78,6 +78,11 @@ jobs:
       - run: curl --fail http://localhost:3000/
       - name: Verify local inference code and outbound network denial without models
         run: docker compose run --rm --no-deps -T mirea /usr/local/bin/node --input-type=module < scripts/check-ai-runtime.mjs
+      - name: Verify optional radio without vendor models under the unprivileged container launcher
+        run: docker compose run --rm --no-deps -T mirea /usr/local/bin/node --input-type=module < scripts/check-radio-voicevox-container.mjs
+      - name: Prove credited native radio audio with ephemeral pinned Linux assets
+        timeout-minutes: 12
+        run: node scripts/run-radio-voicevox-container-ci.mjs
       - name: Verify recovery checksums and database workers inside the unprivileged sandbox
         run: docker compose run --rm --no-deps -T mirea /usr/local/bin/node --input-type=module < scripts/check-recovery-runtime.mjs
       - name: Compare CPU music attention with an independent numerical reference

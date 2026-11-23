@@ -1,7 +1,7 @@
 import {httpError} from './security.js';
-export const RECOVERY_DEFAULTS={intervalMinutes:5,retentionDays:30,reserveMiB:512};
-export const RECOVERY_LIMITS={intervalMinutes:[1,1440],retentionDays:[7,365],reserveMiB:[64,1048576]};
-const variables={intervalMinutes:'RECOVERY_INTERVAL_MINUTES',retentionDays:'RECOVERY_RETENTION_DAYS',reserveMiB:'RECOVERY_RESERVE_MIB'};
+export const RECOVERY_DEFAULTS={intervalMinutes:5,retentionDays:30,reserveMiB:512,automaticBudgetMiB:16384};
+export const RECOVERY_LIMITS={intervalMinutes:[1,1440],retentionDays:[7,365],reserveMiB:[64,1048576],automaticBudgetMiB:[64,1048576]};
+const variables={intervalMinutes:'RECOVERY_INTERVAL_MINUTES',retentionDays:'RECOVERY_RETENTION_DAYS',reserveMiB:'RECOVERY_RESERVE_MIB',automaticBudgetMiB:'RECOVERY_AUTOMATIC_BUDGET_MIB'};
 export function recoverySettings(db,env=process.env){
  const saved=JSON.parse(db.prepare("SELECT value FROM server_settings WHERE key='recovery'").get()?.value??'{}');
  // Retain compatibility with a 2.1.0 setting without starting a media copy.

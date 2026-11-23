@@ -1,7 +1,44 @@
 import { DatabaseSync } from 'node:sqlite';
 import {initializeAiSchema} from './ai-schema.js';
 import {orderSeriesItems} from './series-order.js';
-export const DATABASE_SCHEMA_VERSION=27;
+export const DATABASE_SCHEMA_VERSION=31;
+
+function migrateRadioStations(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS radio_stations(
+    id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,visibility TEXT NOT NULL CHECK(visibility IN ('public','unlisted','private')),
+    share_hash TEXT,epoch INTEGER NOT NULL,revision INTEGER NOT NULL DEFAULT 1,
+    CHECK((visibility='unlisted')=(share_hash IS NOT NULL)));
+    CREATE INDEX IF NOT EXISTS radio_stations_user ON radio_stations(user_id,name,id);
+    CREATE INDEX IF NOT EXISTS radio_stations_visibility ON radio_stations(visibility,id);
+    CREATE INDEX IF NOT EXISTS radio_stations_playlist ON radio_stations(playlist_id);
+    UPDATE schema_version SET version=28;`);
+}
+
+function migrateRadioFm(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS radio_fm_profiles(
+    station_id TEXT PRIMARY KEY REFERENCES radio_stations(id) ON DELETE CASCADE,
+    mc TEXT NOT NULL CHECK(mc IN ('off','standard','enhanced')),
+    jingle TEXT NOT NULL CHECK(jingle IN ('off','standard','enhanced')));
+    UPDATE schema_version SET version=29;`);
+}
+
+function migrateRadioAutodj(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS radio_autodj(
+    station_id TEXT PRIMARY KEY REFERENCES radio_stations(id) ON DELETE CASCADE,
+    mode TEXT NOT NULL CHECK(mode IN ('ordered','shuffle')),
+    playlist_ids_json TEXT NOT NULL CHECK(json_valid(playlist_ids_json) AND json_type(playlist_ids_json)='array'
+      AND json_array_length(playlist_ids_json) BETWEEN 1 AND 5));
+    UPDATE schema_version SET version=30;`);
+}
+
+function migrateRadioCrossfade(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS radio_mix_profiles(
+    station_id TEXT PRIMARY KEY REFERENCES radio_stations(id) ON DELETE CASCADE,
+    crossfade_ms INTEGER NOT NULL CHECK(crossfade_ms=2400));
+    UPDATE schema_version SET version=31;`);
+}
 
 export function openDatabase(filename) {
   const db = new DatabaseSync(filename);
@@ -10,11 +47,18 @@ export function openDatabase(filename) {
   let storedVersion;
   if(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_version'").get()){
     const existing=db.prepare('SELECT version FROM schema_version').all();
-    if(existing.length!==1||!Number.isInteger(existing[0].version)||existing[0].version<1||existing[0].version>27)throw new Error('Unsupported database schema; restore a matching recovery point before downgrading');
+    if(existing.length!==1||!Number.isInteger(existing[0].version)||existing[0].version<1||existing[0].version>DATABASE_SCHEMA_VERSION)throw new Error('Unsupported database schema; restore a matching recovery point before downgrading');
     storedVersion=existing[0].version;
   }
   db.exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;');
-  if(storedVersion===27){if(db.prepare('PRAGMA foreign_key_check').all().length)throw new Error('Database foreign key validation failed');return db;}
+  if(storedVersion>=27&&storedVersion<DATABASE_SCHEMA_VERSION)transaction(db,()=>{
+    if(storedVersion===27)migrateRadioStations(db);
+    if(storedVersion<=28)migrateRadioFm(db);
+    if(storedVersion<=29)migrateRadioAutodj(db);
+    migrateRadioCrossfade(db);
+    if(db.prepare('PRAGMA foreign_key_check').all().length)throw new Error('Database foreign key validation failed');
+  });
+  if(storedVersion>=27){if(db.prepare('PRAGMA foreign_key_check').all().length)throw new Error('Database foreign key validation failed');return db;}
   // All schema steps commit as one unit. Savepoints below allow each historical
   // migration to keep its own rollback boundary without exposing a partial schema.
   db.exec('PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE;');
@@ -495,6 +539,7 @@ export function openDatabase(filename) {
     requested_at INTEGER NOT NULL,expires_at INTEGER NOT NULL);
     UPDATE schema_version SET version=25;`);
   transaction(db,()=>{ initializeAiSchema(db); db.exec('UPDATE schema_version SET version=27'); });
+  transaction(db,()=>{migrateRadioStations(db);migrateRadioFm(db);migrateRadioAutodj(db);migrateRadioCrossfade(db);});
   if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Database foreign key validation failed');
   db.exec('COMMIT; PRAGMA foreign_keys=ON;');
   return db;

@@ -2,7 +2,7 @@
 
 [設計書の入口](overview.md) · [データ設計](data-model.md)
 
-この参照表は server/database.js を空のインメモリDBへ適用して生成します。既存のデータ領域・利用者レコードは読みません。現在のスキーマ番号は **27**、アプリケーションテーブルは **63個**です。FTS仮想表を含み、FTSのshadow表、移行途中の置換表、SQLite内部表は含みません。
+この参照表は server/database.js を空のインメモリDBへ適用して生成します。既存のデータ領域・利用者レコードは読みません。現在のスキーマ番号は **31**、アプリケーションテーブルは **67個**です。FTS仮想表を含み、FTSのshadow表、移行途中の置換表、SQLite内部表は含みません。
 
 再生成: リポジトリ直下で node scripts/generate-schema-docs.mjs。差分確認のみ: node scripts/generate-schema-docs.mjs --check。この資料は作業ツリーの定義を示します。配布版を調べる場合は対応するGitタグの資料を参照してください。
 
@@ -50,6 +50,10 @@
 - [playback_tickets](#playback-tickets)
 - [playlist_items](#playlist-items)
 - [playlists](#playlists)
+- [radio_autodj](#radio-autodj)
+- [radio_fm_profiles](#radio-fm-profiles)
+- [radio_mix_profiles](#radio-mix-profiles)
+- [radio_stations](#radio-stations)
 - [schema_version](#schema-version)
 - [series](#series)
 - [series_create_requests](#series-create-requests)
@@ -1687,6 +1691,144 @@ CREATE TABLE playlists(id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES user
 
 </details>
 
+## radio autodj
+
+テーブル名: `radio_autodj`
+
+| 列 | SQLite型 | NOT NULL | 既定値 | 主キー順 |
+| --- | --- | --- | --- | --- |
+| station_id | TEXT | いいえ | — | 1 |
+| mode | TEXT | はい | — | — |
+| playlist_ids_json | TEXT | はい | — | — |
+
+SQLiteの行IDテーブルでは、`TEXT PRIMARY KEY`だけでは`NOT NULL`属性が付かない定義があります。APIのID検証とは別の制約として上表を読んでください。
+
+| 外部キー列 | 参照先 | ON UPDATE | ON DELETE |
+| --- | --- | --- | --- |
+| station_id | radio_stations.id | NO ACTION | CASCADE |
+
+| 索引 | 一意 | 作成元 | 部分索引 | 列 |
+| --- | --- | --- | --- | --- |
+| sqlite_autoindex_radio_autodj_1 | はい | pk | いいえ | station_id |
+
+<details>
+<summary>CREATE TABLE 定義</summary>
+
+```sql
+CREATE TABLE radio_autodj(
+    station_id TEXT PRIMARY KEY REFERENCES radio_stations(id) ON DELETE CASCADE,
+    mode TEXT NOT NULL CHECK(mode IN ('ordered','shuffle')),
+    playlist_ids_json TEXT NOT NULL CHECK(json_valid(playlist_ids_json) AND json_type(playlist_ids_json)='array'
+      AND json_array_length(playlist_ids_json) BETWEEN 1 AND 5));
+```
+
+</details>
+
+## radio fm profiles
+
+テーブル名: `radio_fm_profiles`
+
+| 列 | SQLite型 | NOT NULL | 既定値 | 主キー順 |
+| --- | --- | --- | --- | --- |
+| station_id | TEXT | いいえ | — | 1 |
+| mc | TEXT | はい | — | — |
+| jingle | TEXT | はい | — | — |
+
+SQLiteの行IDテーブルでは、`TEXT PRIMARY KEY`だけでは`NOT NULL`属性が付かない定義があります。APIのID検証とは別の制約として上表を読んでください。
+
+| 外部キー列 | 参照先 | ON UPDATE | ON DELETE |
+| --- | --- | --- | --- |
+| station_id | radio_stations.id | NO ACTION | CASCADE |
+
+| 索引 | 一意 | 作成元 | 部分索引 | 列 |
+| --- | --- | --- | --- | --- |
+| sqlite_autoindex_radio_fm_profiles_1 | はい | pk | いいえ | station_id |
+
+<details>
+<summary>CREATE TABLE 定義</summary>
+
+```sql
+CREATE TABLE radio_fm_profiles(
+    station_id TEXT PRIMARY KEY REFERENCES radio_stations(id) ON DELETE CASCADE,
+    mc TEXT NOT NULL CHECK(mc IN ('off','standard','enhanced')),
+    jingle TEXT NOT NULL CHECK(jingle IN ('off','standard','enhanced')));
+```
+
+</details>
+
+## radio mix profiles
+
+テーブル名: `radio_mix_profiles`
+
+| 列 | SQLite型 | NOT NULL | 既定値 | 主キー順 |
+| --- | --- | --- | --- | --- |
+| station_id | TEXT | いいえ | — | 1 |
+| crossfade_ms | INTEGER | はい | — | — |
+
+SQLiteの行IDテーブルでは、`TEXT PRIMARY KEY`だけでは`NOT NULL`属性が付かない定義があります。APIのID検証とは別の制約として上表を読んでください。
+
+| 外部キー列 | 参照先 | ON UPDATE | ON DELETE |
+| --- | --- | --- | --- |
+| station_id | radio_stations.id | NO ACTION | CASCADE |
+
+| 索引 | 一意 | 作成元 | 部分索引 | 列 |
+| --- | --- | --- | --- | --- |
+| sqlite_autoindex_radio_mix_profiles_1 | はい | pk | いいえ | station_id |
+
+<details>
+<summary>CREATE TABLE 定義</summary>
+
+```sql
+CREATE TABLE radio_mix_profiles(
+    station_id TEXT PRIMARY KEY REFERENCES radio_stations(id) ON DELETE CASCADE,
+    crossfade_ms INTEGER NOT NULL CHECK(crossfade_ms=2400));
+```
+
+</details>
+
+## radio stations
+
+テーブル名: `radio_stations`
+
+| 列 | SQLite型 | NOT NULL | 既定値 | 主キー順 |
+| --- | --- | --- | --- | --- |
+| id | TEXT | いいえ | — | 1 |
+| user_id | TEXT | はい | — | — |
+| playlist_id | TEXT | はい | — | — |
+| name | TEXT | はい | — | — |
+| visibility | TEXT | はい | — | — |
+| share_hash | TEXT | いいえ | — | — |
+| epoch | INTEGER | はい | — | — |
+| revision | INTEGER | はい | 1 | — |
+
+SQLiteの行IDテーブルでは、`TEXT PRIMARY KEY`だけでは`NOT NULL`属性が付かない定義があります。APIのID検証とは別の制約として上表を読んでください。
+
+| 外部キー列 | 参照先 | ON UPDATE | ON DELETE |
+| --- | --- | --- | --- |
+| playlist_id | playlists.id | NO ACTION | CASCADE |
+| user_id | users.id | NO ACTION | CASCADE |
+
+| 索引 | 一意 | 作成元 | 部分索引 | 列 |
+| --- | --- | --- | --- | --- |
+| radio_stations_playlist | いいえ | c | いいえ | playlist_id |
+| radio_stations_visibility | いいえ | c | いいえ | visibility, id |
+| radio_stations_user | いいえ | c | いいえ | user_id, name, id |
+| sqlite_autoindex_radio_stations_1 | はい | pk | いいえ | id |
+
+<details>
+<summary>CREATE TABLE 定義</summary>
+
+```sql
+CREATE TABLE radio_stations(
+    id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,visibility TEXT NOT NULL CHECK(visibility IN ('public','unlisted','private')),
+    share_hash TEXT,epoch INTEGER NOT NULL,revision INTEGER NOT NULL DEFAULT 1,
+    CHECK((visibility='unlisted')=(share_hash IS NOT NULL)));
+```
+
+</details>
+
 ## schema version
 
 テーブル名: `schema_version`
@@ -2465,6 +2607,9 @@ CREATE INDEX media_tasks_queue ON media_tasks(kind,state,created_at);
 CREATE INDEX memberships_user ON memberships(user_id);
 CREATE UNIQUE INDEX one_owner_per_shelf ON memberships(shelf_id) WHERE role = 'owner';
 CREATE INDEX playlists_user ON playlists(user_id,updated_at);
+CREATE INDEX radio_stations_playlist ON radio_stations(playlist_id);
+CREATE INDEX radio_stations_user ON radio_stations(user_id,name,id);
+CREATE INDEX radio_stations_visibility ON radio_stations(visibility,id);
 CREATE INDEX series_parent ON series(parent_id);
 CREATE INDEX series_shelf ON series(shelf_id, title);
 CREATE INDEX thumbnail_image ON thumbnail_overrides(image_id);

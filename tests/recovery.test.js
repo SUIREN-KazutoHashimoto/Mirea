@@ -144,3 +144,56 @@ test('only server administrators can create and inspect recovery points',async t
  const started=await app.inject({method:'POST',url:'/api/v1/admin/recovery',headers,payload:{currentPassword:'synthetic-password',scope:'database',acknowledgePause:false}});assert.equal(started.statusCode,202,started.body);
  const deadline=Date.now()+30000;while(Date.now()<deadline){const status=(await app.inject({method:'GET',url:'/api/v1/admin/recovery',headers})).json();if(status.lastError)assert.fail(JSON.stringify(status.lastError));if(!status.active&&status.snapshots.length){assert.equal(status.snapshots[0].scope,'database');return;}await new Promise(r=>setTimeout(r,100));}assert.fail('Recovery snapshot did not finish');
 });
+
+test('automatic object budget rejects new writes without deleting verified points or blocking manual checkpoints',async t=>{
+ const f=await fixture(t), args={db:f.db,scope:'database',version:'3.0.0-beta',reserveMiB:0};
+ const first=await f.store.capture({...args,reason:'manual'});
+ const existing=await readdir(join(f.store.directory,'objects'));
+ await assert.rejects(f.store.capture({...args,reason:'scheduled',automaticBudgetMiB:1,
+   configuration:[{name:'a.bin',bytes:Buffer.alloc(128*1024,1)},{name:'b.bin',bytes:Buffer.alloc(512*1024,2)}]}),{code:'RECOVERY_BUDGET_EXCEEDED'});
+ assert.deepEqual((await readdir(join(f.store.directory,'objects'))).sort(),existing.sort(),'failed attempt must not retain its unreferenced new object');
+ assert.deepEqual(await readdir(join(f.store.directory,'work')),[]);
+ await f.store.verify(first.id);
+ await assert.rejects(f.store.capture({...args,reason:'scheduled',automaticBudgetMiB:1,
+   configuration:[{name:'too-large.bin',bytes:Buffer.alloc(2*1024*1024,6)}]}),{code:'RECOVERY_SNAPSHOT_TOO_LARGE'});
+ const upgrade=await f.store.capture({...args,reason:'pre-upgrade',automaticBudgetMiB:1,
+   configuration:[{name:'extra.bin',bytes:Buffer.alloc(2*1024*1024,3)}]});
+ assert.equal((await f.store.verify(upgrade.id)).reason,'pre-upgrade');
+});
+
+test('pressure releases only old automatic objects after rechecking two anchors, preserving restore paths',async t=>{
+ const f=await fixture(t), args={db:f.db,version:'3.0.0-beta',reserveMiB:0},now=Date.now();
+ const legacy=await f.store.capture({...args,scope:'full',reason:'scheduled',now:now-300000});
+ const checkpoint=await f.store.capture({...args,reason:'pre-upgrade',now:now-250000,configuration:[{name:'shared.bin',bytes:Buffer.alloc(640*1024,4)}]});
+ const ordinary=[];
+ for(let i=0;i<5;i++)ordinary.push(await f.store.capture({...args,reason:'scheduled',now:now-120000+i*12000,
+   configuration:[{name:'cache.bin',bytes:Buffer.alloc(640*1024,i+1)},{name:'shared.bin',bytes:Buffer.alloc(640*1024,4)}]}));
+ const corrupt=ordinary.at(-1).files.find(m=>m.name==='configuration/cache.bin'), path=f.store.objectPath(corrupt.sha256);
+ await writeFile(path,Buffer.alloc(corrupt.size,9));
+ await assert.rejects(f.store.prune({now,pressure:true,collectObjects:true}),{code:'RECOVERY_CHECKSUM_MISMATCH'});
+ assert.equal((await f.store.list()).length,7);
+ await writeFile(path,Buffer.alloc(corrupt.size,5));
+ assert.equal(await f.store.prune({now,pressure:true,collectObjects:true}),3);
+ const retained=(await f.store.list()).map(m=>m.id);
+ assert.deepEqual(new Set(retained),new Set([legacy.id,checkpoint.id,...ordinary.slice(-2).map(s=>s.id)]));
+ for(const id of retained)await f.store.verify(id);
+ const restarted=await f.store.capture({...args,automaticBudgetMiB:4,reason:'scheduled',configuration:[{name:'new.bin',bytes:Buffer.alloc(640*1024,7)}]});
+ await f.store.verify(restarted.id);
+});
+
+test('scheduled budget saturation tries one safe pressure pass, defers retries, and does not throttle manual backup',async t=>{
+ const f=await fixture(t),app=Fastify(),gate=createMaintenanceGate(app),calls=[];
+ let blocked=true;
+ const store={...f.store,list:async()=>[],prune:async opts=>{calls.push(opts.pressure?'pressure':'prune');},
+  async capture(opts){calls.push(opts.reason);if(blocked&&opts.reason==='scheduled')throw Object.assign(Error(),{code:'RECOVERY_BUDGET_EXCEEDED'});
+   return {id:randomUUID(),createdAt:Date.now()};}};
+ const r=await registerRecovery(app,{db:f.db,prepared:{store,configuration:()=>[]},version:'3.0.0-beta',
+  adminAccess:{requireAdmin(){},reauthenticate(){},audit(){}},maintenance:gate});t.after(()=>app.close());
+ r.state.lastDatabaseAt=Date.now()-10*60000;
+ await r.tick();assert.deepEqual(calls,['scheduled','pressure','scheduled']);
+ assert.equal(r.state.lastError.code,'RECOVERY_BUDGET_EXCEEDED');assert(r.state.nextScheduledAttemptAt>Date.now()+59*60000);
+ await r.tick();assert.equal(calls.length,3);
+ await r.execute({reason:'manual'});assert.equal(calls.at(-1),'manual');
+ blocked=false;r.state.nextScheduledAttemptAt=Date.now()-1;r.state.lastDatabaseAt=Date.now()-10*60000;
+ await r.tick();assert.equal(calls.at(-1),'scheduled');assert.equal(r.state.nextScheduledAttemptAt,undefined);
+});

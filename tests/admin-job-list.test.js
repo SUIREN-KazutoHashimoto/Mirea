@@ -10,6 +10,16 @@ test('job paging searches every queue and old history while totals remain unfilt
   const media=db.prepare('INSERT INTO media_tasks VALUES(?,?,?,?,?,?)');for(let n=0;n<120;n++)media.run('m-'+String(n).padStart(3,'0'),'a','transcode','failed',n,n);
   const upload=db.prepare('INSERT INTO upload_sessions(id,title,shelf_id,state,expires_at,created_at,processing_json) VALUES(?,?,?,?,?,?,?)');upload.run('u-active','Receiving','s','uploading',99999,999,'{}');upload.run('u-queued','Waiting ingest','s','processing',99999,1000,'{"stage":"queued"}');upload.run('u-running','Processing book','s','processing',99999,1001,'{"stage":"assembling"}');upload.run('u-expired','Expired receive','s','uploading',1,1002,'{}');upload.run('u-pipeline','In pipeline','s','processing',99999,1003,'{}');db.exec("INSERT INTO media_ingest VALUES('u-pipeline')");
   const first=adminJobPage(db,{userId:'owner'},10000);assert.equal(first.total,248);assert.deepEqual({...first.summary},{running:2,queued:246,paused:0,failed:120});assert.equal(first.rows.length,100);assert.equal(first.nextOffset,100);
+  assert.deepEqual({...first.families.thumbnail},{running:0,queued:245,paused:0,failed:0});
+  assert.deepEqual({...first.families.transfer},{running:2,queued:1,paused:0,failed:0});
+  assert.equal(first.families.transcode.failed,120);
+  assert.equal(first.families.repair.running,0,'no jobs is a genuine zero');
+  const thumbnails=adminJobPage(db,{userId:'owner',family:'thumbnail',limit:3},10000);
+  assert.equal(thumbnails.total,245);assert.equal(thumbnails.rows.length,3);
+  assert.equal(thumbnails.families.transfer.running,2,'family counts are not search or page scoped');
+  assert.equal(adminJobPage(db,{family:'transcode',view:'history',state:'failed'},10000).total,120);
+  assert.equal(adminJobPage(db,{userId:'owner',ownedOnly:true},10000).families,undefined,'no administrator summary for owned jobs');
+
   const second=adminJobPage(db,{offset:first.nextOffset},10000),third=adminJobPage(db,{offset:second.nextOffset},10000);assert.equal(third.rows.length,48);assert.equal(third.nextOffset,null);assert.equal(third.previousOffset,100);assert.equal(new Set([...first.rows,...second.rows,...third.rows].map(r=>r.source+':'+r.id)).size,248);
   const old=adminJobPage(db,{view:'history',q:'m-000'},10000);assert.equal(old.total,1);assert.equal(old.rows[0].id,'m-000');assert.equal(old.summary.failed,120);
   assert.equal(adminJobPage(db,{q:'表紙'},10000).total,245);assert.equal(adminJobPage(db,{userId:'owner',state:'queued',q:'Waiting ingest'},10000).rows[0].id,'u-queued');assert.equal(adminJobPage(db,{state:'running'},10000).total,2);

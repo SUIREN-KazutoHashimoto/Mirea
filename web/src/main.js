@@ -1,3 +1,6 @@
+import {openRadio} from './radio.js';
+import {renderMediaCard} from './media-card.js';
+import {openStationDirectory,openStationLink} from './radio-stations.js';
 import {mountErrorDiagnostics,openErrorDiagnostics,recordClientError} from './error-diagnostics.js';
 import {patchCollection} from './collection-patch.js';
 import {openAbout} from './about.js';
@@ -42,7 +45,7 @@ import { createTheme } from './theme.js';
 import { openSettings } from './settings.js';
 import { createViewerScreen } from './viewer-shell.js';
 import {createCatalogClient} from './catalog-client.js';
-import { initializeNativePlayback,openNativePlayback,refreshNativePlayback } from './native-playback.js';
+import { initializeNativePlayback,openNativePlayback,refreshNativePlayback,pauseNativeForRadio } from './native-playback.js';
 import { NativePlayer,nativePlayerAvailable } from './native-player-bridge.js';
 import { mountVideoPlayer } from './video-player.js';
 import {loadVideoNavigation} from './video-navigation.js';
@@ -270,9 +273,15 @@ function dialog(title, body, extraClass = '') {
   return node;
 }
 
+window.addEventListener('hashchange',()=>{
+  if(!native&&config.radioStations&&getSession()?.token&&!isOfflineSession()&&document.querySelector('#nav-radio'))
+    openStationLink({dialog,api,authenticatedBlob,sessionRevision,beforeListen:pauseNativeForRadio,crossfadeCapable:config.radioCrossfade,volumeScope:getSession()?.user?.id??''});
+});
+
 mountErrorDiagnostics({dialog,send:(reports,{id})=>api('/diagnostics/batches',{method:'POST',body:{id,reports}})});
 
 function renderAuth(register = false) {
+  document.querySelector('dialog.radio-dialog[open]')?.close();
   libraryPanels?.dispose();libraryPanels=null;sortScope='';
   clearPlaybackPresentation();
   collectionDrop?.();collectionDrop=null;
@@ -294,7 +303,7 @@ function renderAuth(register = false) {
       <label>パスワード<input name="password" type="password" autocomplete="${register ? 'new-password' : 'current-password'}" minlength="${register?12:1}" maxlength="128" placeholder="${register?'12文字以上':'パスワード'}" required></label>
       <label class="confirm-row remember-login"><input name="remember" type="checkbox" checked>ログイン状態を保持する（最長30日間）</label><small class="muted">共用端末ではチェックを外してください。パスワードは保存しません。</small>
       <p class="form-error" role="alert" hidden></p><button class="button primary auth-submit" type="submit">${register ? 'アカウントを作成する' : 'ログインする'}${icon('arrow')}</button>
-    </form><p class="auth-switch">${register ? 'すでにアカウントをお持ちですか？' : 'はじめてご利用ですか？'} <button class="text-button" id="switch-auth">${register ? 'ログイン' : 'アカウントを作成'}</button></p><a class="auth-apk" href="${esc(currentApkUrl())}" target="_blank" rel="noopener noreferrer">${icon('download')} Android版の入手先</a><div class="auth-note">${icon('shelf')} 本棚ごとに、共有する相手を選べます。</div></div></section></main>`;
+    </form><p class="auth-switch">${register ? 'すでにアカウントをお持ちですか？' : 'はじめてご利用ですか？'} <button class="text-button" id="switch-auth">${register ? 'ログイン' : 'アカウントを作成'}</button></p><a class="auth-apk" href="${esc(currentApkUrl())}" target="_blank" rel="noopener noreferrer">${icon('download')} Android版APKをダウンロード</a><div class="auth-note">${icon('shelf')} 本棚ごとに、共有する相手を選べます。</div></div></section></main>`;
   const switchButton = document.querySelector('#switch-auth');
   switchButton.hidden = !register && !config.allowRegistration;
   switchButton.onclick = () => renderAuth(!register);
@@ -359,6 +368,15 @@ function renderShell() {
   if(user.defaultCredentialWarning){const warning=document.createElement('button');warning.className='button danger initial-admin-warning';warning.textContent='初期管理者のメールアドレスとパスワードを変更してください';warning.onclick=showSettings;root.querySelector('.content-wrap').prepend(warning);}
   document.querySelector('#add-shelf').onclick = openCreateShelf;
   const playlistNav=document.createElement('button');playlistNav.id='nav-playlists';playlistNav.className='nav-item';playlistNav.innerHTML=icon('library')+'<span>プレイリスト</span>';playlistNav.onclick=()=>openPlaylistView();document.querySelector('#recent-history').after(playlistNav);
+  if(!native && (config.radioEnabled||config.radioStations) && !isOfflineSession()){
+    const radioNav=document.createElement('button');radioNav.id='nav-radio';radioNav.className='nav-item';
+    radioNav.innerHTML=icon('audio')+'<span>ラジオ</span>';
+    const radioOptions={dialog,api,authenticatedBlob,sessionRevision,beforeListen:pauseNativeForRadio,crossfadeCapable:config.radioCrossfade,pilotAvailable:config.radioEnabled,fmCapabilities:config.radioFm,dynamicMc:config.radioDynamic,autodj:config.radioAutodj,volumeScope:getSession()?.user?.id??'',
+      renderSongCard:(item,selection)=>renderMediaCard(item,{esc,icon,bytes,date,progressLabel,selection}),loadThumbnails,esc};
+    radioNav.onclick=()=>{appDrawer?.close();(config.radioStations?openStationDirectory:openRadio)(radioOptions);};
+    if(config.radioStations)openStationLink(radioOptions);
+    playlistNav.after(radioNav);
+  }
   const playlistContext=document.createElement('div');playlistContext.className='playlist-context';playlistContext.hidden=true;document.querySelector('.collection-caption').before(playlistContext);
   document.querySelector('#nav-all').onclick = () => selectShelf(null);
   document.querySelector('#open-upload').onclick = openUpload;
@@ -634,9 +652,8 @@ function renderItems(animate=false) {
     }
     const item=entry.item;
     if(item.pending)return `<article class="media-card pending-card" data-asset-id="${item.id}" aria-disabled="true"><div class="card-art pending-art">${icon(item.kind==='video'?'video':item.kind==='audio'?'audio':'book')}<span>${item.state==='uploading'?'アップロード中':esc(processingLabel(item.processing))}</span></div><div class="card-content"><span class="card-shelf">${esc(item.shelfName)}</span><h3>${esc(item.title)}</h3><p class="muted">処理が完了すると開けます</p><progress max="100" value="${Math.max(0,Math.min(100,Number(item.processing?.percent)||0))}" aria-label="後処理の進捗"></progress></div></article>`;
-    const isBook = !isTimedKind(item.kind);
-    const label = item.originalPlayback?'原本':item.kind === 'image-book' ? `画像・${item.pageCount}ページ` : item.kind === 'epub' ? 'EPUB' : item.kind === 'pdf' ? 'PDF' : item.kind === 'audio' ? 'AAC / M4A' : item.mimeType === 'video/mp4' ? 'MP4' : 'WebM';
-    return `<article class="media-card"><button class="card-open" data-open="${item.id}" aria-haspopup="${native?'dialog':'menu'}" aria-description="長押し、右クリック、またはShift+F10で作品メニューを開きます" ${item.kind==='video'&&(!shelves.find(s=>s.id===item.shelfId)?.private||activeShelf===item.shelfId) ? `data-preview-id="${item.id}"` : ''} aria-label="${esc(item.title)}を${isBook?'読む':'再生する'}"><div class="card-art actual-cover ${isBook ? 'book-cover' : item.kind==='audio' ? 'audio-cover' : 'video-cover'}"><img data-local-thumbnail="${item.id}" data-thumbnail="${esc(item.thumbnailUrl)}" alt="${esc(item.title)}のサムネイル"><span class="cover-placeholder">${icon(isBook ? 'book' : item.kind==='audio' ? 'audio' : 'video')}<span>表紙を読み込んでいます…</span></span><span class="media-type">${item.kind === 'image-book' ? 'IMAGE BOOK' : item.kind==='epub' ? 'EPUB' : isBook ? 'PDF' : item.kind==='audio' ? 'AUDIO' : 'VIDEO'}</span><span class="card-open-label">${isBook ? '本を開く' : '再生する'} ${icon('arrow')}</span></div><div class="card-content"><span class="card-shelf">${icon('shelf')}${esc(item.shelfName)}</span><h3>${esc(item.title)}</h3><div class="card-meta"><span>${label} <span class="meta-dot">·</span> ${bytes(item.size)}</span><span>${date(historyMode?item.lastSeenAt:item.createdAt)}</span></div><div class="card-progress">${esc(progressLabel(item,item.progress))}</div>${item.originalPlayback?'<small class="muted">原本で再生可能 · '+esc(({queued:'変換待ち',running:'変換中',failed:'変換に失敗',incomplete:'変換未完了'})[item.processingState]??'変換未完了')+'</small>':''}</div></button></article>`;
+    return renderMediaCard(item,{esc,icon,bytes,date,progressLabel,native,
+      allowPreview:item.kind==='video'&&(!shelves.find(s=>s.id===item.shelfId)?.private||activeShelf===item.shelfId),seenAt:historyMode?item.lastSeenAt:undefined});
   }).join(''));
   node.querySelectorAll('[data-open]').forEach(button => { button.onclick = () => openViewer((historyMode?historyRows:items).find(i => i.id === button.dataset.open)); });
   node.querySelectorAll('[data-open-series]').forEach(button=>button.onclick=()=>openLibrarySeries(button.dataset.openSeries));

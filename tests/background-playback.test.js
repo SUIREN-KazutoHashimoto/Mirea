@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mountMediaSession } from '../web/src/media-session.js';
+import { mountMediaSession,mountLiveMediaSession } from '../web/src/media-session.js';
 import { createViewRecorder } from '../web/src/analytics-core.js';
 import { mkdtemp,rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -101,4 +101,24 @@ test('API accepts genuine background/PiP playback without visible credit, reject
   // Old schema-1 events have no backgroundMs/pipMs keys: normalization stays byte-compatible.
   const oldView={...view,id:randomUUID()},old={id:randomUUID(),seq:1,type:'open',at:Date.now(),elapsedMs:0};assert.equal((await post(oldView,[old])).statusCode,200);assert.equal((await post(oldView,[old])).json().duplicates,1);
   const payload=JSON.parse(db.prepare('SELECT payload_json FROM analytics_events WHERE event_id=?').get(old.id).payload_json);assert.equal('backgroundMs' in payload,false);
+});
+
+test('live radio pauses background music, removes stale seek/skip, and returns ownership without autoplay',async()=>{
+  const media=new Media(),actions=new Map(),positions=[],session={setActionHandler:(k,v)=>actions.set(k,v),setPositionState:v=>positions.push(v)};
+  const options={navigator:{mediaSession:session},document:{},MediaMetadata:class{constructor(value){Object.assign(this,value);}}};
+  const music=mountMediaSession(media,{...options,title:'Ordinary track',kind:'audio',next:()=>assert.fail('stale skip')});
+  let played=0,paused=0,stopped=0,superseded=0;
+  const radio=mountLiveMediaSession({...options,play:()=>played++,pause:()=>paused++,stop:()=>stopped++,onSuperseded:()=>superseded++});
+  await media.play();assert.equal(media.paused,false);assert.equal(typeof actions.get('nexttrack'),'function');
+  radio.claim();assert.equal(media.paused,true);assert.equal(media.currentTime,20);
+  for(const name of ['seekto','seekbackward','seekforward','previoustrack','nexttrack'])assert.equal(actions.get(name),null);
+  assert.equal(positions.at(-1),undefined);
+  radio.update('playing',{title:'Live song',station:'Test FM'});
+  assert.equal(session.metadata.title,'Live song');assert.equal(session.metadata.artist,'Test FM');
+  actions.get('play')();actions.get('pause')();actions.get('stop')();assert.deepEqual([played,paused,stopped],[1,1,1]);
+  radio.release();assert.equal(session.metadata.title,'Ordinary track');assert.equal(media.paused,true);
+  assert.equal(typeof actions.get('seekto'),'function');assert.equal(typeof actions.get('nexttrack'),'function');
+  radio.claim();await media.play();assert.equal(superseded,1);assert.equal(session.metadata.title,'Ordinary track');assert.equal(media.paused,false);
+  radio.dispose();assert.equal(session.metadata.title,'Ordinary track','stale close must not clear normal controls');
+  music.dispose();assert.equal(session.metadata,null);
 });

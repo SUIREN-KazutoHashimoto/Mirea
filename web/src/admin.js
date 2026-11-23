@@ -52,7 +52,7 @@ export async function openAdmin({dialog,api,esc,bytes,onStatistics,onReset}){
       }else if(tab==='reports'){
         await mountAdminDiagnostics({panel,api,valid});
       }else if(tab==='jobs'){
-        const loadJobs=await mountAdminJobs({panel,api,esc,bytes,confirm,valid,status});
+        const loadJobs=await mountAdminJobs({panel,api,esc,bytes,confirm,valid,status,openProcessing:()=>select('processing')});
         if(valid())poll=setInterval(()=>loadJobs().catch(status),4000);
       }else if(tab==='cleanup'){
         mountAdminCleanup({panel,api,esc,bytes,confirm,valid,status});

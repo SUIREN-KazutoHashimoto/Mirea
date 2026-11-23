@@ -103,6 +103,7 @@ healthcheckはコンテナ内の `127.0.0.1` へ接続し、TLSを使う場合�
 | RECOVERY_INTERVAL_MINUTES | intervalMinutes | 5分。1〜1440 |
 | RECOVERY_RETENTION_DAYS | retentionDays | 30日。7〜365 |
 | RECOVERY_RESERVE_MIB | reserveMiB | 512MiB。64〜1048576 |
+| RECOVERY_AUTOMATIC_BUDGET_MIB | automaticBudgetMiB | 16384MiB、64〜1048576（自動実行時のみ適用） |
 
 自動保全はDB・鍵・設定・保存先の識別情報だけを保存します。作品本体・表紙・プレビュー・モデルの重みはコピーせず、ホスト側のバックアップと組み合わせます。保持期間は容量上限ではなく、手動・更新前の復旧点と最新2件は自動削除しません。自動保全は平文の機密データを含みます。
 

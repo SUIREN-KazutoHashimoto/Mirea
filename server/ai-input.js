@@ -8,6 +8,7 @@ import {EPUB_MIME} from './ebook-types.js';
 import {selectVideoSource} from './media-source.js';
 import {waitForMediaWorker} from './media-worker-lifecycle.js';
 import {runAiProcess} from './ai-runtime.js';
+import {normalizeMusicStructure} from './ai-music-structure.js';
 import {AI_OCR_OUTPUT,AI_TAG_OUTPUT,aiChapterOutput,ocrBox} from './ai-output.js';
 
 const timed=mime=>mime.startsWith('audio/')||mime.startsWith('video/');
@@ -104,12 +105,7 @@ export async function analyzeAiUnit({context,item,input,feature,unit,folder,mode
   if(feature==='structure') {
     const normalized=join(folder,'music.wav');await runAiProcess(ffmpegPath(),['-hide_banner','-loglevel','error','-nostdin','-y','-threads','1','-protocol_whitelist','file,pipe','-i',input.path,'-vn','-ac','2','-ar','44100','-c:a','pcm_f32le','-rf64','auto',normalized],{signal,maxOutput:65536});
     const music=await runtime.structure(model,normalized,{signal,folder});
-    const labels={intro:'イントロ',verse:'Aメロ',chorus:'サビ',bridge:'ブリッジ',inst:'間奏',break:'ブレイク',solo:'ソロ',outro:'アウトロ',start:'開始',end:'終了'};
-    return {...empty,summary:Number.isFinite(music.bpm)&&music.bpm>0?'テンポの目安: '+Math.round(music.bpm)+' BPM':'',
-      segments:(music.segments??[]).filter(s=>s.end>s.start).map((s,index)=>({
-        id:'music:'+aiHash({start:Math.round(s.start),label:s.label}).slice(0,20),startMs:Math.max(0,Math.round(s.start*1000)),
-        endMs:Math.min(input.durationMs,Math.round(s.end*1000)),
-        label:labels[s.label]??s.label??'区間',kind:s.label??'section',text:''}))};
+    return {...empty,...normalizeMusicStructure(music,input.durationMs)};
   }
   if(item.mime_type.startsWith('video/')) {
     const log=await runAiProcess(ffmpegPath(),['-hide_banner','-loglevel','info','-nostdin','-threads','1','-protocol_whitelist','file,pipe','-ss',String(startSeconds),'-i',input.path,'-t',String(seconds),'-an','-sn','-vf',"select='gt(scene,0.30)',showinfo",'-f','null','-'],{signal,maxOutput:65536,captureStderr:true});

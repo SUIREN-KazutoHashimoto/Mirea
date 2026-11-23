@@ -1,4 +1,8 @@
 import Fastify from 'fastify';
+import {loadRadio,registerRadio} from './radio.js';
+import {registerRadioStations} from './radio-stations.js';
+import {loadRadioFm,fmCapabilities} from './radio-fm.js';
+import {loadDynamicRenderer} from './radio-dynamic-render.js';
 import {registerAi} from './ai.js';
 import {createErrorDiagnostic} from './error-diagnostics.js';
 import {prepareRecovery,registerRecovery} from './recovery.js';
@@ -88,6 +92,9 @@ export async function createApp(options = {}) {
   const {mediaDir,uploadDir,stagingDir,booksDir,thumbnailDir,videoDir,originalDir,previewDir}=storage;
   const preparedRecovery=await prepareRecovery({storage,version:packageInfo.version,options});
   const db = openDatabase(join(dataDir, 'mirea.sqlite'));
+  let radio;
+  try { radio = await loadRadio(options.radioDir ?? process.env.MIREA_RADIO_DIR, options.radioNow, {db, uploadDir}); }
+  catch (error) { db.close(); throw error; }
   if(options.bootstrapAdmin)await initializeDefaultAdmin(db);
   const operationalSettings=createOperationalSettings(db);
   const processingSettings=createProcessingSettings(db),jobPool=createJobLanes(()=>processingSettings.value);
@@ -181,6 +188,19 @@ export async function createApp(options = {}) {
   }
   const auth = { preHandler: async req => authenticate(req) };
   const adminAccess=createAdminAccess(db,options,authenticate);
+  registerRadio(app,{radio,authenticate});
+  const radioStations=options.radioStations??(process.env.MIREA_RADIO_STATIONS==='1');
+  const fmDirectory=options.radioFmDir??process.env.MIREA_RADIO_FM_DIR;
+  const radioFm=radioStations&&Boolean(fmDirectory);
+  const fmClips=radioFm?await loadRadioFm(fmDirectory):new Map();
+  const dynamicSettings=options.radioDynamicConfig??process.env.MIREA_RADIO_DYNAMIC_CONFIG;
+  const dynamicRequested=radioFm&&Boolean(dynamicSettings||options.radioDynamicRenderer);
+  let dynamicRenderer=options.radioDynamicRenderer;
+  if(dynamicRequested&&!dynamicRenderer)try{dynamicRenderer=await loadDynamicRenderer(dynamicSettings,fmClips);}
+  catch{app.log.warn('Local radio renderer unavailable; static audio fallback');}
+  const dynamicEnabled=dynamicRequested&&typeof dynamicRenderer==='function';
+  if(radioStations)await registerRadioStations(app,{db,authenticate,enabledUser:adminAccess.enabled,uploadDir,originalDir,
+    now:options.radioNow,rateLimit:options.rateLimit,fmClips,radioFm,dynamicEnabled,dynamicRenderer,dynamicPoll:options.radioDynamicPoll,headlineFile:options.radioHeadlinesFile??process.env.MIREA_RADIO_HEADLINES_FILE});
   registerDiagnosticReports(app,{db,authenticate,adminAccess,rateLimit:options.rateLimit});
   registerOperationalSettings(app,{settings:operationalSettings,processingSettings,adminAccess});
   const {requireUnlock:requireShelfUnlock}=registerPrivateShelves(app,{db,authenticate,membership,rateLimit:options.rateLimit});
@@ -192,8 +212,15 @@ export async function createApp(options = {}) {
   const updatesPath = options.appUpdatesDir ?? process.env.APP_UPDATES_DIR;
   registerAppUpdates(app, { directory: updatesPath ? resolve(PROJECT_ROOT, updatesPath) : undefined,releaseVersion:options.remoteUpdates?packageInfo.version:undefined });
   let analytics;
-  app.get('/api/v1/config', async () => ({ allowRegistration, ...processingSettings.value, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadProtocol:2, maxUploadFiles:1000, uploadSessionHours: 24, analytics,
-    version: packageInfo.version, transferQueue:true, manualTransferStart:true, uploadPreview:true, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':`https://github.com/SUIREN-KazutoHashimoto/Mirea/releases` }));
+  function radioEnabledFor(req) {
+    if (!radio?.available) return Boolean(radio);
+    if (!req.headers.authorization) return false;
+    try { authenticate(req); }
+    catch (error) { if (error.statusCode === 401) return false; throw error; }
+    return radio.available(req.user);
+  }
+  app.get('/api/v1/config', async req => ({ allowRegistration, ...processingSettings.value, maxUploadBytes, maxBookPages: MAX_BOOK_PAGES, maxImageBytes: MAX_IMAGE_BYTES, maxEpubBytes: MAX_EPUB_BYTES, uploadChunkBytes: chunkSize, uploadProtocol:2, maxUploadFiles:1000, uploadSessionHours: 24, analytics,
+    version: packageInfo.version, radioEnabled:radioEnabledFor(req), radioStations, radioAutodj:radioStations, radioCrossfade:radioStations, radioFm:radioFm?fmCapabilities(fmClips):null, radioDynamic:dynamicEnabled, transferQueue:true, manualTransferStart:true, uploadPreview:true, androidApkUrl: updatesPath?'/api/v1/app-updates/android/latest.apk':"https://github.com/SUIREN-KazutoHashimoto/Mirea/releases" }));
   app.post('/api/v1/auth/register', { ...authLimits, schema: { body: object({ email, password, name: text(80),remember:{type:'boolean',default:true} },['email','password','name']) } }, async (req, reply) => {
     if (!allowRegistration) throw httpError(403, '新規登録は現在停止しています。');
     const normalizedEmail = req.body.email.trim().toLowerCase();

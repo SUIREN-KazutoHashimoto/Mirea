@@ -1,0 +1,36 @@
+.job-queue-toolbar{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:.45rem;margin:0 auto 1rem;max-width:790px}
+.job-queue-toolbar .button,.job-queue-controls button{min-height:42px}
+.job-queue-scope,.job-queue-unavailable{max-width:790px;margin:.65rem auto;color:var(--muted)}
+.job-queue-list{display:grid;gap:1rem;max-width:790px;margin:0 auto}
+.job-queue-card{display:grid;grid-template-columns:minmax(0,1fr) minmax(76px,100px);border-radius:18px;overflow:hidden;
+ border:1px solid var(--border);background:light-dark(#fff,#202124);box-shadow:0 3px 16px #05081c12}
+.job-queue-main{min-width:0;padding:1.15rem 1.2rem}
+.job-queue-main h4{display:flex;align-items:center;gap:.55rem;margin:0 0 .4rem;font-size:1.03rem;color:light-dark(#344a9d,#b5cbff)}
+.job-queue-main h4 svg,.job-queue-controls svg{width:21px;height:21px;flex:none}
+.job-queue-main p{margin:0 0 .85rem;color:var(--muted);line-height:1.55}
+.job-queue-counters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:min(100%,430px);border-radius:9px;overflow:hidden}
+.job-queue-counters button{display:flex;justify-content:space-between;align-items:center;gap:.3rem;text-align:left;min-width:0;
+ min-height:50px;padding:.55rem .8rem;border:0;background:light-dark(#d9e5ff,#3a455b);color:light-dark(#26345d,#f3f5fb);font:inherit}
+.job-queue-counters button:first-child{background:light-dark(#b8cdfd,#b3caff);color:#182948}
+.job-queue-counters strong{overflow-wrap:anywhere;min-width:0;font-size:clamp(1.08rem,2.4vw,1.53rem);font-variant-numeric:tabular-nums}
+.job-queue-counters button:disabled,.job-queue-controls button:disabled{opacity:.72}
+.job-queue-secondary{display:flex;flex-wrap:wrap;gap:.35rem;margin:.45rem 0 0}
+.job-queue-secondary button{border:1px solid var(--border);border-radius:999px;padding:.25rem .55rem;background:var(--soft);color:inherit;font:inherit;font-size:.78rem}
+.job-queue-controls{display:grid;grid-auto-rows:1fr;background:light-dark(#edf0f9,#303846)}
+.job-queue-controls button{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:.3rem;border:0;padding:.35rem;
+ color:inherit;background:transparent;font:inherit;font-size:.78rem;text-align:center}
+.job-queue-controls button+button{border-top:1px solid light-dark(#dae1ee,#3d475b)}
+.job-queue-controls button:hover:not(:disabled),.job-queue-counters button:hover:not(:disabled){filter:brightness(.92);cursor:pointer}
+.job-queue-card button:focus-visible{outline:2px solid var(--blue);outline-offset:-3px}
+.job-family-badge{display:flex;align-items:center;gap:.5rem;color:var(--muted)}
+@media(max-width:530px){
+ .job-queue-toolbar{justify-content:flex-start}
+ .job-queue-card{grid-template-columns:minmax(0,1fr) minmax(62px,72px);border-radius:13px}
+ .job-queue-main{padding:.8rem}
+ .job-queue-main h4{font-size:.92rem}
+ .job-queue-counters button{max-width:100%;padding:.35rem;align-items:flex-start;flex-direction:column;justify-content:center;line-height:1.2}
+ .job-queue-counters button span{font-size:.74rem}
+ .job-queue-main p{font-size:.75rem}
+ .job-queue-controls button{font-size:.72rem}
+}
+.admin-jobs-ui [hidden],.admin-queue-overview[hidden],.job-family-badge[hidden],.job-summary[hidden],.job-list-controls[hidden],.job-pagination[hidden],.job-queue-secondary button[hidden]{display:none!important}
