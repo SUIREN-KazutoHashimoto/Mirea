@@ -60,7 +60,9 @@ try{
   assert(await page.locator('.account-delete button').isDisabled(),'last admin cannot delete own account');await page.locator('.settings-modal .close-modal').click();
   await nav('#nav-admin');await page.locator('.admin-modal[open]').waitFor();
   const adminTab=async tab=>{if(await page.locator('.admin-section-select').isVisible())await page.locator('.admin-section-select').selectOption(tab);else await page.locator('[data-admin-tab="'+tab+'"]').click();await page.locator('.admin-panel[aria-busy=false]').waitFor();};
-  await adminTab('jobs');await page.locator('.job-main-row').first().waitFor();assert.equal(await page.locator('.admin-current-jobs .job-main-row').count(),2);
+  await adminTab('jobs');await page.locator('.job-queue-card').first().waitFor();
+  assert.equal(await page.locator('[data-job-view=queues]').getAttribute('aria-current'),'true','admin jobs open to the queue overview');
+  await page.locator('[data-job-view=current]').click();await page.locator('.job-main-row').first().waitFor();assert.equal(await page.locator('.admin-current-jobs .job-main-row').count(),2);
   assert.equal(await page.locator('.admin-current-jobs .job-start:visible').count(),1);await shot('jobs-current');await page.locator('.job-title').first().click();await page.locator('.job-title').first().focus();
   await page.evaluate(()=>{window.qaJob=document.querySelector('.job-title');});
   assert.equal(await page.evaluate(async()=>{const api=await import('/src/api.js');return api.reconnectSession();}),true);

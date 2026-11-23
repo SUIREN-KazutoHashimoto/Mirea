@@ -134,11 +134,13 @@ test('aggregate track cap and generation-safe dynamic MC follow the shuffled nex
   try{
     await planner.pump();
     const next=rotationTracks(station,plan,1), following=rotationTracks(station,plan,2);
-    assert.ok(queued[0].find(req=>req.id==='mc-'+(tracks.length-1)).text.includes(following[0].title));
-    assert.ok(queued[0].find(req=>req.id==='mc-0').text.includes(next[1].title));
+    assert.deepEqual(queued[0].map(req=>req.id),['mc-1','mc-3','mc-5'],'MC follows every second track');
+    assert.ok(queued[0][0].text.includes(next[2].title),'MC introduces the next shuffled track');
+    assert.ok(queued[0][1].text.includes(next[4].title),'another boundary introduces its own next track');
+    assert.ok(queued[0][2].text.includes(following[0].title),'wrap introduces the first track of the next shuffle');
     clock=30003;
     const state=planner.current(station,plan);
     assert.deepEqual(state.segments.filter(segment=>segment.kind!=='mc').map(x=>x.id),next.map(x=>x.id));
-    assert.equal(state.segments.filter(segment=>segment.kind==='mc').length,tracks.length);
+    assert.equal(state.segments.filter(segment=>segment.kind==='mc').length,tracks.length/2);
   }finally{await planner.close();}
 });
