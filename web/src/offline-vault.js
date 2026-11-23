@@ -14,15 +14,22 @@ export async function createOfflineVault(store,{cryptoApi=crypto,wall=Date.now,m
   // vault instances, so a late read cannot restore an older catalog/lease.
   let queues=timedQueues.get(store);if(!queues)timedQueues.set(store,queues=new Map());
   function serialized(partition,id,work){const name=slot(partition,id),before=queues.get(name)??Promise.resolve(),task=before.catch(()=>{}).then(work);queues.set(name,task);task.finally(()=>{if(queues.get(name)===task)queues.delete(name);}).catch(()=>{});return task;}
-  async function deviceRecord(partition,create=false){
+  async function deviceRecord(partition,create=false,current=()=>true,signal){
     const name=`device|${partition}`;let record=await store.vaultGet(name);
-    if(!record&&create){const key=await cryptoApi.subtle.generateKey({name:'AES-GCM',length:256},false,['encrypt','decrypt']),epoch=Array.from(cryptoApi.getRandomValues(new Uint8Array(16)),n=>n.toString(16).padStart(2,'0')).join('');record=await store.vaultInit(name,{key,epoch});}
+    if(!current())return null;
+    if(!record&&create){const key=await cryptoApi.subtle.generateKey({name:'AES-GCM',length:256},false,['encrypt','decrypt']),epoch=Array.from(cryptoApi.getRandomValues(new Uint8Array(16)),n=>n.toString(16).padStart(2,'0')).join('');if(!current())return null;record=await store.vaultInit(name,{key,epoch},signal);}
     if(!record)throw new Error('この端末のオフライン鍵がありません。オンラインで開き直してください。');return record.key?record:{key:record,epoch:'legacy'};
   }
   const deviceKey=async(partition,create=false)=>(await deviceRecord(partition,create)).key;
-  async function seal(partition,id,value){
-    const key=await deviceKey(partition,true),iv=cryptoApi.getRandomValues(new Uint8Array(12)),bytes=encoder.encode(JSON.stringify(value));
-    try{await store.vaultPut(slot(partition,id),{iv,bytes:await cryptoApi.subtle.encrypt({name:'AES-GCM',iv,additionalData:encoder.encode(slot(partition,id))},key,bytes)});}finally{bytes.fill(0);}
+  async function seal(partition,id,value,{current=()=>true,signal}={}){
+    if(!current())return;
+    const device=await deviceRecord(partition,true,current,signal);
+    if(!device||!current())return;
+    const iv=cryptoApi.getRandomValues(new Uint8Array(12)),bytes=encoder.encode(JSON.stringify(value));
+    try{
+      const ciphertext=await cryptoApi.subtle.encrypt({name:'AES-GCM',iv,additionalData:encoder.encode(slot(partition,id))},device.key,bytes);
+      if(current())await store.vaultPut(slot(partition,id),{iv,bytes:ciphertext},signal);
+    }finally{bytes.fill(0);}
   }
   async function unseal(partition,id){
     const record=await store.vaultGet(slot(partition,id));if(!record)return null;

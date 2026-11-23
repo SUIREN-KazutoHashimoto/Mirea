@@ -2,11 +2,14 @@ import { chunkKey,validateManifest } from './download-core.js';
 
 let opening;
 export function openDownloadDb(){
-  return opening??=openDownloadDatabase().catch(error=>{opening=null;throw error;});
+  if(opening)return opening;
+  const invalidated=()=>{if(opening===candidate)opening=null;};
+  const candidate=openDownloadDatabase({onInvalidated:invalidated}).catch(error=>{invalidated();throw error;});
+  return opening=candidate;
 }
 // An older tab can hold a prior schema open indefinitely. Do not erase it or
 // keep startup blank; reject this attempt and close any late-opened connection.
-export function openDownloadDatabase({factory=globalThis.indexedDB,ms=2500}={}){
+export function openDownloadDatabase({factory=globalThis.indexedDB,ms=2500,onInvalidated=()=>{}}={}){
   return new Promise((resolve,reject)=>{
     if(!factory)return reject(new Error('この環境では暗号化ダウンロードを保存できません。'));
     let settled=false;const fail=error=>{if(settled)return;settled=true;clearTimeout(timer);reject(error);};
@@ -19,15 +22,27 @@ export function openDownloadDatabase({factory=globalThis.indexedDB,ms=2500}={}){
       if(!request.result.objectStoreNames.contains('chunks'))request.result.createObjectStore('chunks',{keyPath:'key'}).createIndex('downloadId','downloadId');
       if(!request.result.objectStoreNames.contains('vault'))request.result.createObjectStore('vault');
     };
-    request.onsuccess=()=>{if(settled){request.result.close();return;}settled=true;clearTimeout(timer);request.result.onversionchange=()=>request.result.close();resolve(createDownloadStore(request.result));};
+    request.onsuccess=()=>{
+      const db=request.result;
+      if(settled){db.close();return;}
+      settled=true;clearTimeout(timer);
+      db.onversionchange=()=>{db.close();onInvalidated();};
+      db.onclose=onInvalidated;
+      resolve(createDownloadStore(db));
+    };
     request.onerror=()=>fail(request.error);
   });
 }
 export function createDownloadStore(db,{now=Date.now}={}){
-  const run=(names,mode,fn)=>new Promise((resolve,reject)=>{
+  const run=(names,mode,fn,signal)=>new Promise((resolve,reject)=>{
+    if(signal?.aborted){reject(signal.reason);return;}
     const tx=db.transaction(names,mode);let value;
-    tx.oncomplete=()=>resolve(value);tx.onabort=tx.onerror=()=>reject(tx.error || new Error('ダウンロード保存が中断されました。'));
-    try{fn(tx,result=>{value=result;});}catch(error){tx.abort();reject(error);}
+    const abort=()=>{try{tx.abort();}catch{/* Transaction already settled. */}};
+    const cleanup=()=>signal?.removeEventListener('abort',abort);
+    signal?.addEventListener('abort',abort,{once:true});
+    tx.oncomplete=()=>{cleanup();resolve(value);};
+    tx.onabort=tx.onerror=()=>{cleanup();reject(tx.error || new Error('ダウンロード保存が中断されました。'));};
+    try{fn(tx,result=>{value=result;});}catch(error){cleanup();abort();reject(error);}
   });
   const erase=(store,id)=>{
     const request=store.index('downloadId').openKeyCursor(IDBKeyRange.only(id));
@@ -57,8 +72,8 @@ export function createDownloadStore(db,{now=Date.now}={}){
   };
   return {
     vaultGet:key=>run(['vault'],'readonly',(tx,done)=>{const r=tx.objectStore('vault').get(key);r.onsuccess=()=>done(r.result);}),
-    vaultInit:(key,value)=>run(['vault'],'readwrite',(tx,done)=>{const s=tx.objectStore('vault'),r=s.get(key);r.onsuccess=()=>{if(r.result)done(r.result);else{s.put(value,key);done(value);}};}),
-    vaultPut:(key,value)=>run(['vault'],'readwrite',tx=>{tx.objectStore('vault').put(value,key);}),
+    vaultInit:(key,value,signal)=>run(['vault'],'readwrite',(tx,done)=>{const s=tx.objectStore('vault'),r=s.get(key);r.onsuccess=()=>{if(signal?.aborted)return;if(r.result)done(r.result);else{s.put(value,key);done(value);}};},signal),
+    vaultPut:(key,value,signal)=>run(['vault'],'readwrite',tx=>{tx.objectStore('vault').put(value,key);},signal),
     vaultDelete:key=>run(['vault'],'readwrite',tx=>{tx.objectStore('vault').delete(key);}),
     getPackage:key=>run(['packages'],'readonly',(tx,done)=>{const r=tx.objectStore('packages').get(key);r.onsuccess=()=>done(r.result);}),
     list:partition=>run(['packages'],'readonly',(tx,done)=>{const r=tx.objectStore('packages').index('partition').getAll(partition);r.onsuccess=()=>done(r.result);}),
